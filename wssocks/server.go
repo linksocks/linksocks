@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,35 +20,43 @@ import (
 
 // WSSocksServer represents a SOCKS5 over WebSocket protocol server
 type WSSocksServer struct {
+	// Core components
 	relay *Relay
 	log   zerolog.Logger
 
+	// Synchronization primitives
+	mu         sync.RWMutex
+	ready      chan struct{}
+	cancelFunc context.CancelFunc
+
+	// WebSocket server configuration
 	wsHost   string
 	wsPort   int
 	wsServer *http.Server
 
-	socksHost string
-	portPool  *PortPool
+	// SOCKS server configuration
+	socksHost       string
+	portPool        *PortPool
+	socksWaitClient bool
 
-	// Synchronization
-	ready chan struct{}
-	mu    sync.RWMutex
-
-	// Client management
-	clients       map[uuid.UUID]*WSConn
-	forwardTokens map[string]struct{}
+	// Client connections
+	clients map[uuid.UUID]*WSConn // Maps client ID to WebSocket connection
 
 	// Token management
-	tokens       map[string]int
-	tokenClients map[string][]clientInfo
-	tokenIndexes map[string]int
-	socksAuth    map[string]authInfo
+	forwardTokens map[string]struct{}     // Set of valid forward proxy tokens
+	tokens        map[string]int          // Maps reverse proxy tokens to ports
+	tokenClients  map[string][]clientInfo // Maps tokens to their connected clients
+	tokenIndexes  map[string]int          // Round-robin indexes for load balancing
+	socksAuth     map[string]authInfo     // SOCKS authentication info per token
 
-	// SOCKS server management
-	socksTasks map[int]context.CancelFunc
+	// Active SOCKS servers
+	socksTasks map[int]context.CancelFunc // Active SOCKS server tasks
 
-	socksWaitClient bool
-	cancelFunc      context.CancelFunc
+	// Socket reuse management
+	waitingSockets map[int]*waitingSocket // Sockets waiting for reuse
+	waitingMu      sync.RWMutex           // Mutex for waiting sockets management
+
+	socketManager *SocketManager
 }
 
 type clientInfo struct {
@@ -60,6 +67,11 @@ type clientInfo struct {
 type authInfo struct {
 	Username string
 	Password string
+}
+
+type waitingSocket struct {
+	listener    net.Listener
+	cancelTimer *time.Timer
 }
 
 // ServerOption represents configuration options for WSSocksServer
@@ -150,6 +162,8 @@ func NewWSSocksServer(opt *ServerOption) *WSSocksServer {
 		socksAuth:       make(map[string]authInfo),
 		socksTasks:      make(map[int]context.CancelFunc),
 		socksWaitClient: opt.SocksWaitClient,
+		waitingSockets:  make(map[int]*waitingSocket),
+		socketManager:   NewSocketManager(opt.SocksHost, opt.Logger),
 	}
 
 	return s
@@ -614,7 +628,7 @@ func (s *WSSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 		}
 	}
 
-	// Clean up client connection and its write mutex
+	// Clean up client connection
 	delete(s.clients, clientID)
 
 	s.log.Debug().Str("client_id", clientID.String()).Msg("Cleaned up resources for client")
@@ -643,8 +657,6 @@ func (s *WSSocksServer) getNextWebSocket(token string) (*WSConn, error) {
 
 // handleSocksRequest handles incoming SOCKS5 connection
 func (s *WSSocksServer) handleSocksRequest(ctx context.Context, socksConn net.Conn, addr net.Addr, token string) error {
-	defer socksConn.Close()
-
 	s.mu.RLock()
 	_, hasClients := s.tokenClients[token]
 	s.mu.RUnlock()
@@ -698,35 +710,25 @@ ClientFound:
 
 // runSocksServer runs a SOCKS5 server for a specific token and port
 func (s *WSSocksServer) runSocksServer(ctx context.Context, token string, socksPort int) error {
-	defer s.log.Debug().Int("port", socksPort).Msg("SOCKS5 server stopped")
-
-	// Create config with SO_REUSEADDR option
-	lc := net.ListenConfig{
-		Control: func(network, address string, c syscall.RawConn) error {
-			return c.Control(func(fd uintptr) {
-				syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
-			})
-		},
-	}
-
-	// Use ListenConfig instead of direct net.Listen
-	listener, err := lc.Listen(ctx, "tcp", fmt.Sprintf("%s:%d", s.socksHost, socksPort))
+	listener, err := s.socketManager.GetListener(socksPort)
 	if err != nil {
-		return fmt.Errorf("failed to start SOCKS server: %w", err)
+		return err
 	}
-	defer listener.Close()
+	defer s.socketManager.ReleaseListener(socksPort)
 
 	s.log.Info().Str("addr", listener.Addr().String()).Msg("SOCKS5 server started")
 
 	go func() {
 		<-ctx.Done()
-		listener.Close()
+		listener.(*net.TCPListener).SetDeadline(time.Now())
+		s.socketManager.ReleaseListener(socksPort)
 	}()
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
+				listener.(*net.TCPListener).SetDeadline(time.Time{})
 				return nil // Context cancelled
 			}
 			s.log.Error().Err(err).Msg("Failed to accept SOCKS connection")
@@ -745,6 +747,15 @@ func (s *WSSocksServer) runSocksServer(ctx context.Context, token string, socksP
 func (s *WSSocksServer) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Clean up all waiting sockets
+	s.waitingMu.Lock()
+	for port, waiting := range s.waitingSockets {
+		waiting.cancelTimer.Stop()
+		waiting.listener.Close()
+		delete(s.waitingSockets, port)
+	}
+	s.waitingMu.Unlock()
 
 	// Clean up all SOCKS servers
 	for port, cancel := range s.socksTasks {
@@ -772,6 +783,7 @@ func (s *WSSocksServer) Close() {
 		s.cancelFunc = nil
 	}
 
+	s.socketManager.Close()
 	s.log.Debug().Msg("Server stopped")
 }
 

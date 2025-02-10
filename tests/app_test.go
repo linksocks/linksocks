@@ -224,8 +224,8 @@ func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 }
 
 // reverseClient creates a WSS client in reverse mode
-func reverseClient(t *testing.T, wsPort int, token string) *ProxyTestClient {
-	logger := createPrefixedLogger("CLT0")
+func reverseClient(t *testing.T, wsPort int, token string, prefix string) *ProxyTestClient {
+	logger := createPrefixedLogger(prefix)
 
 	clientOpt := wssocks.DefaultClientOption().
 		WithWSURL(fmt.Sprintf("ws://localhost:%d", wsPort)).
@@ -262,7 +262,7 @@ func forwardProxy(t *testing.T) *ProxyTestEnv {
 // reverseProxy creates a complete reverse proxy test environment
 func reverseProxy(t *testing.T) *ProxyTestEnv {
 	server := reverseServer(t, nil)
-	client := reverseClient(t, server.WSPort, server.Token)
+	client := reverseClient(t, server.WSPort, server.Token, "CLT0")
 
 	return &ProxyTestEnv{
 		Server:    server,
@@ -498,7 +498,7 @@ func TestProxyAuth(t *testing.T) {
 		SocksPassword: "test_pass",
 	})
 	defer server.Close()
-	client := reverseClient(t, server.WSPort, server.Token)
+	client := reverseClient(t, server.WSPort, server.Token, "CLT0")
 	defer client.Close()
 	require.Error(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort}))
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort, Username: "test_user", Password: "test_pass"}))
@@ -563,7 +563,7 @@ func TestForwardReconnect(t *testing.T) {
 
 func TestReverseReconnect(t *testing.T) {
 	server := reverseServer(t, nil)
-	client := reverseClient(t, server.WSPort, server.Token)
+	client := reverseClient(t, server.WSPort, server.Token, "CLT1")
 	defer server.Close()
 
 	// Test initial connection
@@ -578,7 +578,7 @@ func TestReverseReconnect(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond, "Server failed to detect client disconnection")
 
 	// Start new client with same port
-	newClient := reverseClient(t, server.WSPort, server.Token)
+	newClient := reverseClient(t, server.WSPort, server.Token, "CLT2")
 	defer newClient.Close()
 
 	// Wait for client to establish connection by checking token clients
@@ -635,7 +635,7 @@ func TestReverseRemoveToken(t *testing.T) {
 	wsPort, err := getFreePort()
 	require.NoError(t, err)
 
-	logger := createPrefixedLogger("SRV")
+	logger := createPrefixedLogger("SRV0")
 	serverOpt := wssocks.DefaultServerOption().
 		WithWSPort(wsPort).
 		WithLogger(logger).
@@ -653,7 +653,7 @@ func TestReverseRemoveToken(t *testing.T) {
 	require.Zero(t, port2)
 
 	// Start first client and test
-	client1 := reverseClient(t, wsPort, token1)
+	client1 := reverseClient(t, wsPort, token1, "CLT1")
 	defer client1.Close()
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: port1}))
 
@@ -673,14 +673,14 @@ func TestReverseRemoveToken(t *testing.T) {
 	}
 
 	// Start second client and test
-	client2 := reverseClient(t, wsPort, token2)
+	client2 := reverseClient(t, wsPort, token2, "CLT2")
 	defer client2.Close()
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: port2}))
 }
 
 func TestMain(m *testing.M) {
 	// Initialize test logger
-	testLogger = createPrefixedLogger("TST")
+	testLogger = createPrefixedLogger("TEST")
 
 	var cleanup func()
 	var err error
