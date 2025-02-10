@@ -67,10 +67,6 @@ WSSocks is also available via Docker:
 docker run --rm -it jackzzs/wssocks --help
 ```
 
-## Documentation
-
-Visit the documentation: [https://wssocks.zetx.tech](https://wssocks.zetx.tech)
-
 ## License
 
 WSSocks is open source under the MIT license.
