@@ -240,7 +240,7 @@ func (c *WSSocksClient) startForward(ctx context.Context) error {
 			ws, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
 			if err != nil {
 				if c.reconnect {
-					c.log.Error().Err(err).Msgf("WebSocket connection closed. Retrying in %v...", c.reconnectDelay)
+					c.log.Error().Err(err).Msg("WebSocket connection closed. Retrying in 5 seconds...")
 					time.Sleep(c.reconnectDelay)
 					continue
 				}
@@ -275,7 +275,7 @@ func (c *WSSocksClient) startForward(ctx context.Context) error {
 			if err := wsConn.SyncWriteJSON(authMsg); err != nil {
 				wsConn.Close()
 				if c.reconnect {
-					c.log.Error().Err(err).Msgf("Failed to send auth message. Retrying in %v...", c.reconnectDelay)
+					c.log.Error().Err(err).Msg("Failed to send auth message. Retrying...")
 					time.Sleep(c.reconnectDelay)
 					continue
 				}
@@ -286,7 +286,7 @@ func (c *WSSocksClient) startForward(ctx context.Context) error {
 			if err := wsConn.ReadJSON(&authResponse); err != nil {
 				wsConn.Close()
 				if c.reconnect {
-					c.log.Error().Err(err).Msgf("Failed to read auth response. Retrying in %v...", c.reconnectDelay)
+					c.log.Error().Err(err).Msg("Failed to read auth response. Retrying...")
 					time.Sleep(c.reconnectDelay)
 					continue
 				}
@@ -341,7 +341,7 @@ func (c *WSSocksClient) startForward(ctx context.Context) error {
 			if err != nil && err != context.Canceled {
 				if errors.Is(err, net.ErrClosed) || websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					if c.reconnect {
-						c.log.Error().Msgf("WebSocket connection closed. Retrying in %v...", c.reconnectDelay)
+						c.log.Error().Msg("WebSocket connection closed. Retrying in 5 seconds...")
 						time.Sleep(c.reconnectDelay)
 						continue
 					}
@@ -349,7 +349,7 @@ func (c *WSSocksClient) startForward(ctx context.Context) error {
 					return err
 				}
 				if c.reconnect {
-					c.log.Error().Err(err).Msgf("Operation error. Retrying in %v...", c.reconnectDelay)
+					c.log.Error().Err(err).Msg("Operation error. Retrying in 5 seconds...")
 					time.Sleep(c.reconnectDelay)
 					continue
 				}
@@ -370,7 +370,7 @@ func (c *WSSocksClient) startReverse(ctx context.Context) error {
 			ws, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
 			if err != nil {
 				if c.reconnect {
-					c.log.Error().Err(err).Msgf("WebSocket connection closed. Retrying in %v...", c.reconnectDelay)
+					c.log.Error().Err(err).Msg("WebSocket connection closed. Retrying in 5 seconds...")
 					time.Sleep(c.reconnectDelay)
 					continue
 				}
@@ -393,7 +393,7 @@ func (c *WSSocksClient) startReverse(ctx context.Context) error {
 			if err := wsConn.SyncWriteJSON(authMsg); err != nil {
 				wsConn.Close()
 				if c.reconnect {
-					c.log.Error().Err(err).Msgf("Failed to send auth message. Retrying in %v...", c.reconnectDelay)
+					c.log.Error().Err(err).Msg("Failed to send auth message. Retrying...")
 					time.Sleep(c.reconnectDelay)
 					continue
 				}
@@ -406,7 +406,7 @@ func (c *WSSocksClient) startReverse(ctx context.Context) error {
 			if err := wsConn.ReadJSON(&authResponse); err != nil {
 				wsConn.Close()
 				if c.reconnect {
-					c.log.Error().Err(err).Msgf("Failed to read auth response. Retrying in %v...", c.reconnectDelay)
+					c.log.Error().Err(err).Msg("Failed to read auth response. Retrying...")
 					time.Sleep(c.reconnectDelay)
 					continue
 				}
@@ -452,7 +452,7 @@ func (c *WSSocksClient) startReverse(ctx context.Context) error {
 			if err != nil && err != context.Canceled {
 				if errors.Is(err, net.ErrClosed) || websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					if c.reconnect {
-						c.log.Error().Msgf("WebSocket connection closed. Retrying in %v...", c.reconnectDelay)
+						c.log.Error().Msg("WebSocket connection closed. Retrying in 5 seconds...")
 						time.Sleep(c.reconnectDelay)
 						continue
 					}
@@ -460,7 +460,7 @@ func (c *WSSocksClient) startReverse(ctx context.Context) error {
 					return err
 				}
 				if c.reconnect {
-					c.log.Error().Err(err).Msgf("Operation error. Retrying in %v...", c.reconnectDelay)
+					c.log.Error().Err(err).Msg("Operation error. Retrying in 5 seconds...")
 					time.Sleep(c.reconnectDelay)
 					continue
 				}
@@ -553,12 +553,15 @@ func (c *WSSocksClient) heartbeatHandler(ctx context.Context, ws *WSConn) error 
 
 // runSocksServer runs local SOCKS5 server
 func (c *WSSocksClient) runSocksServer(ctx context.Context, readyEvent chan<- struct{}) error {
+	c.mu.Lock()
 	if c.socksListener != nil {
+		c.mu.Unlock()
 		if readyEvent != nil {
 			close(readyEvent)
 		}
 		return nil
 	}
+	c.mu.Unlock()
 
 	// Create TCP listener
 	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", c.socksHost, c.socksPort))
