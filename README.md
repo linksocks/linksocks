@@ -51,59 +51,6 @@ wssocks server -t example_token -p 1080 -r
 wssocks client -t example_token -u ws://localhost:8765 -r
 ```
 
-### As a library
-
-Forward Proxy:
-
-```python
-import asyncio
-from pywssocks import WSSocksServer, WSSocksClient
-
-# Server
-server = WSSocksServer(
-    ws_host="0.0.0.0",
-    ws_port=8765,
-)
-token = server.add_forward_token()
-print(f"Token: {token}")
-asyncio.run(server.start())
-
-# Client
-client = WSSocksClient(
-    token="<token>",
-    ws_url="ws://localhost:8765",
-    socks_host="127.0.0.1",
-    socks_port=1080,
-)
-asyncio.run(client.start())
-```
-
-Reverse Proxy:
-
-```python
-import asyncio
-from pywssocks import WSSocksServer, WSSocksClient
-
-# Server
-server = WSSocksServer(
-    ws_host="0.0.0.0",
-    ws_port=8765,
-    socks_host="127.0.0.1",
-    socks_port_pool=range(1024, 10240),
-)
-token, port = server.add_reverse_token()
-print(f"Token: {token}\nPort: {port}")
-asyncio.run(server.start())
-
-# Client
-client = WSSocksClient(
-    token="<token>",
-    ws_url="ws://localhost:8765",
-    reverse=True,
-)
-asyncio.run(client.start())
-```
-
 ## Installation
 
 WSSocks can be installed by:
