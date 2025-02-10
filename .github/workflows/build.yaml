@@ -5,6 +5,9 @@ on:
   release:
     types: [released]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build and Upload Release Assets
