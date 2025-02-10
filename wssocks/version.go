@@ -3,6 +3,6 @@ package wssocks
 import "runtime"
 
 var (
-	Version  = "v1.0.0"
+	Version = "v1.0.1"
 	Platform = runtime.GOOS + "/" + runtime.GOARCH
 )
