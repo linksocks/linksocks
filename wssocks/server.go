@@ -18,9 +18,6 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// Version represents the server version
-const Version = "1.0.0" // Update with actual version
-
 // WSSocksServer represents a SOCKS5 over WebSocket protocol server
 type WSSocksServer struct {
 	relay *Relay

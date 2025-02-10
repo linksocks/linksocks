@@ -38,6 +38,15 @@ func (cli *CLI) initCommands() {
 		SilenceUsage: true,
 	}
 
+	// Version command
+	versionCmd := &cobra.Command{
+		Use:   "version",
+		Short: "Print the version number",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("wssocks version %s %s\n", Version, Platform)
+		},
+	}
+
 	// Client command
 	clientCmd := &cobra.Command{
 		Use:          "client",
@@ -82,7 +91,7 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().BoolP("debug", "d", false, "Show debug logs")
 
 	// Add commands to root
-	cli.rootCmd.AddCommand(clientCmd, serverCmd)
+	cli.rootCmd.AddCommand(clientCmd, serverCmd, versionCmd)
 }
 
 func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {

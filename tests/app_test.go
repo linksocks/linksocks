@@ -32,12 +32,14 @@ type ProxyTestServer struct {
 }
 
 type ProxyTestServerOption struct {
-	WSPort       int
-	SocksPort    int
-	Token        string
-	PortPool     *wssocks.PortPool
-	LoggerPrefix string
-	Reconnect    bool
+	WSPort        int
+	SocksPort     int
+	SocksUser     string
+	SocksPassword string
+	Token         string
+	PortPool      *wssocks.PortPool
+	LoggerPrefix  string
+	Reconnect     bool
 }
 
 // ProxyTestClient encapsulates the client-side test environment
@@ -200,8 +202,10 @@ func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 
 	server := wssocks.NewWSSocksServer(serverOpt)
 	token, socksPort = server.AddReverseToken(&wssocks.ReverseTokenOptions{
-		Port:  socksPort,
-		Token: token,
+		Port:     socksPort,
+		Token:    token,
+		Username: opt.SocksUser,
+		Password: opt.SocksPassword,
 	})
 	require.NotZero(t, socksPort)
 
@@ -479,13 +483,25 @@ func TestUDPServer(t *testing.T) {
 	assertUDPConnection(t, globalUDPServer, nil)
 }
 
-func TestBasicForwardProxy(t *testing.T) {
+func TestForwardProxy(t *testing.T) {
 	env := forwardProxy(t)
 	defer env.Close()
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: env.Client.SocksPort}))
 }
 
-func TestBasicReverseProxy(t *testing.T) {
+func TestProxyAuth(t *testing.T) {
+	server := reverseServer(t, &ProxyTestServerOption{
+		SocksUser:     "test_user",
+		SocksPassword: "test_pass",
+	})
+	defer server.Close()
+	client := reverseClient(t, server.WSPort, server.Token)
+	defer client.Close()
+	require.Error(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort}))
+	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort, Username: "test_user", Password: "test_pass"}))
+}
+
+func TestReverseProxy(t *testing.T) {
 	env := reverseProxy(t)
 	defer env.Close()
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: env.Server.SocksPort}))
