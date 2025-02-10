@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -697,7 +698,19 @@ ClientFound:
 
 // runSocksServer runs a SOCKS5 server for a specific token and port
 func (s *WSSocksServer) runSocksServer(ctx context.Context, token string, socksPort int) error {
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.socksHost, socksPort))
+	defer s.log.Debug().Int("port", socksPort).Msg("SOCKS5 server stopped")
+
+	// Create config with SO_REUSEADDR option
+	lc := net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			return c.Control(func(fd uintptr) {
+				syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+			})
+		},
+	}
+
+	// Use ListenConfig instead of direct net.Listen
+	listener, err := lc.Listen(ctx, "tcp", fmt.Sprintf("%s:%d", s.socksHost, socksPort))
 	if err != nil {
 		return fmt.Errorf("failed to start SOCKS server: %w", err)
 	}
