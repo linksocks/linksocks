@@ -89,6 +89,7 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().StringP("socks-password", "w", "", "SOCKS5 password for authentication")
 	serverCmd.Flags().BoolP("socks-nowait", "i", false, "Start the SOCKS server immediately")
 	serverCmd.Flags().BoolP("debug", "d", false, "Show debug logs")
+	serverCmd.Flags().StringP("api-key", "k", "", "Enable HTTP API with specified key")
 
 	// Add commands to root
 	cli.rootCmd.AddCommand(clientCmd, serverCmd, versionCmd)
@@ -150,6 +151,7 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 	socksUsername, _ := cmd.Flags().GetString("socks-username")
 	socksPassword, _ := cmd.Flags().GetString("socks-password")
 	debug, _ := cmd.Flags().GetBool("debug")
+	apiKey, _ := cmd.Flags().GetString("api-key")
 
 	// Setup logging
 	logger := cli.initLogging(debug)
@@ -161,33 +163,41 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 		WithSocksHost(socksHost).
 		WithLogger(logger)
 
+	// Add API key if provided
+	if apiKey != "" {
+		serverOpt.WithAPI(apiKey)
+	}
+
 	// Create server instance
 	server := NewWSSocksServer(serverOpt)
 
-	// Add token based on mode
-	if reverse {
-		useToken, port := server.AddReverseToken(&ReverseTokenOptions{
-			Token:    token,
-			Port:     socksPort,
-			Username: socksUsername,
-			Password: socksPassword,
-		})
-		if port == 0 {
-			return fmt.Errorf("cannot allocate SOCKS5 port: %s:%d", socksHost, socksPort)
-		}
+	// Skip token operations if API key is provided
+	if apiKey == "" {
+		// Add token based on mode
+		if reverse {
+			useToken, port := server.AddReverseToken(&ReverseTokenOptions{
+				Token:    token,
+				Port:     socksPort,
+				Username: socksUsername,
+				Password: socksPassword,
+			})
+			if port == 0 {
+				return fmt.Errorf("cannot allocate SOCKS5 port: %s:%d", socksHost, socksPort)
+			}
 
-		logger.Info().Msg("Configuration:")
-		logger.Info().Msg("  Mode: reverse proxy (SOCKS5 on server -> client -> network)")
-		logger.Info().Msgf("  Token: %s", useToken)
-		logger.Info().Msgf("  SOCKS5 port: %d", port)
-		if socksUsername != "" && socksPassword != "" {
-			logger.Info().Msgf("  SOCKS5 username: %s", socksUsername)
+			logger.Info().Msg("Configuration:")
+			logger.Info().Msg("  Mode: reverse proxy (SOCKS5 on server -> client -> network)")
+			logger.Info().Msgf("  Token: %s", useToken)
+			logger.Info().Msgf("  SOCKS5 port: %d", port)
+			if socksUsername != "" && socksPassword != "" {
+				logger.Info().Msgf("  SOCKS5 username: %s", socksUsername)
+			}
+		} else {
+			useToken := server.AddForwardToken(token)
+			logger.Info().Msg("Configuration:")
+			logger.Info().Msg("  Mode: forward proxy (SOCKS5 on client -> server -> network)")
+			logger.Info().Msgf("  Token: %s", useToken)
 		}
-	} else {
-		useToken := server.AddForwardToken(token)
-		logger.Info().Msg("Configuration:")
-		logger.Info().Msg("  Mode: forward proxy (SOCKS5 on client -> server -> network)")
-		logger.Info().Msgf("  Token: %s", useToken)
 	}
 
 	// Run server

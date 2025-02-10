@@ -55,8 +55,10 @@ type WSSocksServer struct {
 	// Socket reuse management
 	waitingSockets map[int]*waitingSocket // Sockets waiting for reuse
 	waitingMu      sync.RWMutex           // Mutex for waiting sockets management
+	socketManager  *SocketManager
 
-	socketManager *SocketManager
+	// API server
+	apiKey string
 }
 
 type clientInfo struct {
@@ -83,6 +85,7 @@ type ServerOption struct {
 	SocksWaitClient bool
 	Logger          zerolog.Logger
 	BufferSize      int
+	APIKey          string
 }
 
 // DefaultServerOption returns default server options
@@ -95,6 +98,7 @@ func DefaultServerOption() *ServerOption {
 		SocksWaitClient: true,
 		Logger:          zerolog.New(os.Stdout).With().Timestamp().Logger(),
 		BufferSize:      BufferSize,
+		APIKey:          "",
 	}
 }
 
@@ -140,6 +144,12 @@ func (o *ServerOption) WithBufferSize(size int) *ServerOption {
 	return o
 }
 
+// WithAPI sets apiKey to enable the HTTP API
+func (o *ServerOption) WithAPI(apiKey string) *ServerOption {
+	o.APIKey = apiKey
+	return o
+}
+
 // NewWSSocksServer creates a new WSSocksServer instance
 func NewWSSocksServer(opt *ServerOption) *WSSocksServer {
 	if opt == nil {
@@ -164,6 +174,7 @@ func NewWSSocksServer(opt *ServerOption) *WSSocksServer {
 		socksWaitClient: opt.SocksWaitClient,
 		waitingSockets:  make(map[int]*waitingSocket),
 		socketManager:   NewSocketManager(opt.SocksHost, opt.Logger),
+		apiKey:          opt.APIKey,
 	}
 
 	return s
@@ -228,7 +239,7 @@ func (s *WSSocksServer) AddReverseToken(opts *ReverseTokenOptions) (string, int)
 	}
 
 	// Start SOCKS server immediately if we're not waiting for clients
-	if s.wsServer != nil {
+	if s.wsServer != nil && !s.socksWaitClient {
 		ctx, cancel := context.WithCancel(context.Background())
 		s.socksTasks[assignedPort] = cancel
 		go func() {
@@ -345,6 +356,15 @@ func (s *WSSocksServer) Serve(ctx context.Context) error {
 	}
 
 	mux := http.NewServeMux()
+
+	// Register API handlers if enabled
+	if s.apiKey != "" {
+		apiHandler := NewAPIHandler(s, s.apiKey)
+		apiHandler.RegisterHandlers(mux)
+		s.log.Info().Msg("API endpoints enabled")
+	}
+
+	// Register WebSocket handler
 	mux.HandleFunc("/socket", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -354,9 +374,14 @@ func (s *WSSocksServer) Serve(ctx context.Context) error {
 		go s.handleWebSocket(ctx, conn)
 	})
 
+	// Update root handler
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
-			fmt.Fprintf(w, "WSSocks %s is running but API is not enabled.\n", Version)
+			if s.apiKey != "" {
+				fmt.Fprintf(w, "WSSocks %s is running. API endpoints available at /api/*\n", Version)
+			} else {
+				fmt.Fprintf(w, "WSSocks %s is running but API is not enabled.\n", Version)
+			}
 			return
 		}
 		http.NotFound(w, r)
@@ -787,27 +812,34 @@ func (s *WSSocksServer) Close() {
 	s.log.Debug().Msg("Server stopped")
 }
 
-// HasClients checks if there are any clients connected
+// GetClientCount returns the total number of connected clients
+func (s *WSSocksServer) GetClientCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.clients)
+}
+
+// HasClients returns true if there are any connected clients
 func (s *WSSocksServer) HasClients() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.clients) > 0
 }
 
-// HasTokenClients checks if there are any clients connected for a given token
-func (s *WSSocksServer) HasTokenClients(token string) bool {
+// GetTokenClientCount counts clients connected for a given token
+func (s *WSSocksServer) GetTokenClientCount(token string) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	// Check reverse proxy clients
-	if clients, exists := s.tokenClients[token]; exists && len(clients) > 0 {
-		return true
+	if clients, exists := s.tokenClients[token]; exists {
+		return len(clients)
 	}
 
 	// Check forward proxy clients
 	if _, exists := s.forwardTokens[token]; exists {
-		return len(s.clients) > 0
+		return len(s.clients)
 	}
 
-	return false
+	return 0
 }
