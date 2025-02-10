@@ -1,0 +1,56 @@
+name: Build Release Binaries
+
+on:
+  workflow_dispatch:
+  release:
+    types: [released]
+
+jobs:
+  build:
+    name: Build and Upload Release Assets
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # Windows builds
+          - os: windows
+            arch: amd64
+            extension: .exe
+          
+          # Linux builds
+          - os: linux
+            arch: amd64
+            extension: ""
+          
+          # macOS builds
+          - os: darwin
+            arch: amd64
+            extension: ""
+          - os: darwin
+            arch: arm64
+            extension: ""
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.22'
+
+      - name: Build Binary
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          go build -o "release-binary${{ matrix.extension }}" cmd/main.go
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./release-binary${{ matrix.extension }}
+          asset_name: wssocks-${{ matrix.os }}-${{ matrix.arch }}-${{ github.event.release.tag_name }}${{ matrix.extension }}
+          asset_content_type: application/octet-stream
