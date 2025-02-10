@@ -348,7 +348,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 		}
 
 		// Read auth version
-		n, err = socksConn.Read(buffer[:1])
+		_, err = socksConn.Read(buffer[:1])
 		if err != nil {
 			return fmt.Errorf("read auth version error: %w", err)
 		}
@@ -357,28 +357,28 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 		}
 
 		// Read username length
-		n, err = socksConn.Read(buffer[:1])
+		_, err = socksConn.Read(buffer[:1])
 		if err != nil {
 			return fmt.Errorf("read username length error: %w", err)
 		}
 		ulen := int(buffer[0])
 
 		// Read username
-		n, err = socksConn.Read(buffer[:ulen])
+		_, err = socksConn.Read(buffer[:ulen])
 		if err != nil {
 			return fmt.Errorf("read username error: %w", err)
 		}
 		username := string(buffer[:ulen])
 
 		// Read password length
-		n, err = socksConn.Read(buffer[:1])
+		_, err = socksConn.Read(buffer[:1])
 		if err != nil {
 			return fmt.Errorf("read password length error: %w", err)
 		}
 		plen := int(buffer[0])
 
 		// Read password
-		n, err = socksConn.Read(buffer[:plen])
+		_, err = socksConn.Read(buffer[:plen])
 		if err != nil {
 			return fmt.Errorf("read password error: %w", err)
 		}
