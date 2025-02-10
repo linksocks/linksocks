@@ -67,6 +67,72 @@ WSSocks is also available via Docker:
 docker run --rm -it jackzzs/wssocks --help
 ```
 
+## API Server
+
+WSSocks server provides an HTTP API when enabled with the `--api-key` flag:
+
+```bash
+# Start server with API enabled
+wssocks server --api-key your_api_key
+```
+
+### API Endpoints
+
+All API requests require the `X-API-Key` header with your configured API key.
+
+#### List Active Connections
+
+```http
+GET /api/v1/connections
+```
+
+Returns a list of active WebSocket connections and their statistics.
+
+#### List Tokens
+
+```http
+GET /api/v1/tokens
+```
+
+Returns a list of all configured tokens and their settings.
+
+#### Add Forward Token
+
+```http
+POST /api/v1/tokens/forward
+Content-Type: application/json
+
+{
+    "token": "new_token"  // Optional, auto-generated if not provided
+}
+```
+
+Adds a new forward proxy token.
+
+#### Add Reverse Token
+
+```http
+POST /api/v1/tokens/reverse
+Content-Type: application/json
+
+{
+    "token": "new_token",     // Optional, auto-generated if not provided
+    "port": 1080,            // Required, SOCKS port
+    "username": "user",      // Optional, SOCKS authentication
+    "password": "pass"       // Optional, SOCKS authentication
+}
+```
+
+Adds a new reverse proxy token with specified SOCKS settings.
+
+#### Remove Token
+
+```http
+DELETE /api/v1/tokens/{token}
+```
+
+Removes the specified token.
+
 ## License
 
 WSSocks is open source under the MIT license.
