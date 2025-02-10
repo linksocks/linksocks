@@ -160,6 +160,8 @@ func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 	require.NoError(t, err)
 
 	token := ""
+	socksUser := ""
+	socksPassword := ""
 
 	socksPort, err := getFreePort()
 	require.NoError(t, err)
@@ -171,8 +173,9 @@ func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 			WithWSPort(wsPort).
 			WithLogger(logger)
 	} else {
-		// Set Token
 		token = opt.Token
+		socksUser = opt.SocksUser
+		socksPassword = opt.SocksPassword
 
 		// Use provided options or defaults
 		if opt.LoggerPrefix != "" {
@@ -204,8 +207,8 @@ func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 	token, socksPort = server.AddReverseToken(&wssocks.ReverseTokenOptions{
 		Port:     socksPort,
 		Token:    token,
-		Username: opt.SocksUser,
-		Password: opt.SocksPassword,
+		Username: socksUser,
+		Password: socksPassword,
 	})
 	require.NotZero(t, socksPort)
 
