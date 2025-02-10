@@ -40,7 +40,6 @@ type WSSocksServer struct {
 
 	// Token management
 	tokens       map[string]int
-	tokenLocks   map[string]*sync.Mutex
 	tokenClients map[string][]clientInfo
 	tokenIndexes map[string]int
 	socksAuth    map[string]authInfo
@@ -145,7 +144,6 @@ func NewWSSocksServer(opt *ServerOption) *WSSocksServer {
 		clients:         make(map[uuid.UUID]*WSConn),
 		forwardTokens:   make(map[string]struct{}),
 		tokens:          make(map[string]int),
-		tokenLocks:      make(map[string]*sync.Mutex),
 		tokenClients:    make(map[string][]clientInfo),
 		tokenIndexes:    make(map[string]int),
 		socksAuth:       make(map[string]authInfo),
@@ -207,7 +205,6 @@ func (s *WSSocksServer) AddReverseToken(opts *ReverseTokenOptions) (string, int)
 
 	// Store token information
 	s.tokens[token] = assignedPort
-	s.tokenLocks[token] = &sync.Mutex{}
 	if opts.Username != "" && opts.Password != "" {
 		s.socksAuth[token] = authInfo{
 			Username: opts.Username,
@@ -269,7 +266,6 @@ func (s *WSSocksServer) RemoveToken(token string) bool {
 
 		// Clean up token related data
 		delete(s.tokens, token)
-		delete(s.tokenLocks, token)
 		delete(s.tokenIndexes, token)
 		delete(s.socksAuth, token)
 
@@ -451,8 +447,7 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 
 	if authMsg.Reverse {
 		// Handle reverse proxy client
-		lock := s.tokenLocks[token]
-		lock.Lock()
+		s.mu.Lock()
 		if _, exists := s.tokenClients[token]; !exists {
 			s.tokenClients[token] = make([]clientInfo, 0)
 		}
@@ -470,7 +465,7 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 				}
 			}()
 		}
-		lock.Unlock()
+		s.mu.Unlock()
 
 		s.log.Info().Str("client_id", clientID.String()).Msg("Reverse client authenticated")
 	} else {
@@ -548,8 +543,9 @@ func (s *WSSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clien
 				}
 
 			case *ConnectMessage:
+				var isForwardClient bool
 				s.mu.RLock()
-				_, isForwardClient := s.clients[clientID]
+				_, isForwardClient = s.clients[clientID]
 				s.mu.RUnlock()
 
 				if isForwardClient {
@@ -625,9 +621,8 @@ func (s *WSSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 
 // getNextWebSocket gets next available WebSocket connection using round-robin
 func (s *WSSocksServer) getNextWebSocket(token string) (*WSConn, error) {
-	lock := s.tokenLocks[token]
-	lock.Lock()
-	defer lock.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if _, exists := s.tokenClients[token]; !exists || len(s.tokenClients[token]) == 0 {
 		return nil, fmt.Errorf("no available clients for token")
@@ -649,8 +644,12 @@ func (s *WSSocksServer) getNextWebSocket(token string) (*WSConn, error) {
 func (s *WSSocksServer) handleSocksRequest(ctx context.Context, socksConn net.Conn, addr net.Addr, token string) error {
 	defer socksConn.Close()
 
+	s.mu.RLock()
+	_, hasClients := s.tokenClients[token]
+	s.mu.RUnlock()
+
 	// Wait up to 10 seconds for clients to connect if needed
-	if _, exists := s.tokenClients[token]; !exists {
+	if !hasClients {
 		timeout := time.After(10 * time.Second)
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
@@ -661,7 +660,11 @@ func (s *WSSocksServer) handleSocksRequest(ctx context.Context, socksConn net.Co
 				s.log.Debug().Str("addr", addr.String()).Msg("No valid clients after timeout")
 				return s.relay.RefuseSocksRequest(socksConn, 3)
 			case <-ticker.C:
-				if clients, ok := s.tokenClients[token]; ok && len(clients) > 0 {
+				s.mu.RLock()
+				clients, ok := s.tokenClients[token]
+				hasValidClients := ok && len(clients) > 0
+				s.mu.RUnlock()
+				if hasValidClients {
 					goto ClientFound
 				}
 			}
@@ -678,10 +681,12 @@ ClientFound:
 
 	// Get authentication info if configured
 	var username, password string
+	s.mu.RLock()
 	if auth, ok := s.socksAuth[token]; ok {
 		username = auth.Username
 		password = auth.Password
 	}
+	s.mu.RUnlock()
 
 	// Handle SOCKS request using relay
 	if err := s.relay.HandleSocksRequest(ctx, ws, socksConn, username, password); err != nil && !errors.Is(err, context.Canceled) {
