@@ -22,6 +22,7 @@ func NewAPIHandler(server *WSSocksServer, apiKey string) *APIHandler {
 
 // RegisterHandlers registers API endpoints with the provided mux
 func (h *APIHandler) RegisterHandlers(mux *http.ServeMux) {
+	mux.HandleFunc("/api/token", h.handleToken)
 	mux.HandleFunc("/api/token/", h.handleToken)
 	mux.HandleFunc("/api/status", h.handleStatus)
 }
@@ -83,15 +84,19 @@ func (h *APIHandler) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle token deletion
-	if r.Method == http.MethodDelete {
+	switch r.Method {
+	case http.MethodDelete:
 		token := strings.TrimPrefix(r.URL.Path, "/api/token/")
-		if token == "" {
-			json.NewEncoder(w).Encode(TokenResponse{
-				Success: false,
-				Error:   "token not specified",
-			})
-			return
+		if token == "" || r.URL.Path == "/api/token" {
+			var req TokenRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" {
+				json.NewEncoder(w).Encode(TokenResponse{
+					Success: false,
+					Error:   "token not specified",
+				})
+				return
+			}
+			token = req.Token
 		}
 
 		success := h.server.RemoveToken(token)
@@ -99,11 +104,8 @@ func (h *APIHandler) handleToken(w http.ResponseWriter, r *http.Request) {
 			Success: success,
 			Token:   token,
 		})
-		return
-	}
 
-	// Handle token creation
-	if r.Method == http.MethodPost {
+	case http.MethodPost:
 		var req TokenRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -150,10 +152,10 @@ func (h *APIHandler) handleToken(w http.ResponseWriter, r *http.Request) {
 				Error:   "invalid token type",
 			})
 		}
-		return
-	}
 
-	w.WriteHeader(http.StatusMethodNotAllowed)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }
 
 func (h *APIHandler) handleStatus(w http.ResponseWriter, r *http.Request) {

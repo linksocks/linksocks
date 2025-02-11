@@ -91,7 +91,7 @@ Returns server version and a list of all tokens with their types and active clie
 #### Add Forward Token
 
 ```
-POST /api/token/
+POST /api/token
 Content-Type: application/json
 
 {
@@ -105,7 +105,7 @@ Adds a new forward proxy token.
 #### Add Reverse Token
 
 ```
-POST /api/token/
+POST /api/token
 Content-Type: application/json
 
 {
