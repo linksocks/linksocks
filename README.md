@@ -80,30 +80,23 @@ wssocks server --api-key your_api_key
 
 All API requests require the `X-API-Key` header with your configured API key.
 
-#### List Active Connections
+#### Get Server Status
 
-```http
-GET /api/v1/connections
+```
+GET /api/status
 ```
 
-Returns a list of active WebSocket connections and their statistics.
-
-#### List Tokens
-
-```http
-GET /api/v1/tokens
-```
-
-Returns a list of all configured tokens and their settings.
+Returns server version and a list of all tokens with their types and active client counts.
 
 #### Add Forward Token
 
-```http
-POST /api/v1/tokens/forward
+```
+POST /api/token/
 Content-Type: application/json
 
 {
-    "token": "new_token"  // Optional, auto-generated if not provided
+    "type": "forward",
+    "token": "new_token"  // Optional: auto-generated if not provided
 }
 ```
 
@@ -111,15 +104,16 @@ Adds a new forward proxy token.
 
 #### Add Reverse Token
 
-```http
-POST /api/v1/tokens/reverse
+```
+POST /api/token/
 Content-Type: application/json
 
 {
-    "token": "new_token",     // Optional, auto-generated if not provided
-    "port": 1080,            // Required, SOCKS port
-    "username": "user",      // Optional, SOCKS authentication
-    "password": "pass"       // Optional, SOCKS authentication
+    "type": "reverse",
+    "token": "new_token",  // Optional: auto-generated if not provided
+    "port": 1080,          // Optional: auto-allocated if not provided
+    "username": "user",    // Optional: SOCKS authentication
+    "password": "pass"     // Optional: SOCKS authentication
 }
 ```
 
@@ -127,8 +121,8 @@ Adds a new reverse proxy token with specified SOCKS settings.
 
 #### Remove Token
 
-```http
-DELETE /api/v1/tokens/{token}
+```
+DELETE /api/token/{token}
 ```
 
 Removes the specified token.
