@@ -24,6 +24,9 @@ jobs:
           - os: linux
             arch: amd64
             extension: ""
+          - os: linux
+            arch: arm64
+            extension: ""
           
           # macOS builds
           - os: darwin
