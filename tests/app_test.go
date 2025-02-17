@@ -578,12 +578,15 @@ func TestUDPForwardProxy(t *testing.T) {
 
 func TestUDPForwardProxyDomain(t *testing.T) {
 	// Check localhost resolution first
-	ips, err := net.LookupIP("localhost")
+	addrs, err := net.LookupHost("localhost")
 	require.NoError(t, err)
-	require.NotEmpty(t, ips)
+	require.NotEmpty(t, addrs)
 
 	var serverAddr string
-	if ip := ips[0].To4(); ip == nil {
+	ip := net.ParseIP(addrs[0])
+	require.NotNil(t, ip, "Failed to parse resolved IP address")
+
+	if ip.To4() == nil {
 		// First IP is IPv6
 		if !hasIPv6Support() {
 			t.Skip("localhost resolves to IPv6 but IPv6 is not supported")
@@ -616,12 +619,15 @@ func TestUDPReverseProxy(t *testing.T) {
 
 func TestUDPReverseProxyDomain(t *testing.T) {
 	// Check localhost resolution first
-	ips, err := net.LookupIP("localhost")
+	addrs, err := net.LookupHost("localhost")
 	require.NoError(t, err)
-	require.NotEmpty(t, ips)
+	require.NotEmpty(t, addrs)
 
 	var serverAddr string
-	if ip := ips[0].To4(); ip == nil {
+	ip := net.ParseIP(addrs[0])
+	require.NotNil(t, ip, "Failed to parse resolved IP address")
+
+	if ip.To4() == nil {
 		// First IP is IPv6
 		if !hasIPv6Support() {
 			t.Skip("localhost resolves to IPv6 but IPv6 is not supported")

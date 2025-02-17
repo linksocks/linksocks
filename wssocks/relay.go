@@ -739,7 +739,7 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 					targetIP = ip
 				} else {
 					// Attempt to resolve domain name
-					ips, err := net.LookupIP(msg.TargetAddr)
+					addrs, err := net.LookupHost(msg.TargetAddr)
 					if err != nil {
 						r.log.Error().
 							Err(err).
@@ -747,8 +747,15 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 							Msg("Failed to resolve domain name")
 						continue
 					}
-					// Use first resolved IP
-					targetIP = ips[0]
+					// Parse the first resolved address
+					targetIP = net.ParseIP(addrs[0])
+					if targetIP == nil {
+						r.log.Error().
+							Str("addr", addrs[0]).
+							Str("domain", msg.TargetAddr).
+							Msg("Failed to parse resolved IP address")
+						continue
+					}
 				}
 
 				targetAddr := &net.UDPAddr{
