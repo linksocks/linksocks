@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -579,19 +578,19 @@ func TestUDPForwardProxy(t *testing.T) {
 
 func TestUDPForwardProxyDomain(t *testing.T) {
 	// Check localhost resolution first
-	addrs, err := net.LookupHost("localhost")
+	ips, err := net.LookupIP("localhost")
 	require.NoError(t, err)
-	require.NotEmpty(t, addrs)
+	require.NotEmpty(t, ips)
 
 	var serverAddr string
-	if strings.Contains(addrs[0], ":") {
-		// localhost resolves to IPv6 first
+	if ip := ips[0].To4(); ip == nil {
+		// First IP is IPv6
 		if !hasIPv6Support() {
 			t.Skip("localhost resolves to IPv6 but IPv6 is not supported")
 		}
 		serverAddr = globalUDPServerV6Domain
 	} else {
-		// localhost resolves to IPv4 first
+		// First IP is IPv4
 		serverAddr = globalUDPServerDomain
 	}
 
@@ -616,9 +615,26 @@ func TestUDPReverseProxy(t *testing.T) {
 }
 
 func TestUDPReverseProxyDomain(t *testing.T) {
+	// Check localhost resolution first
+	ips, err := net.LookupIP("localhost")
+	require.NoError(t, err)
+	require.NotEmpty(t, ips)
+
+	var serverAddr string
+	if ip := ips[0].To4(); ip == nil {
+		// First IP is IPv6
+		if !hasIPv6Support() {
+			t.Skip("localhost resolves to IPv6 but IPv6 is not supported")
+		}
+		serverAddr = globalUDPServerV6Domain
+	} else {
+		// First IP is IPv4
+		serverAddr = globalUDPServerDomain
+	}
+
 	env := reverseProxy(t)
 	defer env.Close()
-	assertUDPConnection(t, globalUDPServerDomain, &ProxyConfig{Port: env.Server.SocksPort})
+	assertUDPConnection(t, serverAddr, &ProxyConfig{Port: env.Server.SocksPort})
 }
 
 func TestUDPReverseProxyV6(t *testing.T) {
