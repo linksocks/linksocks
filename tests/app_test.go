@@ -393,7 +393,7 @@ func assertUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConf
 
 		// Get UDP relay address and port
 		relayPort := binary.BigEndian.Uint16(resp[8:10])
-		proxyAddr = fmt.Sprintf("localhost:%d", relayPort)
+		proxyAddr = fmt.Sprintf("127.0.0.1:%d", relayPort)
 
 		// Create UDP connection
 		conn, err = net.Dial("udp", proxyAddr)
