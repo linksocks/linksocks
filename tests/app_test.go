@@ -437,14 +437,16 @@ func assertUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConf
 			sendData := append(header, testData...)
 			_, err = conn.Write(sendData)
 			if err != nil {
+				testLogger.Error().Err(err).Msg("UDP test failed")
 				continue
 			}
 			testLogger.Info().Int("bytes", len(sendData)).Msg("UDP tester sent")
 
-			// Read response
-			buf := make([]byte, len(header)+len(testData))
+			// Read response with a larger buffer to accommodate any header format
+			buf := make([]byte, 1024) // Large enough for any SOCKS5 UDP header + data
 			n, err := conn.Read(buf)
 			if err != nil {
+				testLogger.Error().Err(err).Msg("UDP test failed")
 				continue
 			}
 			testLogger.Info().Int("bytes", n).Msg("UDP tester received")
@@ -478,6 +480,7 @@ func assertUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConf
 			conn.SetDeadline(time.Now().Add(time.Second))
 			_, err = conn.Write(testData)
 			if err != nil {
+				testLogger.Error().Err(err).Msg("UDP test failed")
 				continue
 			}
 			testLogger.Info().Int("data", len(testData)).Msg("UDP tester sent")
@@ -485,6 +488,7 @@ func assertUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConf
 			buf := make([]byte, len(testData))
 			n, err := conn.Read(buf)
 			if err != nil {
+				testLogger.Error().Err(err).Msg("UDP test failed")
 				continue
 			}
 			testLogger.Info().Int("bytes", n).Msg("UDP tester received")
