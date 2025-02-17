@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -392,7 +393,7 @@ func assertUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConf
 
 		// Get UDP relay address and port
 		relayPort := binary.BigEndian.Uint16(resp[8:10])
-		proxyAddr = fmt.Sprintf("127.0.0.1:%d", relayPort)
+		proxyAddr = fmt.Sprintf("localhost:%d", relayPort)
 
 		// Create UDP connection
 		conn, err = net.Dial("udp", proxyAddr)
@@ -577,9 +578,26 @@ func TestUDPForwardProxy(t *testing.T) {
 }
 
 func TestUDPForwardProxyDomain(t *testing.T) {
+	// Check localhost resolution first
+	addrs, err := net.LookupHost("localhost")
+	require.NoError(t, err)
+	require.NotEmpty(t, addrs)
+
+	var serverAddr string
+	if strings.Contains(addrs[0], ":") {
+		// localhost resolves to IPv6 first
+		if !hasIPv6Support() {
+			t.Skip("localhost resolves to IPv6 but IPv6 is not supported")
+		}
+		serverAddr = globalUDPServerV6Domain
+	} else {
+		// localhost resolves to IPv4 first
+		serverAddr = globalUDPServerDomain
+	}
+
 	env := forwardProxy(t)
 	defer env.Close()
-	assertUDPConnection(t, globalUDPServerDomain, &ProxyConfig{Port: env.Client.SocksPort})
+	assertUDPConnection(t, serverAddr, &ProxyConfig{Port: env.Client.SocksPort})
 }
 
 func TestUDPForwardProxyV6(t *testing.T) {
@@ -916,7 +934,6 @@ func startUDPEchoServer(useIPv6 bool) (string, string, func(), error) {
 	if useIPv6 {
 		network = "udp6"
 		ip = "::1"
-		// Try IPv6 connection first
 		if conn, err := net.Dial("udp6", "[::1]:0"); err != nil {
 			return "", "", nil, fmt.Errorf("IPv6 not supported: %w", err)
 		} else {
