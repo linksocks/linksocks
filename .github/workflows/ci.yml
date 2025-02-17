@@ -43,11 +43,9 @@ jobs:
         run: go mod download
 
       - name: Run tests
-        if: runner.os != 'Windows'
         run: go test -v -race -coverprofile=coverage.txt -covermode=atomic -coverpkg="./wssocks" "./tests"
 
       - name: Upload coverage to Codecov
-        if: runner.os != 'Windows'
         uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
