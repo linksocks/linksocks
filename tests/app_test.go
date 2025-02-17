@@ -345,7 +345,7 @@ func assertUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConf
 
 	var proxyAddr string
 	if proxyConfig != nil {
-		proxyAddr = net.JoinHostPort("127.0.0.1", fmt.Sprint(proxyConfig.Port))
+		proxyAddr = net.JoinHostPort("localhost", fmt.Sprint(proxyConfig.Port))
 	} else {
 		proxyAddr = serverAddr
 	}
