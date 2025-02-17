@@ -266,24 +266,29 @@ func (r *Relay) HandleUDPConnection(ctx context.Context, ws *WSConn, request Con
 	// Generate channel_id
 	channelID := uuid.New().String()
 
-	// Create UDP socket
+	// Try dual-stack first
 	localAddr := &net.UDPAddr{
-		IP:   net.IPv4zero,
+		IP:   net.IPv6zero,
 		Port: 0,
 	}
 	conn, err := net.ListenUDP("udp", localAddr)
 	if err != nil {
-		response := ConnectResponseMessage{
-			Type:      TypeConnectResponse,
-			Success:   false,
-			Error:     err.Error(),
-			ConnectID: request.ConnectID,
+		// Fallback to IPv4-only if dual-stack fails
+		localAddr.IP = net.IPv4zero
+		conn, err = net.ListenUDP("udp", localAddr)
+		if err != nil {
+			response := ConnectResponseMessage{
+				Type:      TypeConnectResponse,
+				Success:   false,
+				Error:     err.Error(),
+				ConnectID: request.ConnectID,
+			}
+			r.logMessage(response, "send")
+			if err := ws.SyncWriteJSON(response); err != nil {
+				return fmt.Errorf("write error response error: %w", err)
+			}
+			return fmt.Errorf("udp listen error: %w", err)
 		}
-		r.logMessage(response, "send")
-		if err := ws.SyncWriteJSON(response); err != nil {
-			return fmt.Errorf("write error response error: %w", err)
-		}
-		return fmt.Errorf("udp listen error: %w", err)
 	}
 
 	// Store connection
@@ -728,8 +733,26 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 					return
 				}
 
+				// Resolve domain name if necessary
+				var targetIP net.IP
+				if ip := net.ParseIP(msg.TargetAddr); ip != nil {
+					targetIP = ip
+				} else {
+					// Attempt to resolve domain name
+					ips, err := net.LookupIP(msg.TargetAddr)
+					if err != nil {
+						r.log.Error().
+							Err(err).
+							Str("domain", msg.TargetAddr).
+							Msg("Failed to resolve domain name")
+						continue
+					}
+					// Use first resolved IP
+					targetIP = ips[0]
+				}
+
 				targetAddr := &net.UDPAddr{
-					IP:   net.ParseIP(msg.TargetAddr),
+					IP:   targetIP,
 					Port: msg.TargetPort,
 				}
 
@@ -738,7 +761,12 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 					errChan <- fmt.Errorf("udp write error: %w", err)
 					return
 				}
-				r.log.Debug().Int("size", len(data)).Str("addr", targetAddr.String()).Msg("Sent UDP data to target")
+				r.log.Debug().
+					Int("size", len(data)).
+					Str("addr", targetAddr.String()).
+					Str("original_addr", msg.TargetAddr).
+					Str("original_port", fmt.Sprintf("%d", msg.TargetPort)).
+					Msg("Sent UDP data to target")
 			}
 		}
 	}()
@@ -891,6 +919,12 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 					portBytes := buffer[5+addrLen : 7+addrLen]
 					targetPort = int(binary.BigEndian.Uint16(portBytes))
 					payload = buffer[7+addrLen : n]
+				case 0x04: // IPv6
+					addrBytes := buffer[4:20]
+					targetAddr = net.IP(addrBytes).String()
+					portBytes := buffer[20:22]
+					targetPort = int(binary.BigEndian.Uint16(portBytes))
+					payload = buffer[22:n]
 				default:
 					r.log.Debug().Msg("Cannot parse UDP packet from associated port")
 					continue

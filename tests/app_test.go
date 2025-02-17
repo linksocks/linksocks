@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -67,11 +68,13 @@ type ProxyConfig struct {
 
 var (
 	// Global test servers
-	globalUDPServer    string
-	globalUDPServerV6  string
-	globalHTTPServer   string
-	globalHTTPServerV6 string
-	globalCleanupFuncs []func()
+	globalUDPServer         string // IP-based address
+	globalUDPServerDomain   string // Domain-based address
+	globalUDPServerV6       string // IPv6-based address
+	globalUDPServerV6Domain string // IPv6 domain-based address
+	globalHTTPServer        string
+	globalHTTPServerV6      string
+	globalCleanupFuncs      []func()
 
 	// Global test logger
 	testLogger zerolog.Logger
@@ -412,21 +415,31 @@ func assertUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConf
 		for i := 0; i < udpTestAttempts; i++ {
 			conn.SetDeadline(time.Now().Add(time.Second))
 
-			// Create SOCKS5 UDP header + data
-			ip := net.ParseIP(host).To4()
+			// Create SOCKS5 UDP header
+			var header []byte
+			ip := net.ParseIP(host)
 			if ip == nil {
-				t.Fatal("Invalid IPv4 address")
+				// Domain name
+				header = []byte{0, 0, 0, 0x03, byte(len(host))}
+				header = append(header, []byte(host)...)
+			} else if ip4 := ip.To4(); ip4 != nil {
+				// IPv4
+				header = []byte{0, 0, 0, 0x01}
+				header = append(header, ip4...)
+			} else {
+				// IPv6
+				header = []byte{0, 0, 0, 0x04}
+				header = append(header, ip.To16()...)
 			}
-
-			header := []byte{0, 0, 0, 1}
-			header = append(header, ip...)
 			header = append(header, byte(port>>8), byte(port))
 
 			// Send data with UDP header
-			_, err = conn.Write(append(header, testData...))
+			sendData := append(header, testData...)
+			_, err = conn.Write(sendData)
 			if err != nil {
 				continue
 			}
+			testLogger.Info().Int("bytes", len(sendData)).Msg("UDP tester sent")
 
 			// Read response
 			buf := make([]byte, len(header)+len(testData))
@@ -434,9 +447,23 @@ func assertUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConf
 			if err != nil {
 				continue
 			}
+			testLogger.Info().Int("bytes", n).Msg("UDP tester received")
 
-			// Skip UDP header in response
-			if n > len(header) && bytes.Equal(buf[len(header):n], testData) {
+			// Find the actual data after the UDP header
+			var responseData []byte
+			if n > 10 { // Minimum SOCKS5 UDP header size is 10 bytes
+				switch buf[3] { // Address type
+				case 0x01: // IPv4
+					responseData = buf[10:n]
+				case 0x03: // Domain
+					domainLen := int(buf[4])
+					responseData = buf[5+domainLen+2 : n]
+				case 0x04: // IPv6
+					responseData = buf[22:n]
+				}
+			}
+
+			if responseData != nil && bytes.Equal(responseData, testData) {
 				successCount++
 			}
 		}
@@ -453,12 +480,14 @@ func assertUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConf
 			if err != nil {
 				continue
 			}
+			testLogger.Info().Int("data", len(testData)).Msg("UDP tester sent")
 
 			buf := make([]byte, len(testData))
 			n, err := conn.Read(buf)
 			if err != nil {
 				continue
 			}
+			testLogger.Info().Int("bytes", n).Msg("UDP tester received")
 
 			if n == len(testData) && string(buf[:n]) == string(testData) {
 				successCount++
@@ -469,6 +498,30 @@ func assertUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConf
 	if successCount < udpTestAttempts {
 		t.Errorf("UDP test failed: only %d/%d packets were successfully echoed", successCount, udpTestAttempts)
 	}
+}
+
+// apiRequest is a helper function to send API requests to the test server
+func apiRequest(t *testing.T, method, url string, apiKey string, body interface{}) (*http.Response, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		bodyBytes, err := json.Marshal(body)
+		require.NoError(t, err)
+		bodyReader = bytes.NewReader(bodyBytes)
+	}
+
+	req, err := http.NewRequest(method, url, bodyReader)
+	require.NoError(t, err)
+
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
+
+	client := &http.Client{}
+	return client.Do(req)
 }
 
 func TestHTTPServer(t *testing.T) {
@@ -484,6 +537,13 @@ func TestHTTPServerV6(t *testing.T) {
 
 func TestUDPServer(t *testing.T) {
 	assertUDPConnection(t, globalUDPServer, nil)
+}
+
+func TestUDPServerV6(t *testing.T) {
+	if !hasIPv6Support() {
+		t.Skip("IPv6 is not supported")
+	}
+	assertUDPConnection(t, globalUDPServerV6, nil)
 }
 
 func TestForwardProxy(t *testing.T) {
@@ -516,10 +576,40 @@ func TestUDPForwardProxy(t *testing.T) {
 	assertUDPConnection(t, globalUDPServer, &ProxyConfig{Port: env.Client.SocksPort})
 }
 
+func TestUDPForwardProxyDomain(t *testing.T) {
+	env := forwardProxy(t)
+	defer env.Close()
+	assertUDPConnection(t, globalUDPServerDomain, &ProxyConfig{Port: env.Client.SocksPort})
+}
+
+func TestUDPForwardProxyV6(t *testing.T) {
+	if !hasIPv6Support() {
+		t.Skip("IPv6 is not supported")
+	}
+	env := forwardProxy(t)
+	defer env.Close()
+	assertUDPConnection(t, globalUDPServerV6, &ProxyConfig{Port: env.Client.SocksPort})
+}
+
 func TestUDPReverseProxy(t *testing.T) {
 	env := reverseProxy(t)
 	defer env.Close()
 	assertUDPConnection(t, globalUDPServer, &ProxyConfig{Port: env.Server.SocksPort})
+}
+
+func TestUDPReverseProxyDomain(t *testing.T) {
+	env := reverseProxy(t)
+	defer env.Close()
+	assertUDPConnection(t, globalUDPServerDomain, &ProxyConfig{Port: env.Server.SocksPort})
+}
+
+func TestUDPReverseProxyV6(t *testing.T) {
+	if !hasIPv6Support() {
+		t.Skip("IPv6 is not supported")
+	}
+	env := reverseProxy(t)
+	defer env.Close()
+	assertUDPConnection(t, globalUDPServerV6, &ProxyConfig{Port: env.Server.SocksPort})
 }
 
 func TestForwardReconnect(t *testing.T) {
@@ -631,10 +721,10 @@ func TestReverseRemoveToken(t *testing.T) {
 	socksPort, err := getFreePort()
 	require.NoError(t, err)
 
-	// Create server with specific ports pool
 	wsPort, err := getFreePort()
 	require.NoError(t, err)
 
+	// Create server with specific ports pool
 	logger := createPrefixedLogger("SRV0")
 	serverOpt := wssocks.DefaultServerOption().
 		WithWSPort(wsPort).
@@ -678,6 +768,65 @@ func TestReverseRemoveToken(t *testing.T) {
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: port2}))
 }
 
+func TestApi(t *testing.T) {
+	wsPort, err := getFreePort()
+	require.NoError(t, err)
+
+	logger := createPrefixedLogger("SRV0")
+	serverOpt := wssocks.DefaultServerOption().
+		WithWSPort(wsPort).
+		WithLogger(logger).
+		WithAPI("TOKEN")
+	server := wssocks.NewWSSocksServer(serverOpt)
+	require.NoError(t, server.WaitReady(5*time.Second))
+	defer server.Close()
+
+	baseURL := fmt.Sprintf("http://localhost:%d", wsPort)
+
+	// Test access /
+	resp1, err1 := apiRequest(t, "GET", baseURL+"/", "", nil)
+	require.NoError(t, err1)
+	defer resp1.Body.Close()
+
+	body, err := io.ReadAll(resp1.Body)
+	require.NoError(t, err)
+	require.Contains(t, string(body), "API endpoints available")
+
+	// Test creating a forward token via API
+	resp2, err2 := apiRequest(t, "POST", baseURL+"/api/token", "TOKEN", wssocks.TokenRequest{
+		Type: "forward",
+	})
+	require.NoError(t, err2)
+	defer resp2.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp2.StatusCode)
+	var tokenResp wssocks.TokenResponse
+	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&tokenResp))
+	require.True(t, tokenResp.Success)
+	require.NotEmpty(t, tokenResp.Token)
+
+	// Start client and test connection
+	client := forwardClient(t, wsPort, tokenResp.Token)
+	defer client.Close()
+	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: client.SocksPort}))
+
+	// Test server status via API
+	resp3, err3 := apiRequest(t, "GET", baseURL+"/api/status", "TOKEN", nil)
+	require.NoError(t, err3)
+	defer resp3.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp3.StatusCode)
+	var statusResp wssocks.StatusResponse
+	require.NoError(t, json.NewDecoder(resp3.Body).Decode(&statusResp))
+	require.NotEmpty(t, statusResp.Tokens)
+
+	// Test unauthorized access
+	resp4, err4 := apiRequest(t, "GET", baseURL+"/api/status", "WRONG_KEY", nil)
+	require.NoError(t, err4)
+	defer resp4.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp4.StatusCode)
+}
+
 func TestMain(m *testing.M) {
 	// Initialize test logger
 	testLogger = createPrefixedLogger("TEST")
@@ -686,7 +835,7 @@ func TestMain(m *testing.M) {
 	var err error
 
 	// Start UDP echo server
-	globalUDPServer, cleanup, err = startUDPEchoServer(false)
+	globalUDPServer, globalUDPServerDomain, cleanup, err = startUDPEchoServer(false)
 	if err != nil {
 		testLogger.Fatal().Err(err).Msg("Failed to start UDP server")
 	}
@@ -694,7 +843,7 @@ func TestMain(m *testing.M) {
 
 	// Start UDP echo server (IPv6)
 	if hasIPv6Support() {
-		globalUDPServerV6, cleanup, err = startUDPEchoServer(true)
+		globalUDPServerV6, globalUDPServerV6Domain, cleanup, err = startUDPEchoServer(true)
 		if err != nil {
 			testLogger.Warn().Err(err).Msg("Failed to start IPv6 UDP server")
 		} else {
@@ -755,11 +904,11 @@ func getFreePort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
-// startUDPEchoServer starts a UDP echo server (IPv4 or IPv6) and returns its address
-func startUDPEchoServer(useIPv6 bool) (string, func(), error) {
+// startUDPEchoServer starts a UDP echo server (IPv4 or IPv6) and returns both IP and domain-based addresses
+func startUDPEchoServer(useIPv6 bool) (string, string, func(), error) {
 	port, err := getFreePort()
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 
 	network := "udp"
@@ -769,23 +918,26 @@ func startUDPEchoServer(useIPv6 bool) (string, func(), error) {
 		ip = "::1"
 		// Try IPv6 connection first
 		if conn, err := net.Dial("udp6", "[::1]:0"); err != nil {
-			return "", nil, fmt.Errorf("IPv6 not supported: %w", err)
+			return "", "", nil, fmt.Errorf("IPv6 not supported: %w", err)
 		} else {
 			conn.Close()
 		}
 	}
 
-	addr := fmt.Sprintf("%s:%d", ip, port)
+	// Create both IP and domain-based addresses
+	ipAddr := ip
 	if useIPv6 {
-		addr = fmt.Sprintf("[%s]:%d", ip, port)
+		ipAddr = fmt.Sprintf("[%s]", ip)
 	}
+	ipBasedAddr := fmt.Sprintf("%s:%d", ipAddr, port)
+	domainBasedAddr := fmt.Sprintf("localhost:%d", port)
 
 	conn, err := net.ListenUDP(network, &net.UDPAddr{
 		IP:   net.ParseIP(ip),
 		Port: port,
 	})
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 
 	done := make(chan struct{})
@@ -801,10 +953,13 @@ func startUDPEchoServer(useIPv6 bool) (string, func(), error) {
 				if err != nil {
 					continue
 				}
+				testLogger.Info().Int("bytes", n).Msg("UDP echo server received")
+
 				_, err = conn.WriteToUDP(buf[:n], remoteAddr)
 				if err != nil {
 					continue
 				}
+				testLogger.Info().Int("bytes", n).Msg("UDP echo server sent")
 			}
 		}
 	}()
@@ -814,7 +969,7 @@ func startUDPEchoServer(useIPv6 bool) (string, func(), error) {
 		conn.Close()
 	}
 
-	return addr, cleanup, nil
+	return ipBasedAddr, domainBasedAddr, cleanup, nil
 }
 
 // startTestHTTPServer starts a test HTTP server that returns 204 for /generate_204

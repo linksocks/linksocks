@@ -406,7 +406,10 @@ func (s *WSSocksServer) Serve(ctx context.Context) error {
 		}
 	}
 
-	s.log.Info().Str("addr", s.wsServer.Addr).Msg("WSSocks Server started")
+	s.log.Info().
+		Str("listen", s.wsServer.Addr).
+		Str("url", fmt.Sprintf("http://localhost:%d", s.wsPort)).
+		Msg("WSSocks Server started")
 	close(s.ready)
 
 	return s.wsServer.ListenAndServe()
