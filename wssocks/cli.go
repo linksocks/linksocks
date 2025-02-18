@@ -5,7 +5,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/erikdubbelboer/gspt"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -140,7 +139,7 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 
 	// Set process name if provided
 	if procTitle != "" {
-		gspt.SetProcTitle(procTitle)
+		setProcessTitle(procTitle)
 	}
 
 	// Create client instance with options
@@ -191,7 +190,7 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 
 	// Set process name if provided
 	if procTitle != "" {
-		gspt.SetProcTitle(procTitle)
+		setProcessTitle(procTitle)
 	}
 
 	// Create server options
