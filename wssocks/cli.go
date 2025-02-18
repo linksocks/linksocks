@@ -75,7 +75,6 @@ func (cli *CLI) initCommands() {
 	clientCmd.Flags().BoolP("socks-no-wait", "i", false, "Start the SOCKS server immediately")
 	clientCmd.Flags().BoolP("no-reconnect", "R", false, "Stop when the server disconnects")
 	clientCmd.Flags().BoolP("debug", "d", false, "Show debug logs")
-	clientCmd.Flags().StringP("proc-title", "", "", "Custom process title for display in process monitors")
 
 	// Bind environment variables
 	clientCmd.Flags().Lookup("token").Usage += " (env: WSSOCKS_TOKEN)"
@@ -86,7 +85,6 @@ func (cli *CLI) initCommands() {
 	_ = viper.BindEnv("socks-password", "WSSOCKS_SOCKS_PASSWORD")
 	_ = viper.BindPFlag("socks-password", clientCmd.Flags().Lookup("socks-password"))
 	_ = viper.BindEnv("proc-title", "WSSOCKS_PROC_TITLE")
-	_ = viper.BindPFlag("proc-title", clientCmd.Flags().Lookup("proc-title"))
 
 	// Mark required flags
 	clientCmd.MarkFlagRequired("token")
@@ -103,7 +101,6 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().BoolP("socks-nowait", "i", false, "Start the SOCKS server immediately")
 	serverCmd.Flags().BoolP("debug", "d", false, "Show debug logs")
 	serverCmd.Flags().StringP("api-key", "k", "", "Enable HTTP API with specified key")
-	serverCmd.Flags().StringP("proc-title", "", "", "Custom process title for display in process monitors")
 
 	// Bind environment variables
 	serverCmd.Flags().Lookup("token").Usage += " (env: WSSOCKS_TOKEN)"
@@ -114,7 +111,6 @@ func (cli *CLI) initCommands() {
 	_ = viper.BindEnv("socks-password", "WSSOCKS_SOCKS_PASSWORD")
 	_ = viper.BindPFlag("socks-password", serverCmd.Flags().Lookup("socks-password"))
 	_ = viper.BindEnv("proc-title", "WSSOCKS_PROC_TITLE")
-	_ = viper.BindPFlag("proc-title", serverCmd.Flags().Lookup("proc-title"))
 
 	// Add commands to root
 	cli.rootCmd.AddCommand(clientCmd, serverCmd, versionCmd)
@@ -132,15 +128,9 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	socksNoWait, _ := cmd.Flags().GetBool("socks-no-wait")
 	noReconnect, _ := cmd.Flags().GetBool("no-reconnect")
 	debug, _ := cmd.Flags().GetBool("debug")
-	procTitle := viper.GetString("proc-title")
 
 	// Setup logging
 	logger := cli.initLogging(debug)
-
-	// Set process name if provided
-	if procTitle != "" {
-		setProcessTitle(procTitle)
-	}
 
 	// Create client instance with options
 	clientOpt := DefaultClientOption().
@@ -183,15 +173,9 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 	socksPassword := viper.GetString("socks-password")
 	debug, _ := cmd.Flags().GetBool("debug")
 	apiKey, _ := cmd.Flags().GetString("api-key")
-	procTitle := viper.GetString("proc-title")
 
 	// Setup logging
 	logger := cli.initLogging(debug)
-
-	// Set process name if provided
-	if procTitle != "" {
-		setProcessTitle(procTitle)
-	}
 
 	// Create server options
 	serverOpt := DefaultServerOption().

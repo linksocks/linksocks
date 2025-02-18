@@ -3,7 +3,6 @@ module wssocks
 go 1.20
 
 require (
-	github.com/erikdubbelboer/gspt v0.0.0-20210805194459-ce36a5128377
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/rs/zerolog v1.33.0
