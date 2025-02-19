@@ -199,8 +199,8 @@ func convertWSPath(wsURL string) string {
 }
 
 // WaitReady waits for the client to be ready with optional timeout
-func (c *WSSocksClient) WaitReady(timeout time.Duration) error {
-	ctx, cancel := context.WithCancel(context.Background())
+func (c *WSSocksClient) WaitReady(ctx context.Context, timeout time.Duration) error {
+	ctx, cancel := context.WithCancel(ctx)
 
 	c.mu.Lock()
 	c.cancelFunc = cancel
@@ -218,12 +218,21 @@ func (c *WSSocksClient) WaitReady(timeout time.Duration) error {
 			return nil
 		case err := <-c.errors:
 			return err
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-time.After(timeout):
 			return fmt.Errorf("timeout waiting for client to be ready")
 		}
 	}
-	<-c.Connected
-	return nil
+
+	select {
+	case <-c.Connected:
+		return nil
+	case err := <-c.errors:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Connect starts the client operation

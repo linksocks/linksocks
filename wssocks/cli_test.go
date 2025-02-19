@@ -61,6 +61,7 @@ func TestClientCommand(t *testing.T) {
 				"--url", "ws://localhost:8765",
 				"--socks-host", "127.0.0.1",
 				"--socks-port", "1080",
+				"--no-reconnect",
 			},
 			wantErr: true, // Will error because can't actually connect
 		},
@@ -69,6 +70,14 @@ func TestClientCommand(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cli.rootCmd.SetArgs(tt.args)
+
+			// Create context with timeout
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+
+			// Set context to command
+			cli.rootCmd.SetContext(ctx)
+
 			err := cli.Execute()
 			if tt.wantErr {
 				assert.Error(t, err)

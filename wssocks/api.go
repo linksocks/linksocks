@@ -62,7 +62,8 @@ type TokenStatus struct {
 // ReverseTokenStatus represents the status of a reverse token
 type ReverseTokenStatus struct {
 	TokenStatus
-	Port int `json:"port"`
+	Port            int      `json:"port"`
+	ConnectorTokens []string `json:"connector_tokens,omitempty"` // List of associated connector tokens
 }
 
 // checkAPIKey verifies the API key in the request header
@@ -204,6 +205,14 @@ func (h *APIHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	h.server.mu.RLock()
 	tokens := make([]interface{}, 0)
+
+	// Create map of reverse tokens to their connector tokens
+	reverseToConnectors := make(map[string][]string)
+	for connectorToken, reverseToken := range h.server.connectorTokens {
+		reverseToConnectors[reverseToken] = append(reverseToConnectors[reverseToken], connectorToken)
+	}
+
+	// Add reverse tokens with their connector tokens
 	for token, port := range h.server.tokens {
 		tokens = append(tokens, ReverseTokenStatus{
 			TokenStatus: TokenStatus{
@@ -211,9 +220,12 @@ func (h *APIHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
 				Type:         "reverse",
 				ClientsCount: h.server.GetTokenClientCount(token),
 			},
-			Port: port,
+			Port:            port,
+			ConnectorTokens: reverseToConnectors[token],
 		})
 	}
+
+	// Add forward tokens
 	for token := range h.server.forwardTokens {
 		tokens = append(tokens, TokenStatus{
 			Token:        token,

@@ -64,6 +64,9 @@ type WSSocksServer struct {
 
 	// API server
 	apiKey string
+
+	// Error channel
+	errors chan error // Channel for errors
 }
 
 type clientInfo struct {
@@ -204,6 +207,7 @@ func NewWSSocksServer(opt *ServerOption) *WSSocksServer {
 		socketManager:   NewSocketManager(opt.SocksHost, opt.Logger),
 		apiKey:          opt.APIKey,
 		internalTokens:  make(map[string][]string),
+		errors:          make(chan error, 1), // Add error channel with buffer size 1
 	}
 
 	return s
@@ -570,30 +574,40 @@ func (s *WSSocksServer) Serve(ctx context.Context) error {
 }
 
 // WaitReady waits for the server to be ready with optional timeout
-func (s *WSSocksServer) WaitReady(timeout time.Duration) error {
-	ctx, cancel := context.WithCancel(context.Background())
+func (s *WSSocksServer) WaitReady(ctx context.Context, timeout time.Duration) error {
+	ctx, cancel := context.WithCancel(ctx)
 
 	s.mu.Lock()
 	s.cancelFunc = cancel
 	s.mu.Unlock()
 
-	task := make(chan error, 1)
 	go func() {
-		task <- s.Serve(ctx)
+		if err := s.Serve(ctx); err != nil {
+			s.errors <- err
+		}
 	}()
 
 	if timeout > 0 {
 		select {
 		case <-s.ready:
 			return nil
-		case err := <-task:
+		case err := <-s.errors:
 			return err
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-time.After(timeout):
 			return fmt.Errorf("timeout waiting for server to be ready")
 		}
 	}
-	<-s.ready
-	return nil
+
+	select {
+	case <-s.ready:
+		return nil
+	case err := <-s.errors:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // handleWebSocket handles WebSocket connection

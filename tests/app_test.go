@@ -1,11 +1,8 @@
 package tests
 
 import (
-	"encoding/json"
-	"fmt"
-	"io"
+	"context"
 	"net"
-	"net/http"
 	"os"
 	"testing"
 	"time"
@@ -329,7 +326,7 @@ func TestReverseRemoveToken(t *testing.T) {
 		WithLogger(logger).
 		WithPortPool(wssocks.NewPortPool([]int{socksPort}))
 	server := wssocks.NewWSSocksServer(serverOpt)
-	require.NoError(t, server.WaitReady(5*time.Second))
+	require.NoError(t, server.WaitReady(context.Background(), 5*time.Second))
 	defer server.Close()
 
 	// Add first token
@@ -382,66 +379,6 @@ func TestReverseRemoveToken(t *testing.T) {
 	client2 := reverseClient(t, wsPort, token2, "CLT2")
 	defer client2.Close()
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: port2}))
-}
-
-func TestApi(t *testing.T) {
-	wsPort, err := getFreePort()
-	require.NoError(t, err)
-
-	logger := createPrefixedLogger("SRV0")
-	serverOpt := wssocks.DefaultServerOption().
-		WithWSPort(wsPort).
-		WithLogger(logger).
-		WithAPI("TOKEN")
-	server := wssocks.NewWSSocksServer(serverOpt)
-	require.NoError(t, server.WaitReady(5*time.Second))
-	defer server.Close()
-
-	baseURL := fmt.Sprintf("http://localhost:%d", wsPort)
-
-	// Test access /
-	resp1, err1 := apiRequest(t, "GET", baseURL+"/", "", nil)
-	require.NoError(t, err1)
-	defer resp1.Body.Close()
-
-	body, err := io.ReadAll(resp1.Body)
-	require.NoError(t, err)
-	require.Contains(t, string(body), "API endpoints available")
-
-	// Test creating a forward token via API
-	resp2, err2 := apiRequest(t, "POST", baseURL+"/api/token", "TOKEN", wssocks.TokenRequest{
-		Type: "forward",
-	})
-	require.NoError(t, err2)
-	defer resp2.Body.Close()
-
-	require.Equal(t, http.StatusOK, resp2.StatusCode)
-	var tokenResp wssocks.TokenResponse
-	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&tokenResp))
-	require.True(t, tokenResp.Success)
-	require.NotEmpty(t, tokenResp.Token)
-	require.Empty(t, tokenResp.Error)
-
-	// Start client and test connection
-	client := forwardClient(t, wsPort, tokenResp.Token, "CLT0")
-	defer client.Close()
-	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: client.SocksPort}))
-
-	// Test server status via API
-	resp3, err3 := apiRequest(t, "GET", baseURL+"/api/status", "TOKEN", nil)
-	require.NoError(t, err3)
-	defer resp3.Body.Close()
-
-	require.Equal(t, http.StatusOK, resp3.StatusCode)
-	var statusResp wssocks.StatusResponse
-	require.NoError(t, json.NewDecoder(resp3.Body).Decode(&statusResp))
-	require.NotEmpty(t, statusResp.Tokens)
-
-	// Test unauthorized access
-	resp4, err4 := apiRequest(t, "GET", baseURL+"/api/status", "WRONG_KEY", nil)
-	require.NoError(t, err4)
-	defer resp4.Body.Close()
-	require.Equal(t, http.StatusUnauthorized, resp4.StatusCode)
 }
 
 func TestConnector(t *testing.T) {

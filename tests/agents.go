@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -90,7 +91,7 @@ func forwardServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 	require.NoError(t, err)
 	require.NotEmpty(t, token)
 
-	require.NoError(t, server.WaitReady(5*time.Second))
+	require.NoError(t, server.WaitReady(context.Background(), 5*time.Second))
 
 	return &ProxyTestServer{
 		Server: server,
@@ -114,7 +115,7 @@ func forwardClient(t *testing.T, wsPort int, token string, prefix string) *Proxy
 		WithLogger(logger)
 	client := wssocks.NewWSSocksClient(token, clientOpt)
 
-	require.NoError(t, client.WaitReady(5*time.Second))
+	require.NoError(t, client.WaitReady(context.Background(), 5*time.Second))
 
 	return &ProxyTestClient{
 		Client:    client,
@@ -192,7 +193,7 @@ func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 		require.NotEmpty(t, connectorToken)
 	}
 
-	require.NoError(t, server.WaitReady(5*time.Second))
+	require.NoError(t, server.WaitReady(context.Background(), 5*time.Second))
 
 	return &ProxyTestServer{
 		Server:         server,
@@ -215,7 +216,7 @@ func reverseClient(t *testing.T, wsPort int, token string, prefix string) *Proxy
 		WithLogger(logger)
 	client := wssocks.NewWSSocksClient(token, clientOpt)
 
-	require.NoError(t, client.WaitReady(5*time.Second))
+	require.NoError(t, client.WaitReady(context.Background(), 5*time.Second))
 
 	return &ProxyTestClient{
 		Client: client,

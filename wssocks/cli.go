@@ -24,10 +24,7 @@ func NewCLI() *CLI {
 
 // Execute runs the CLI application
 func (cli *CLI) Execute() error {
-	if err := cli.rootCmd.Execute(); err != nil {
-		os.Exit(1)
-	}
-	return nil
+	return cli.rootCmd.Execute()
 }
 
 // initCommands initializes all CLI commands and flags
@@ -165,7 +162,7 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	client := NewWSSocksClient(token, clientOpt)
 	defer client.Close()
 
-	if err := client.WaitReady(0); err != nil {
+	if err := client.WaitReady(cmd.Context(), 0); err != nil {
 		return err
 	}
 
@@ -178,10 +175,11 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 
 	// Wait for either client error or context cancellation
 	select {
+	case <-cmd.Context().Done():
+		client.Close()
+		return cmd.Context().Err()
 	case err := <-client.errors:
 		return err
-	case <-cmd.Context().Done():
-		return cmd.Context().Err()
 	}
 }
 
@@ -277,14 +275,18 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Run server
-	ctx := cmd.Context()
-	defer server.Close()
-	if err := server.Serve(ctx); err != nil {
-		return fmt.Errorf("server error: %w", err)
+	if err := server.WaitReady(cmd.Context(), 0); err != nil {
+		return err
 	}
 
-	return nil
+	// Wait for either server error or context cancellation
+	select {
+	case <-cmd.Context().Done():
+		server.Close()
+		return cmd.Context().Err()
+	case err := <-server.errors:
+		return err
+	}
 }
 
 // initLogging sets up zerolog with appropriate level
