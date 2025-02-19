@@ -57,7 +57,7 @@ jobs:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
         run: |
-          go build -o "wssocks-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}" cmd/main.go
+          go build -o "wssocks-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}" cmd/wssocks/main.go
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v1

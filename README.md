@@ -84,7 +84,7 @@ In autonomy mode:
 WSSocks can be installed by:
 
 ```bash
-go install github.com/zetxtech/wssocks/cmd@latest
+go install github.com/zetxtech/wssocks/cmd/wssocks@latest
 ```
 
 You can also download pre-built binaries for your architecture from the [releases page](https://github.com/zetxtech/wssocks/releases).
