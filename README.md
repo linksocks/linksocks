@@ -64,6 +64,16 @@ wssocks client -t example_token -u ws://localhost:8765 -r
 wssocks client -t example_connector_token -u ws://localhost:8765 -p 1180
 ```
 
+You can also use our public demo server:
+
+```bash
+# Client (as network connector)
+wssocks client -t wssocks -u wss://ws.zetx.tech -c example_connector_token -r
+
+# Client (SOCKS5 at port 1180)
+wssocks client -t example_connector_token -u wss://ws.zetx.tech -p 1180
+```
+
 Autonomy Agent Proxy (with `-a` flag):
 
 ```bash
