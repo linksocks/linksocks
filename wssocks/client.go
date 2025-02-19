@@ -20,6 +20,7 @@ import (
 type WSSocksClient struct {
 	Connected    chan struct{} // Channel that is closed when connection is established
 	Disconnected chan struct{} // Channel that is closed when connection is lost
+	errors       chan error    // Channel for errors
 
 	relay           *Relay
 	log             zerolog.Logger
@@ -55,6 +56,7 @@ type ClientOption struct {
 	ReconnectDelay  time.Duration
 	Logger          zerolog.Logger
 	BufferSize      int
+	ChannelTimeout  time.Duration
 }
 
 // DefaultClientOption returns default client options
@@ -69,6 +71,7 @@ func DefaultClientOption() *ClientOption {
 		ReconnectDelay:  5 * time.Second,
 		Logger:          zerolog.New(os.Stdout).With().Timestamp().Logger(),
 		BufferSize:      BufferSize,
+		ChannelTimeout:  ChannelTimeout,
 	}
 }
 
@@ -138,6 +141,12 @@ func (o *ClientOption) WithBufferSize(size int) *ClientOption {
 	return o
 }
 
+// WithChannelTimeout sets the channel timeout duration
+func (o *ClientOption) WithChannelTimeout(timeout time.Duration) *ClientOption {
+	o.ChannelTimeout = timeout
+	return o
+}
+
 // NewWSSocksClient creates a new WSSocksClient instance
 func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 	if opt == nil {
@@ -148,7 +157,7 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 	close(disconnected)
 
 	client := &WSSocksClient{
-		relay:           NewRelay(opt.Logger, opt.BufferSize),
+		relay:           NewRelay(opt.Logger, opt.BufferSize, opt.ChannelTimeout),
 		log:             opt.Logger,
 		token:           token,
 		wsURL:           opt.WSURL,
@@ -160,6 +169,7 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 		socksWaitServer: opt.SocksWaitServer,
 		reconnect:       opt.Reconnect,
 		reconnectDelay:  opt.ReconnectDelay,
+		errors:          make(chan error, 1),
 		Connected:       make(chan struct{}),
 		Disconnected:    make(chan struct{}),
 	}
@@ -196,16 +206,17 @@ func (c *WSSocksClient) WaitReady(timeout time.Duration) error {
 	c.cancelFunc = cancel
 	c.mu.Unlock()
 
-	task := make(chan error, 1)
 	go func() {
-		task <- c.Connect(ctx)
+		if err := c.Connect(ctx); err != nil {
+			c.errors <- err
+		}
 	}()
 
 	if timeout > 0 {
 		select {
 		case <-c.Connected:
 			return nil
-		case err := <-task:
+		case err := <-c.errors:
 			return err
 		case <-time.After(timeout):
 			return fmt.Errorf("timeout waiting for client to be ready")
@@ -386,10 +397,12 @@ func (c *WSSocksClient) startReverse(ctx context.Context) error {
 
 			// Send authentication
 			authMsg := AuthMessage{
-				Type:    "auth",
+				Type:    TypeAuth,
 				Reverse: true,
 				Token:   c.token,
 			}
+
+			c.relay.logMessage(authMsg, "send")
 			if err := wsConn.SyncWriteJSON(authMsg); err != nil {
 				wsConn.Close()
 				if c.reconnect {
@@ -520,6 +533,27 @@ func (c *WSSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) error
 					c.log.Debug().Str("connect_id", m.ConnectID).Msg("Received connect response for unknown channel")
 				}
 
+			case *DisconnectMessage:
+				if cancelVal, ok := c.relay.tcpChannels.LoadAndDelete(m.ChannelID); ok {
+					if cancel, ok := cancelVal.(context.CancelFunc); ok {
+						cancel()
+					}
+				}
+				if cancelVal, ok := c.relay.udpChannels.LoadAndDelete(m.ChannelID); ok {
+					if cancel, ok := cancelVal.(context.CancelFunc); ok {
+						cancel()
+					}
+				}
+				c.relay.udpClientAddrs.Delete(m.ChannelID)
+				c.relay.messageQueues.Delete(m.ChannelID)
+
+			case *ConnectorResponseMessage:
+				if queue, ok := c.relay.messageQueues.Load(m.ConnectID); ok {
+					queue.(chan ConnectorResponseMessage) <- *m
+				} else {
+					c.log.Debug().Str("connect_id", m.ConnectID).Msg("Received connector response for unknown channel")
+				}
+
 			default:
 				c.log.Warn().Str("type", msg.GetType()).Msg("Received unknown message type")
 			}
@@ -631,6 +665,9 @@ func (c *WSSocksClient) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Close relay
+	c.relay.Close()
+
 	// Close SOCKS listener if it exists
 	if c.socksListener != nil {
 		if err := c.socksListener.Close(); err != nil {
@@ -641,7 +678,7 @@ func (c *WSSocksClient) Close() {
 
 	// Close WebSocket connection if it exists
 	if c.websocket != nil {
-		if err := c.websocket.Close(); err != nil {
+		if err := c.websocket.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			c.log.Error().Err(err).Msg("Error closing WebSocket connection")
 		}
 		c.websocket = nil
@@ -654,4 +691,96 @@ func (c *WSSocksClient) Close() {
 	}
 
 	c.log.Debug().Msg("Client stopped")
+}
+
+// AddConnector sends a request to add a new connector token and waits for response.
+// This function is only available in reverse proxy mode.
+func (c *WSSocksClient) AddConnector(connectorToken string) (string, error) {
+	if !c.reverse {
+		return "", errors.New("add connector is only available in reverse proxy mode")
+	}
+
+	c.mu.RLock()
+	ws := c.websocket
+	c.mu.RUnlock()
+
+	if ws == nil {
+		return "", errors.New("client not connected")
+	}
+
+	connectID := generateRandomToken(8)
+	msg := ConnectorMessage{
+		Type:           TypeConnector,
+		Operation:      "add",
+		ConnectID:      connectID,
+		ConnectorToken: connectorToken,
+	}
+
+	// Create response channel
+	respChan := make(chan ConnectorResponseMessage, 1)
+	c.relay.messageQueues.Store(connectID, respChan)
+	defer c.relay.messageQueues.Delete(connectID)
+
+	// Send request
+	c.relay.logMessage(msg, "send")
+	if err := ws.SyncWriteJSON(msg); err != nil {
+		return "", fmt.Errorf("failed to send connector request: %w", err)
+	}
+
+	// Wait for response with timeout
+	select {
+	case resp := <-respChan:
+		if !resp.Success {
+			return "", fmt.Errorf("connector request failed: %s", resp.Error)
+		}
+		return resp.ConnectorToken, nil
+	case <-time.After(10 * time.Second):
+		return "", errors.New("timeout waiting for connector response")
+	}
+}
+
+// RemoveConnector sends a request to remove a connector token and waits for response.
+// This function is only available in reverse proxy mode.
+func (c *WSSocksClient) RemoveConnector(connectorToken string) error {
+	if !c.reverse {
+		return errors.New("remove connector is only available in reverse proxy mode")
+	}
+
+	c.mu.RLock()
+	ws := c.websocket
+	c.mu.RUnlock()
+
+	if ws == nil {
+		return errors.New("client not connected")
+	}
+
+	connectID := generateRandomToken(8)
+	msg := ConnectorMessage{
+		Type:           TypeConnector,
+		Operation:      "remove",
+		ConnectID:      connectID,
+		ConnectorToken: connectorToken,
+	}
+
+	// Create response channel
+	respChan := make(chan ConnectorResponseMessage, 1)
+	c.relay.messageQueues.Store(connectID, respChan)
+	defer c.relay.messageQueues.Delete(connectID)
+
+	// Send request
+	c.relay.logMessage(msg, "send")
+	if err := ws.SyncWriteJSON(msg); err != nil {
+		return fmt.Errorf("failed to send connector request: %w", err)
+	}
+
+	// Wait for response with timeout
+	select {
+	case resp := <-respChan:
+		if !resp.Success {
+			return fmt.Errorf("connector request failed: %s", resp.Error)
+		}
+		return nil
+	case <-time.After(10 * time.Second):
+		return errors.New("timeout waiting for connector response")
+	}
 }

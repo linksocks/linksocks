@@ -17,137 +17,106 @@ import (
 )
 
 const (
-	BufferSize          = 32 * 1024 // 32KB buffer size
-	TypeAuth            = "auth"
-	TypeAuthResponse    = "auth_response"
-	TypeConnect         = "connect"
-	TypeData            = "data"
-	TypeConnectResponse = "connect_response"
+	BufferSize     = 32 * 1024 // 32KB buffer size
+	ChannelTimeout = 12 * time.Hour
 )
-
-// BaseMessage defines the common interface for all message types
-type BaseMessage interface {
-	GetType() string
-}
-
-// AuthMessage represents an authentication request
-type AuthMessage struct {
-	Type    string `json:"type"`
-	Token   string `json:"token"`
-	Reverse bool   `json:"reverse"`
-}
-
-func (m AuthMessage) GetType() string {
-	return m.Type
-}
-
-// AuthResponseMessage represents an authentication response
-type AuthResponseMessage struct {
-	Type    string `json:"type"`
-	Success bool   `json:"success"`
-	Error   string `json:"error,omitempty"`
-}
-
-func (m AuthResponseMessage) GetType() string {
-	return m.Type
-}
-
-// ConnectMessage represents a TCP connection request
-type ConnectMessage struct {
-	Type      string `json:"type"`
-	Protocol  string `json:"protocol"`
-	ConnectID string `json:"connect_id"`
-	Address   string `json:"address,omitempty"` // tcp only
-	Port      int    `json:"port,omitempty"`    // tcp only
-}
-
-func (m ConnectMessage) GetType() string {
-	return m.Type
-}
-
-// ConnectResponseMessage represents a connection response
-type ConnectResponseMessage struct {
-	Type      string `json:"type"`
-	Success   bool   `json:"success"`
-	Error     string `json:"error,omitempty"`
-	ChannelID string `json:"channel_id"`
-	ConnectID string `json:"connect_id"`
-	Protocol  string `json:"protocol"`
-}
-
-func (m ConnectResponseMessage) GetType() string {
-	return m.Type
-}
-
-// DataMessage represents a data transfer message
-type DataMessage struct {
-	Type       string `json:"type"`
-	Protocol   string `json:"protocol"`
-	ChannelID  string `json:"channel_id"`
-	Data       string `json:"data"`                  // hex encoded
-	Address    string `json:"address,omitempty"`     // udp only
-	Port       int    `json:"port,omitempty"`        // udp only
-	TargetAddr string `json:"target_addr,omitempty"` // udp only
-	TargetPort int    `json:"target_port,omitempty"` // udp only
-}
-
-func (m DataMessage) GetType() string {
-	return m.Type
-}
-
-func unmarshalMessage[T any](data []byte) (*T, error) {
-	var msg T
-	if err := json.Unmarshal(data, &msg); err != nil {
-		return nil, err
-	}
-	return &msg, nil
-}
-
-func ParseMessage(data []byte) (BaseMessage, error) {
-	var typeOnly struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(data, &typeOnly); err != nil {
-		return nil, fmt.Errorf("failed to parse message type: %w", err)
-	}
-
-	switch typeOnly.Type {
-	case TypeAuth:
-		return unmarshalMessage[AuthMessage](data)
-	case TypeAuthResponse:
-		return unmarshalMessage[AuthResponseMessage](data)
-	case TypeConnect:
-		return unmarshalMessage[ConnectMessage](data)
-	case TypeConnectResponse:
-		return unmarshalMessage[ConnectResponseMessage](data)
-	case TypeData:
-		return unmarshalMessage[DataMessage](data)
-	default:
-		return nil, fmt.Errorf("unknown message type: %s", typeOnly.Type)
-	}
-}
 
 // Relay handles stream transport between SOCKS5 and WebSocket
 type Relay struct {
 	log            zerolog.Logger
 	messageQueues  sync.Map // map[string]chan Message
-	tcpChannels    sync.Map // map[string]net.Conn
-	udpChannels    sync.Map // map[string]*net.UDPConn
+	tcpChannels    sync.Map // map[string]context.CancelFunc
+	udpChannels    sync.Map // map[string]context.CancelFunc
 	udpClientAddrs sync.Map // map[string]*net.UDPAddr
+	lastActivity   sync.Map // map[string]time.Time
 	bufferSize     int
+	channelTimeout time.Duration
+	done           chan struct{}
 }
 
 // NewRelay creates a new Relay instance
-func NewRelay(logger zerolog.Logger, bufferSize int) *Relay {
+func NewRelay(logger zerolog.Logger, bufferSize int, channelTimeout time.Duration) *Relay {
 	// If buffer size is not positive, use default
 	if bufferSize <= 0 {
 		bufferSize = BufferSize
 	}
 
-	return &Relay{
-		log:        logger,
-		bufferSize: bufferSize,
+	// If channel timeout is not positive, use default
+	if channelTimeout <= 0 {
+		channelTimeout = ChannelTimeout
 	}
+
+	r := &Relay{
+		log:            logger,
+		bufferSize:     bufferSize,
+		channelTimeout: channelTimeout,
+		done:           make(chan struct{}),
+	}
+
+	// Start timeout checker
+	go r.checkTimeouts()
+
+	return r
+}
+
+// Add new method to check timeouts
+func (r *Relay) checkTimeouts() {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.done:
+			return
+		case <-ticker.C:
+			now := time.Now()
+
+			// Check TCP channels
+			r.tcpChannels.Range(func(key, value interface{}) bool {
+				channelID := key.(string)
+				cancel := value.(context.CancelFunc)
+
+				if lastTime, ok := r.lastActivity.Load(channelID); ok {
+					if now.Sub(lastTime.(time.Time)) > r.channelTimeout {
+						r.log.Debug().
+							Str("channel_id", channelID).
+							Str("type", "tcp").
+							Dur("timeout", r.channelTimeout).
+							Msg("Channel timed out, closing")
+						cancel()
+						r.tcpChannels.Delete(channelID)
+						r.lastActivity.Delete(channelID)
+					}
+				}
+				return true
+			})
+
+			// Check UDP channels
+			r.udpChannels.Range(func(key, value interface{}) bool {
+				channelID := key.(string)
+				cancel := value.(context.CancelFunc)
+
+				if lastTime, ok := r.lastActivity.Load(channelID); ok {
+					if now.Sub(lastTime.(time.Time)) > r.channelTimeout {
+						r.log.Debug().
+							Str("channel_id", channelID).
+							Str("type", "udp").
+							Dur("timeout", r.channelTimeout).
+							Msg("Channel timed out, closing")
+						cancel()
+						r.udpChannels.Delete(channelID)
+						r.lastActivity.Delete(channelID)
+					}
+				}
+				return true
+			})
+		}
+	}
+}
+
+// Add new method to update activity timestamp
+func (r *Relay) updateActivityTime(channelID string) {
+	r.lastActivity.Store(channelID, time.Now())
 }
 
 // RefuseSocksRequest refuses a SOCKS5 client request with the specified reason
@@ -237,11 +206,14 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 		return fmt.Errorf("tcp connect error: %w", err)
 	}
 
-	// Store connection
-	r.tcpChannels.Store(channelID, conn)
+	// Create child context
+	childCtx, cancel := context.WithCancel(ctx)
+	r.tcpChannels.Store(channelID, cancel)
 	defer func() {
+		cancel()
 		conn.Close()
 		r.tcpChannels.Delete(channelID)
+		r.lastActivity.Delete(channelID)
 	}()
 
 	// Send success response
@@ -257,8 +229,8 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 		return fmt.Errorf("write success response error: %w", err)
 	}
 
-	// Start relay
-	return r.HandleRemoteTCPForward(ctx, ws, conn, channelID)
+	// Start relay with child context
+	return r.HandleRemoteTCPForward(childCtx, ws, conn, channelID)
 }
 
 // HandleUDPConnection handles UDP network connection
@@ -291,11 +263,14 @@ func (r *Relay) HandleUDPConnection(ctx context.Context, ws *WSConn, request Con
 		}
 	}
 
-	// Store connection
-	r.udpChannels.Store(channelID, conn)
+	// Create child context
+	childCtx, cancel := context.WithCancel(ctx)
+	r.udpChannels.Store(channelID, cancel)
 	defer func() {
+		cancel()
 		conn.Close()
 		r.udpChannels.Delete(channelID)
+		r.lastActivity.Delete(channelID)
 	}()
 
 	// Send success response
@@ -311,8 +286,8 @@ func (r *Relay) HandleUDPConnection(ctx context.Context, ws *WSConn, request Con
 		return fmt.Errorf("write success response error: %w", err)
 	}
 
-	// Start relay
-	return r.HandleRemoteUDPForward(ctx, ws, conn, channelID)
+	// Start relay with child context
+	return r.HandleRemoteUDPForward(childCtx, ws, conn, channelID)
 }
 
 // HandleSocksRequest handles incoming SOCKS5 client request
@@ -590,7 +565,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 		}()
 
 		// Start UDP relay
-		return r.HandleSocksUDPForward(ctx, ws, udpConn, response.ChannelID)
+		return r.HandleSocksUDPForward(ctx, ws, udpConn, socksConn, response.ChannelID)
 
 	default:
 		return fmt.Errorf("unsupported command: %d", cmd)
@@ -599,6 +574,9 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 
 // HandleRemoteTCPForward handles remote TCP forwarding
 func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteConn net.Conn, channelID string) error {
+	// Initialize activity time
+	r.updateActivityTime(channelID)
+
 	msgChan := make(chan DataMessage, 100)
 	r.messageQueues.Store(channelID, msgChan)
 	defer r.messageQueues.Delete(channelID)
@@ -614,7 +592,23 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 		for {
 			n, err := remoteConn.Read(buffer)
 			if err != nil {
-				if err != io.EOF {
+				if err == io.EOF {
+					r.log.Debug().Msg("Remote connection closed")
+					disconnectMsg := DisconnectMessage{
+						Type:      TypeDisconnect,
+						ChannelID: channelID,
+					}
+					r.logMessage(disconnectMsg, "send")
+					ws.SyncWriteJSON(disconnectMsg)
+				} else if opErr, ok := err.(*net.OpError); ok {
+					if errors.Is(opErr.Err, net.ErrClosed) {
+						r.log.Debug().Msg("TCP connection closed as instructed by connector")
+					} else {
+						r.log.Error().Err(err).Msg("Remote TCP read error")
+						errChan <- fmt.Errorf("remote read error: %w", err)
+					}
+				} else {
+					r.log.Error().Err(err).Msg("Unexpected connection error")
 					errChan <- fmt.Errorf("remote read error: %w", err)
 				}
 				return
@@ -622,6 +616,9 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 			if n == 0 {
 				return
 			}
+
+			// Update activity time
+			r.updateActivityTime(channelID)
 
 			msg := DataMessage{
 				Type:      TypeData,
@@ -646,6 +643,9 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 			case <-ctx.Done():
 				return
 			case msg := <-msgChan:
+				// Update activity time
+				r.updateActivityTime(channelID)
+
 				data, err := hex.DecodeString(msg.Data)
 				if err != nil {
 					errChan <- fmt.Errorf("hex decode error: %w", err)
@@ -681,6 +681,9 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 
 // HandleRemoteUDPForward handles remote UDP forwarding
 func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn *net.UDPConn, channelID string) error {
+	// Initialize activity time
+	r.updateActivityTime(channelID)
+
 	msgChan := make(chan DataMessage, 100)
 	r.messageQueues.Store(channelID, msgChan)
 	defer r.messageQueues.Delete(channelID)
@@ -696,11 +699,21 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 		for {
 			n, remoteAddr, err := udpConn.ReadFromUDP(buffer)
 			if err != nil {
-				if !errors.Is(err, net.ErrClosed) {
+				if opErr, ok := err.(*net.OpError); ok {
+					if errors.Is(opErr.Err, net.ErrClosed) {
+						r.log.Debug().Msg("UDP port closed as instructed by connector")
+					} else {
+						r.log.Error().Err(err).Msg("Remote UDP read error")
+						errChan <- fmt.Errorf("udp read error: %w", err)
+					}
+				} else {
 					errChan <- fmt.Errorf("udp read error: %w", err)
 				}
 				return
 			}
+
+			// Update activity time
+			r.updateActivityTime(channelID)
 
 			msg := DataMessage{
 				Type:      TypeData,
@@ -727,6 +740,9 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 			case <-ctx.Done():
 				return
 			case msg := <-msgChan:
+				// Update activity time
+				r.updateActivityTime(channelID)
+
 				data, err := hex.DecodeString(msg.Data)
 				if err != nil {
 					errChan <- fmt.Errorf("hex decode error: %w", err)
@@ -797,11 +813,29 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 
 // HandleSocksTCPForward handles TCP forwarding between SOCKS client and WebSocket
 func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn net.Conn, channelID string) error {
+	// Create a child context that can be cancelled
+	ctx, cancel := context.WithCancel(ctx)
+	r.tcpChannels.Store(channelID, cancel)
+	defer func() {
+		cancel()
+		r.tcpChannels.Delete(channelID)
+		r.lastActivity.Delete(channelID)
+	}()
+
+	// Send disconnect message
+	defer func() {
+		disconnectMsg := DisconnectMessage{
+			Type:      TypeDisconnect,
+			ChannelID: channelID,
+		}
+		r.logMessage(disconnectMsg, "send")
+		ws.SyncWriteJSON(disconnectMsg)
+	}()
+
 	// Create message queue for this channel
 	msgChan := make(chan DataMessage, 100)
 	r.messageQueues.Store(channelID, msgChan)
 	defer r.messageQueues.Delete(channelID)
-	defer socksConn.Close()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -810,6 +844,7 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 	// SOCKS to WebSocket
 	go func() {
 		defer wg.Done()
+		defer cancel() // Cancel context when this goroutine exits
 		buffer := make([]byte, r.bufferSize)
 		for {
 			n, err := socksConn.Read(buffer)
@@ -822,6 +857,9 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 			if n == 0 {
 				return
 			}
+
+			// Update activity time
+			r.updateActivityTime(channelID)
 
 			msg := DataMessage{
 				Type:      TypeData,
@@ -846,6 +884,9 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 			case <-ctx.Done():
 				return
 			case msg := <-msgChan:
+				// Update activity time
+				r.updateActivityTime(channelID)
+
 				data, err := hex.DecodeString(msg.Data)
 				if err != nil {
 					errChan <- fmt.Errorf("hex decode error: %w", err)
@@ -880,19 +921,48 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 }
 
 // HandleSocksUDPForward handles SOCKS5 UDP forwarding
-func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *net.UDPConn, channelID string) error {
+func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *net.UDPConn, socksConn net.Conn, channelID string) error {
+	// Create a child context that can be cancelled
+	ctx, cancel := context.WithCancel(ctx)
+	r.udpChannels.Store(channelID, cancel)
+	defer func() {
+		cancel()
+		r.udpChannels.Delete(channelID)
+		r.lastActivity.Delete(channelID)
+	}()
+
+	// Send disconnect message on exit
+	defer func() {
+		disconnectMsg := DisconnectMessage{
+			Type:      TypeDisconnect,
+			ChannelID: channelID,
+		}
+		r.logMessage(disconnectMsg, "send")
+		ws.SyncWriteJSON(disconnectMsg)
+	}()
+
 	msgChan := make(chan DataMessage, 100)
 	r.messageQueues.Store(channelID, msgChan)
 	defer r.messageQueues.Delete(channelID)
-	defer udpConn.Close()
 
 	var wg sync.WaitGroup
-	wg.Add(2)
-	errChan := make(chan error, 2)
+	wg.Add(3)
+	errChan := make(chan error, 3)
+
+	// Monitor TCP connection for closure
+	go func() {
+		defer wg.Done()
+		defer cancel() // Cancel context when TCP connection closes
+		buffer := make([]byte, 1)
+		socksConn.Read(buffer)
+		udpConn.Close()
+		r.log.Debug().Msg("SOCKS TCP connection closed")
+	}()
 
 	// UDP to WebSocket with SOCKS5 header handling
 	go func() {
 		defer wg.Done()
+		defer cancel() // Cancel context when this goroutine exits
 		buffer := make([]byte, BufferSize)
 		for {
 			n, remoteAddr, err := udpConn.ReadFromUDP(buffer)
@@ -937,6 +1007,9 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 					continue
 				}
 
+				// Update activity time
+				r.updateActivityTime(channelID)
+
 				msg := DataMessage{
 					Type:       TypeData,
 					Protocol:   "udp",
@@ -963,6 +1036,9 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 			case <-ctx.Done():
 				return
 			case msg := <-msgChan:
+				// Update activity time
+				r.updateActivityTime(channelID)
+
 				data, err := hex.DecodeString(msg.Data)
 				if err != nil {
 					errChan <- fmt.Errorf("hex decode error: %w", err)
@@ -1052,4 +1128,41 @@ func (r *Relay) logMessage(msg BaseMessage, direction string) {
 
 	logEvent = logEvent.Interface("msg", msgMap)
 	logEvent.Msgf("WebSocket message TYPE=%s DIRECTION=%s", msg.GetType(), direction)
+}
+
+// Close gracefully shuts down the Relay
+func (r *Relay) Close() {
+	close(r.done)
+
+	// Cancel all active TCP channels
+	r.tcpChannels.Range(func(key, value interface{}) bool {
+		if cancel, ok := value.(context.CancelFunc); ok {
+			cancel()
+		}
+		r.tcpChannels.Delete(key)
+		return true
+	})
+
+	// Cancel all active UDP channels
+	r.udpChannels.Range(func(key, value interface{}) bool {
+		if cancel, ok := value.(context.CancelFunc); ok {
+			cancel()
+		}
+		r.udpChannels.Delete(key)
+		return true
+	})
+
+	// Clear all maps
+	r.messageQueues.Range(func(key, value interface{}) bool {
+		r.messageQueues.Delete(key)
+		return true
+	})
+	r.udpClientAddrs.Range(func(key, value interface{}) bool {
+		r.udpClientAddrs.Delete(key)
+		return true
+	})
+	r.lastActivity.Range(func(key, value interface{}) bool {
+		r.lastActivity.Delete(key)
+		return true
+	})
 }

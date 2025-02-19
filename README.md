@@ -14,8 +14,8 @@ For python version, please check [zetxtech/pywssocks](https://github.com/zetxtec
 
 ## Features
 
-1. Both client and server modes, supporting command-line usage or library integration.
-2. Forward and reverse proxy capabilities.
+1. Supporting command-line usage, API server, and library integration.
+2. Forward, reverse and agent proxy modes.
 3. Round-robin load balancing for reverse proxy.
 4. SOCKS proxy authentication support.
 5. IPv6 over SOCKS5 support.
@@ -41,7 +41,7 @@ wssocks server -t example_token
 wssocks client -t example_token -u ws://localhost:8765 -p 1080
 ```
 
-Reverse Proxy:
+Reverse Proxy (with `-r` flag):
 
 ```bash
 # Server (WebSockets at port 8765, SOCKS at port 1080)
@@ -50,6 +50,34 @@ wssocks server -t example_token -p 1080 -r
 # Client (as network connector)
 wssocks client -t example_token -u ws://localhost:8765 -r
 ```
+
+Agent Proxy (with `-c` flag for connectors' token):
+
+```bash
+# Server (WebSockets at port 8765, SOCKS at port 1080)
+wssocks server -t example_token -c example_connector_token -p 1080 -r
+
+# Client (as network connector)
+wssocks client -t example_token -u ws://localhost:8765 -r
+
+# Connector (SOCKS5 at port 1180)
+wssocks client -t example_connector_token -u ws://localhost:8765 -p 1180
+```
+
+Autonomy Agent Proxy (with `-a` flag):
+
+```bash
+# Server (WebSocket at port 8765, autonomy mode)
+wssocks server -r -t example_token -a
+
+# Client (as network connector, with connector token)
+wssocks client -r -t example_token -c example_connector_token
+```
+
+In autonomy mode:
+1. The server's SOCKS proxy will not start listening.
+2. Reverse clients can specify their own connector tokens.
+3. Load balancing is disabled - each connector's requests will only be routed to its corresponding reverse client.
 
 ## Installation
 
@@ -123,6 +151,18 @@ Adds a new reverse proxy token with specified SOCKS settings.
 
 ```
 DELETE /api/token/{token}
+```
+
+Or
+
+```
+DELETE /api/token
+
+Content-Type: application/json
+
+{
+    "token": "token_to_delete"
+}
 ```
 
 Removes the specified token.

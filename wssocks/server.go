@@ -43,11 +43,16 @@ type WSSocksServer struct {
 	clients map[uuid.UUID]*WSConn // Maps client ID to WebSocket connection
 
 	// Token management
-	forwardTokens map[string]struct{}     // Set of valid forward proxy tokens
-	tokens        map[string]int          // Maps reverse proxy tokens to ports
-	tokenClients  map[string][]clientInfo // Maps tokens to their connected clients
-	tokenIndexes  map[string]int          // Round-robin indexes for load balancing
-	socksAuth     map[string]authInfo     // SOCKS authentication info per token
+	forwardTokens   map[string]struct{}             // Set of valid forward proxy tokens
+	tokens          map[string]int                  // Maps reverse proxy tokens to ports
+	tokenClients    map[string][]clientInfo         // Maps tokens to their connected clients
+	tokenIndexes    map[string]int                  // Round-robin indexes for load balancing
+	tokenOptions    map[string]*ReverseTokenOptions // options per token
+	connectorTokens map[string]string               // Maps connector tokens to their reverse tokens
+	internalTokens  map[string][]string             // Maps original token to list of internal tokens
+
+	// Connector management
+	connCache *connectorCache
 
 	// Active SOCKS servers
 	socksTasks map[int]context.CancelFunc // Active SOCKS server tasks
@@ -66,14 +71,27 @@ type clientInfo struct {
 	Conn *WSConn
 }
 
-type authInfo struct {
-	Username string
-	Password string
-}
-
 type waitingSocket struct {
 	listener    net.Listener
 	cancelTimer *time.Timer
+}
+
+type connectorCache struct {
+	connectIDToConnector map[string]*WSConn  // Maps connect_id to reverse client WebSocket connection
+	channelIDToClient    map[string]*WSConn  // Maps channel_id to reverse client WebSocket connection
+	channelIDToConnector map[string]*WSConn  // Maps channel_id to connector WebSocket connection
+	tokenCache           map[string][]string // Maps token to list of connect_ids and channel_ids
+	mu                   sync.RWMutex
+}
+
+// newConnectorCache creates a new connector cache
+func newConnectorCache() *connectorCache {
+	return &connectorCache{
+		connectIDToConnector: make(map[string]*WSConn),
+		channelIDToClient:    make(map[string]*WSConn),
+		channelIDToConnector: make(map[string]*WSConn),
+		tokenCache:           make(map[string][]string),
+	}
 }
 
 // ServerOption represents configuration options for WSSocksServer
@@ -86,6 +104,7 @@ type ServerOption struct {
 	Logger          zerolog.Logger
 	BufferSize      int
 	APIKey          string
+	ChannelTimeout  time.Duration
 }
 
 // DefaultServerOption returns default server options
@@ -99,6 +118,7 @@ func DefaultServerOption() *ServerOption {
 		Logger:          zerolog.New(os.Stdout).With().Timestamp().Logger(),
 		BufferSize:      BufferSize,
 		APIKey:          "",
+		ChannelTimeout:  ChannelTimeout,
 	}
 }
 
@@ -150,6 +170,12 @@ func (o *ServerOption) WithAPI(apiKey string) *ServerOption {
 	return o
 }
 
+// WithChannelTimeout sets the channel timeout duration
+func (o *ServerOption) WithChannelTimeout(timeout time.Duration) *ServerOption {
+	o.ChannelTimeout = timeout
+	return o
+}
+
 // NewWSSocksServer creates a new WSSocksServer instance
 func NewWSSocksServer(opt *ServerOption) *WSSocksServer {
 	if opt == nil {
@@ -157,7 +183,7 @@ func NewWSSocksServer(opt *ServerOption) *WSSocksServer {
 	}
 
 	s := &WSSocksServer{
-		relay:           NewRelay(opt.Logger, opt.BufferSize),
+		relay:           NewRelay(opt.Logger, opt.BufferSize, opt.ChannelTimeout),
 		log:             opt.Logger,
 		wsHost:          opt.WSHost,
 		wsPort:          opt.WSPort,
@@ -169,12 +195,15 @@ func NewWSSocksServer(opt *ServerOption) *WSSocksServer {
 		tokens:          make(map[string]int),
 		tokenClients:    make(map[string][]clientInfo),
 		tokenIndexes:    make(map[string]int),
-		socksAuth:       make(map[string]authInfo),
+		connectorTokens: make(map[string]string),
+		connCache:       newConnectorCache(),
+		tokenOptions:    make(map[string]*ReverseTokenOptions),
 		socksTasks:      make(map[int]context.CancelFunc),
 		socksWaitClient: opt.SocksWaitClient,
 		waitingSockets:  make(map[int]*waitingSocket),
 		socketManager:   NewSocketManager(opt.SocksHost, opt.Logger),
 		apiKey:          opt.APIKey,
+		internalTokens:  make(map[string][]string),
 	}
 
 	return s
@@ -189,24 +218,54 @@ func generateRandomToken(length int) string {
 
 // ReverseTokenOptions represents configuration options for reverse token
 type ReverseTokenOptions struct {
-	Token    string
-	Port     int
-	Username string
-	Password string
+	Token                string
+	Port                 int
+	Username             string
+	Password             string
+	AllowManageConnector bool // Allows managing connectors via WebSocket messages
 }
 
 // DefaultReverseTokenOptions returns default options for reverse token
 func DefaultReverseTokenOptions() *ReverseTokenOptions {
 	return &ReverseTokenOptions{
-		Token: "", // Will be auto-generated
-		Port:  0,  // Will be assigned from pool
+		Token:                "",    // Will be auto-generated
+		Port:                 0,     // Will be assigned from pool
+		AllowManageConnector: false, // Default to false for security
 	}
 }
 
+// tokenExists checks if a token already exists in any form (forward, reverse, or connector)
+func (s *WSSocksServer) tokenExists(token string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Check if token exists as a forward token
+	if _, exists := s.forwardTokens[token]; exists {
+		return true
+	}
+
+	// Check if token exists as a reverse token
+	if _, exists := s.tokens[token]; exists {
+		return true
+	}
+
+	// Check if token exists as a connector token
+	if _, exists := s.connectorTokens[token]; exists {
+		return true
+	}
+
+	return false
+}
+
 // AddReverseToken adds a new token for reverse socks and assigns a port
-func (s *WSSocksServer) AddReverseToken(opts *ReverseTokenOptions) (string, int) {
+func (s *WSSocksServer) AddReverseToken(opts *ReverseTokenOptions) (string, int, error) {
 	if opts == nil {
 		opts = DefaultReverseTokenOptions()
+	}
+
+	// If token is provided, check if it already exists
+	if opts.Token != "" && s.tokenExists(opts.Token) {
+		return "", 0, fmt.Errorf("token already exists")
 	}
 
 	s.mu.Lock()
@@ -218,25 +277,28 @@ func (s *WSSocksServer) AddReverseToken(opts *ReverseTokenOptions) (string, int)
 		token = generateRandomToken(16)
 	}
 
+	// For autonomy tokens, don't allocate a port
+	if opts.AllowManageConnector {
+		s.tokens[token] = -1 // Use -1 to indicate no SOCKS port
+		s.tokenOptions[token] = opts
+		s.log.Info().Msg("New autonomy reverse token added")
+		return token, -1, nil
+	}
+
 	// Check if token already exists
 	if existingPort, exists := s.tokens[token]; exists {
-		return token, existingPort
+		return token, existingPort, nil
 	}
 
 	// Get port from pool
 	assignedPort := s.portPool.Get(opts.Port)
 	if assignedPort == 0 {
-		return "", 0
+		return "", 0, fmt.Errorf("cannot allocate port: %d", opts.Port)
 	}
 
 	// Store token information
 	s.tokens[token] = assignedPort
-	if opts.Username != "" && opts.Password != "" {
-		s.socksAuth[token] = authInfo{
-			Username: opts.Username,
-			Password: opts.Password,
-		}
-	}
+	s.tokenOptions[token] = opts
 
 	// Start SOCKS server immediately if we're not waiting for clients
 	if s.wsServer != nil && !s.socksWaitClient {
@@ -250,11 +312,16 @@ func (s *WSSocksServer) AddReverseToken(opts *ReverseTokenOptions) (string, int)
 	}
 
 	s.log.Info().Int("port", assignedPort).Msg("New reverse proxy token added")
-	return token, assignedPort
+	return token, assignedPort, nil
 }
 
 // AddForwardToken adds a new token for forward socks proxy
-func (s *WSSocksServer) AddForwardToken(token string) string {
+func (s *WSSocksServer) AddForwardToken(token string) (string, error) {
+	// Check if token already exists
+	if token != "" && s.tokenExists(token) {
+		return "", fmt.Errorf("token already exists")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -264,7 +331,35 @@ func (s *WSSocksServer) AddForwardToken(token string) string {
 
 	s.forwardTokens[token] = struct{}{}
 	s.log.Info().Msg("New forward proxy token added")
-	return token
+	return token, nil
+}
+
+// AddConnectorToken adds a new connector token that forwards requests to a reverse token
+func (s *WSSocksServer) AddConnectorToken(connectorToken string, reverseToken string) (string, error) {
+	// Check if connector token already exists
+	if connectorToken != "" && s.tokenExists(connectorToken) {
+		return "", fmt.Errorf("connector token already exists")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Generate random token if not provided
+	if connectorToken == "" {
+		connectorToken = generateRandomToken(16)
+	}
+
+	// Verify reverse token exists
+	if _, exists := s.tokens[reverseToken]; !exists {
+		return "", fmt.Errorf("reverse token does not exist")
+	}
+
+	// Store connector token mapping
+	s.connectorTokens[connectorToken] = reverseToken
+
+	s.log.Info().Msg("New connector token added")
+
+	return connectorToken, nil
 }
 
 // RemoveToken removes a token and disconnects all its clients
@@ -272,15 +367,64 @@ func (s *WSSocksServer) RemoveToken(token string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check if token exists
-	if _, isReverse := s.tokens[token]; !isReverse {
-		if _, isForward := s.forwardTokens[token]; !isForward {
-			return false
+	// Clean up any internal tokens first
+	if internalTokens, exists := s.internalTokens[token]; exists {
+		for _, internalToken := range internalTokens {
+			// Clean up internal token data
+			if clients, ok := s.tokenClients[internalToken]; ok {
+				for _, client := range clients {
+					client.Conn.Close()
+					delete(s.clients, client.ID)
+				}
+				delete(s.tokenClients, internalToken)
+			}
+			delete(s.tokens, internalToken)
+			delete(s.tokenIndexes, internalToken)
+			delete(s.tokenOptions, internalToken)
 		}
+		delete(s.internalTokens, token)
+	}
+
+	// Handle connector proxy token
+	if _, isConnector := s.connectorTokens[token]; isConnector {
+		// Clean up connector cache
+		s.connCache.mu.Lock()
+		if ids, exists := s.connCache.tokenCache[token]; exists {
+			for _, id := range ids {
+				delete(s.connCache.connectIDToConnector, id)
+				delete(s.connCache.channelIDToClient, id)
+				delete(s.connCache.channelIDToConnector, id)
+			}
+			delete(s.connCache.tokenCache, token)
+		}
+		s.connCache.mu.Unlock()
+
+		// Close all client connections for this token
+		if clients, ok := s.tokenClients[token]; ok {
+			for _, client := range clients {
+				client.Conn.Close()
+				delete(s.clients, client.ID)
+			}
+			delete(s.tokenClients, token)
+		}
+
+		// Clean up token related data
+		delete(s.connectorTokens, token)
+
+		s.log.Info().Str("token", token).Msg("Connector token removed")
+
+		return true
 	}
 
 	// Handle reverse proxy token
-	if port, exists := s.tokens[token]; exists {
+	if port, isReverse := s.tokens[token]; isReverse {
+		// Remove all connector tokens using this reverse token
+		for connectorToken, rt := range s.connectorTokens {
+			if rt == token {
+				s.RemoveToken(connectorToken)
+			}
+		}
+
 		// Close all client connections for this token
 		if clients, ok := s.tokenClients[token]; ok {
 			for _, client := range clients {
@@ -293,7 +437,7 @@ func (s *WSSocksServer) RemoveToken(token string) bool {
 		// Clean up token related data
 		delete(s.tokens, token)
 		delete(s.tokenIndexes, token)
-		delete(s.socksAuth, token)
+		delete(s.tokenOptions, token)
 
 		// Cancel and clean up SOCKS server if it exists
 		if cancel, exists := s.socksTasks[port]; exists {
@@ -305,17 +449,27 @@ func (s *WSSocksServer) RemoveToken(token string) bool {
 		s.portPool.Put(port)
 
 		s.log.Info().Str("token", token).Msg("Reverse token removed")
+
+		return true
 	}
 
 	// Handle forward proxy token
-	if _, exists := s.forwardTokens[token]; exists {
-		// Close all forward client connections using this token
-		for clientID, ws := range s.clients {
-			ws.Close()
-			delete(s.clients, clientID)
+	if _, isForward := s.forwardTokens[token]; isForward {
+		// Close all client connections for this token
+		if clients, ok := s.tokenClients[token]; ok {
+			for _, client := range clients {
+				client.Conn.Close()
+				delete(s.clients, client.ID)
+			}
+			delete(s.tokenClients, token)
 		}
+
+		// Clean up token related data
 		delete(s.forwardTokens, token)
+
 		s.log.Info().Str("token", token).Msg("Forward token removed")
+
+		return true
 	}
 
 	return true
@@ -449,11 +603,12 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 
 	var clientID uuid.UUID
 	var token string
+	var internalToken string
 
 	defer func() {
 		wsConn.Close()
 		if clientID != uuid.Nil {
-			s.cleanupConnection(clientID, token)
+			s.cleanupConnection(clientID, internalToken)
 		}
 	}()
 
@@ -474,12 +629,14 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 
 	token = authMsg.Token
 	s.mu.RLock()
-	isValidReverse := authMsg.Reverse && s.tokens[token] > 0
+	isValidReverse := authMsg.Reverse && s.tokens[token] != 0
 	_, hasForwardToken := s.forwardTokens[token]
 	isValidForward := !authMsg.Reverse && hasForwardToken
+	reverseToken, isConnectorToken := s.connectorTokens[token]
+	isValidConnector := isConnectorToken && !authMsg.Reverse && s.tokens[reverseToken] != 0
 	s.mu.RUnlock()
 
-	if !isValidReverse && !isValidForward {
+	if !isValidReverse && !isValidForward && !isValidConnector {
 		authResponse := AuthResponseMessage{Type: TypeAuthResponse, Success: false}
 		s.relay.logMessage(authResponse, "send")
 		wsConn.SyncWriteJSON(authResponse)
@@ -488,18 +645,41 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 
 	clientID = uuid.New()
 
+	s.mu.Lock()
+	// For reverse tokens with AllowManageConnector, generate a unique internal token
+	if isValidReverse {
+		opts, exists := s.tokenOptions[token]
+		if exists && opts.AllowManageConnector {
+			internalToken = uuid.New().String()
+			// Initialize structures for this internal token
+			s.tokenClients[internalToken] = make([]clientInfo, 0)
+			s.tokenIndexes[internalToken] = 0
+			s.tokenOptions[internalToken] = opts
+			s.tokens[internalToken] = -1
+
+			// Add to internalTokens mapping
+			s.internalTokens[token] = append(s.internalTokens[token], internalToken)
+		} else {
+			internalToken = token
+		}
+	} else {
+		internalToken = token
+	}
+
+	if _, exists := s.tokenClients[internalToken]; !exists {
+		s.tokenClients[internalToken] = make([]clientInfo, 0)
+	}
+	s.tokenClients[internalToken] = append(s.tokenClients[internalToken], clientInfo{ID: clientID, Conn: wsConn})
+	s.clients[clientID] = wsConn
+	s.mu.Unlock()
+
 	if authMsg.Reverse {
 		// Handle reverse proxy client
 		s.mu.Lock()
-		if _, exists := s.tokenClients[token]; !exists {
-			s.tokenClients[token] = make([]clientInfo, 0)
-		}
-		s.tokenClients[token] = append(s.tokenClients[token], clientInfo{ID: clientID, Conn: wsConn})
-		s.clients[clientID] = wsConn
-
 		// Start SOCKS server if not already running
 		socksPort := s.tokens[token]
-		if _, exists := s.socksTasks[socksPort]; !exists {
+		_, exists := s.socksTasks[socksPort]
+		if socksPort > 0 && !exists {
 			ctx, cancel := context.WithCancel(ctx)
 			s.socksTasks[socksPort] = cancel
 			go func() {
@@ -509,14 +689,12 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 			}()
 		}
 		s.mu.Unlock()
-
 		s.log.Info().Str("client_id", clientID.String()).Msg("Reverse client authenticated")
+	} else if isConnectorToken {
+		// Handle connector proxy client
+		s.log.Info().Str("client_id", clientID.String()).Msg("Connector client authenticated")
 	} else {
 		// Handle forward proxy client
-		s.mu.Lock()
-		s.clients[clientID] = wsConn
-		s.mu.Unlock()
-
 		s.log.Info().Str("client_id", clientID.String()).Msg("Forward client authenticated")
 	}
 
@@ -534,9 +712,15 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 	defer cancel()
 
 	// Start message dispatcher
-	go func() {
-		errChan <- s.messageDispatcher(ctx, wsConn, clientID)
-	}()
+	if isConnectorToken {
+		go func() {
+			errChan <- s.connectorMessageDispatcher(ctx, wsConn, reverseToken)
+		}()
+	} else {
+		go func() {
+			errChan <- s.messageDispatcher(ctx, wsConn, clientID)
+		}()
+	}
 
 	// Start heartbeat
 	go func() {
@@ -574,12 +758,26 @@ func (s *WSSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clien
 			switch m := msg.(type) {
 			case *DataMessage:
 				channelID := m.ChannelID
+				// First try existing message queues
 				if queue, ok := s.relay.messageQueues.Load(channelID); ok {
 					select {
 					case queue.(chan DataMessage) <- *m:
 						s.log.Debug().Str("channel_id", channelID).Msg("Message forwarded to channel")
 					default:
 						s.log.Warn().Str("channel_id", channelID).Msg("Message queue full")
+					}
+					continue
+				}
+
+				// If not in message queues, check connector channels
+				s.connCache.mu.RLock()
+				targetWS, exists := s.connCache.channelIDToClient[channelID]
+				s.connCache.mu.RUnlock()
+
+				if exists {
+					s.relay.logMessage(m, "send")
+					if err := targetWS.SyncWriteJSON(rawMsg); err != nil {
+						s.log.Error().Err(err).Msg("Failed to forward data message to connector client")
 					}
 				} else {
 					s.log.Warn().Str("channel_id", channelID).Msg("Received data for unknown channel")
@@ -603,11 +801,216 @@ func (s *WSSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clien
 				if queue, ok := s.relay.messageQueues.Load(m.ConnectID); ok {
 					queue.(chan ConnectResponseMessage) <- *m
 				} else {
-					s.log.Debug().Str("connect_id", m.ConnectID).Msg("Received connect response for unknown channel")
+					// Store channel mappings for connector routing
+					s.connCache.mu.Lock()
+					if connectorWS, exists := s.connCache.connectIDToConnector[m.ConnectID]; exists {
+						// Store both client and connector mappings for the new channel
+						s.connCache.channelIDToClient[m.ChannelID] = connectorWS
+						s.connCache.channelIDToConnector[m.ChannelID] = ws
+						// Forward the response to the connector
+						s.relay.logMessage(m, "send")
+						if err := connectorWS.SyncWriteJSON(rawMsg); err != nil {
+							s.log.Error().Err(err).Msg("Failed to forward connect response to connector")
+						}
+					} else {
+						s.log.Debug().Str("connect_id", m.ConnectID).Msg("Received connect response for unknown channel")
+					}
+					s.connCache.mu.Unlock()
+				}
+
+			case *DisconnectMessage:
+				// Forward disconnect message to connector if exists
+				s.connCache.mu.Lock()
+				if targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]; exists {
+					s.relay.logMessage(m, "send")
+					if err := targetWS.SyncWriteJSON(rawMsg); err != nil {
+						s.log.Error().Err(err).Msg("Failed to forward disconnect message")
+					}
+				}
+				s.connCache.mu.Unlock()
+
+				// Clean up relay channels
+				if cancelVal, ok := s.relay.tcpChannels.LoadAndDelete(m.ChannelID); ok {
+					if cancel, ok := cancelVal.(context.CancelFunc); ok {
+						cancel()
+					}
+				}
+				if cancelVal, ok := s.relay.udpChannels.LoadAndDelete(m.ChannelID); ok {
+					if cancel, ok := cancelVal.(context.CancelFunc); ok {
+						cancel()
+					}
+				}
+				s.relay.udpClientAddrs.Delete(m.ChannelID)
+				s.relay.messageQueues.Delete(m.ChannelID)
+
+				// Clean up connector channel mappings
+				s.connCache.mu.Lock()
+				delete(s.connCache.channelIDToClient, m.ChannelID)
+				delete(s.connCache.channelIDToConnector, m.ChannelID)
+				s.connCache.mu.Unlock()
+
+			case *ConnectorMessage:
+				// Check if this client has permission to manage connectors
+				s.mu.RLock()
+				var token string
+				var hasPermission bool
+				for t, clients := range s.tokenClients {
+					for _, client := range clients {
+						if client.ID == clientID {
+							token = t
+							// Check if this token has connector management permission
+							if opts, exists := s.tokenOptions[t]; exists {
+								hasPermission = opts.AllowManageConnector
+							}
+							break
+						}
+					}
+					if token != "" {
+						break
+					}
+				}
+				s.mu.RUnlock()
+
+				// Prepare response
+				response := ConnectorResponseMessage{
+					Type:      TypeConnectorResponse,
+					ConnectID: m.ConnectID,
+				}
+
+				if !hasPermission {
+					response.Success = false
+					response.Error = "Unauthorized connector management attempt"
+					s.log.Warn().
+						Str("client_id", clientID.String()).
+						Msg("Unauthorized connector management attempt")
+				} else {
+					switch m.Operation {
+					case "add":
+						newToken, err := s.AddConnectorToken(m.ConnectorToken, token)
+						if err != nil {
+							response.Success = false
+							response.Error = err.Error()
+							s.log.Error().
+								Err(err).
+								Str("connector_token", m.ConnectorToken).
+								Msg("Failed to add connector token")
+						} else {
+							response.Success = true
+							response.ConnectorToken = newToken
+							s.log.Info().
+								Str("connector_token", newToken).
+								Msg("Added new connector token via WebSocket")
+						}
+
+					case "remove":
+						if removed := s.RemoveToken(m.ConnectorToken); !removed {
+							response.Success = false
+							response.Error = "Failed to remove connector token"
+							s.log.Error().
+								Str("connector_token", m.ConnectorToken).
+								Msg("Failed to remove connector token")
+						} else {
+							response.Success = true
+							s.log.Info().
+								Str("connector_token", m.ConnectorToken).
+								Msg("Removed connector token via WebSocket")
+						}
+
+					default:
+						response.Success = false
+						response.Error = fmt.Sprintf("Unknown connector operation: %s", m.Operation)
+						s.log.Warn().
+							Str("operation", m.Operation).
+							Msg("Unknown connector operation")
+					}
+				}
+
+				// Send response
+				s.relay.logMessage(response, "send")
+				if err := ws.SyncWriteJSON(response); err != nil {
+					s.log.Error().Err(err).Msg("Failed to send connector response")
+					return err
 				}
 
 			default:
 				s.log.Warn().Str("type", msg.GetType()).Msg("Received unknown message type")
+			}
+		}
+	}
+}
+
+// connectorMessageDispatcher handles WebSocket message distribution for connector tokens
+func (s *WSSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSConn, reverseToken string) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			var rawMsg json.RawMessage
+			err := ws.ReadJSON(&rawMsg)
+			if err != nil {
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					s.log.Error().Err(err).Msg("WebSocket read error")
+				}
+				return err
+			}
+
+			msg, err := ParseMessage(rawMsg)
+			if err != nil {
+				s.log.Error().Err(err).Msg("Failed to parse message")
+				continue
+			}
+
+			s.relay.logMessage(msg, "recv")
+
+			switch m := msg.(type) {
+			case *ConnectMessage:
+				// Store connect_id mapping for connector
+				s.connCache.mu.Lock()
+				s.connCache.connectIDToConnector[m.ConnectID] = ws
+				if ids, exists := s.connCache.tokenCache[reverseToken]; exists {
+					s.connCache.tokenCache[reverseToken] = append(ids, m.ConnectID)
+				} else {
+					s.connCache.tokenCache[reverseToken] = []string{m.ConnectID}
+				}
+				s.connCache.mu.Unlock()
+
+				// Forward to reverse client
+				reverseWS, err := s.getNextWebSocket(reverseToken)
+				if err != nil {
+					s.log.Error().Err(err).Msg("Failed to get reverse client")
+					continue
+				}
+				s.relay.logMessage(m, "send")
+				if err := reverseWS.SyncWriteJSON(rawMsg); err != nil {
+					s.log.Error().Err(err).Msg("Failed to forward connect message")
+				}
+
+			case *DataMessage:
+				// Route data message based on channel_id
+				s.connCache.mu.RLock()
+				targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]
+				s.connCache.mu.RUnlock()
+
+				if exists {
+					s.relay.logMessage(m, "send")
+					if err := targetWS.SyncWriteJSON(rawMsg); err != nil {
+						s.log.Error().Err(err).Msg("Failed to forward data message")
+					}
+				}
+
+			case *DisconnectMessage:
+				// Clean up channel mappings and forward message
+				s.connCache.mu.Lock()
+				if targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]; exists {
+					s.relay.logMessage(m, "send")
+					if err := targetWS.SyncWriteJSON(rawMsg); err != nil {
+						s.log.Error().Err(err).Msg("Failed to forward disconnect message")
+					}
+					delete(s.connCache.channelIDToConnector, m.ChannelID)
+					delete(s.connCache.channelIDToClient, m.ChannelID)
+				}
+				s.connCache.mu.Unlock()
 			}
 		}
 	}
@@ -723,7 +1126,7 @@ ClientFound:
 	// Get authentication info if configured
 	var username, password string
 	s.mu.RLock()
-	if auth, ok := s.socksAuth[token]; ok {
+	if auth, ok := s.tokenOptions[token]; ok {
 		username = auth.Username
 		password = auth.Password
 	}
@@ -775,6 +1178,9 @@ func (s *WSSocksServer) runSocksServer(ctx context.Context, token string, socksP
 func (s *WSSocksServer) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Close relay
+	s.relay.Close()
 
 	// Clean up all waiting sockets
 	s.waitingMu.Lock()

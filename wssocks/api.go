@@ -29,11 +29,13 @@ func (h *APIHandler) RegisterHandlers(mux *http.ServeMux) {
 
 // TokenRequest represents a request to create a new token
 type TokenRequest struct {
-	Type     string `json:"type"`     // "forward" or "reverse"
-	Token    string `json:"token"`    // Optional: specific token to use
-	Port     int    `json:"port"`     // Optional: specific port for reverse proxy
-	Username string `json:"username"` // Optional: SOCKS auth username
-	Password string `json:"password"` // Optional: SOCKS auth password
+	Type                 string `json:"type"`          // "forward" or "reverse" or "connector"
+	Token                string `json:"token"`         // Optional: specific token to use
+	Port                 int    `json:"port"`          // Optional: specific port for reverse proxy
+	Username             string `json:"username"`      // Optional: SOCKS auth username
+	Password             string `json:"password"`      // Optional: SOCKS auth password
+	ReverseToken         string `json:"reverse_token"` // Optional: reverse token for connector token
+	AllowManageConnector bool   `json:"allow_manage_connector"`
 }
 
 // TokenResponse represents the response for token operations
@@ -118,7 +120,14 @@ func (h *APIHandler) handleToken(w http.ResponseWriter, r *http.Request) {
 
 		switch req.Type {
 		case "forward":
-			token := h.server.AddForwardToken(req.Token)
+			token, err := h.server.AddForwardToken(req.Token)
+			if err != nil {
+				json.NewEncoder(w).Encode(TokenResponse{
+					Success: false,
+					Error:   err.Error(),
+				})
+				return
+			}
 			json.NewEncoder(w).Encode(TokenResponse{
 				Success: true,
 				Token:   token,
@@ -126,16 +135,17 @@ func (h *APIHandler) handleToken(w http.ResponseWriter, r *http.Request) {
 
 		case "reverse":
 			opts := &ReverseTokenOptions{
-				Token:    req.Token,
-				Port:     req.Port,
-				Username: req.Username,
-				Password: req.Password,
+				Token:                req.Token,
+				Port:                 req.Port,
+				Username:             req.Username,
+				Password:             req.Password,
+				AllowManageConnector: req.AllowManageConnector,
 			}
-			token, port := h.server.AddReverseToken(opts)
-			if port == 0 {
+			token, port, err := h.server.AddReverseToken(opts)
+			if err != nil {
 				json.NewEncoder(w).Encode(TokenResponse{
 					Success: false,
-					Error:   "failed to allocate port",
+					Error:   err.Error(),
 				})
 				return
 			}
@@ -143,6 +153,28 @@ func (h *APIHandler) handleToken(w http.ResponseWriter, r *http.Request) {
 				Success: true,
 				Token:   token,
 				Port:    port,
+			})
+
+		case "connector":
+			if req.ReverseToken == "" {
+				json.NewEncoder(w).Encode(TokenResponse{
+					Success: false,
+					Error:   "reverse_token is required for connector token",
+				})
+				return
+			}
+
+			token, err := h.server.AddConnectorToken(req.Token, req.ReverseToken)
+			if err != nil {
+				json.NewEncoder(w).Encode(TokenResponse{
+					Success: false,
+					Error:   err.Error(),
+				})
+				return
+			}
+			json.NewEncoder(w).Encode(TokenResponse{
+				Success: true,
+				Token:   token,
 			})
 
 		default:

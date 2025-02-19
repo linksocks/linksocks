@@ -1,70 +1,20 @@
 package tests
 
 import (
-	"bytes"
-	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
-	"strconv"
-	"sync"
 	"testing"
 	"time"
 
 	"wssocks/wssocks"
 
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// ProxyTestServer encapsulates the server-side test environment
-type ProxyTestServer struct {
-	Server    *wssocks.WSSocksServer
-	WSPort    int
-	SocksPort int
-	Token     string
-	Close     func()
-}
-
-type ProxyTestServerOption struct {
-	WSPort        int
-	SocksPort     int
-	SocksUser     string
-	SocksPassword string
-	Token         string
-	PortPool      *wssocks.PortPool
-	LoggerPrefix  string
-	Reconnect     bool
-}
-
-// ProxyTestClient encapsulates the client-side test environment
-type ProxyTestClient struct {
-	Client    *wssocks.WSSocksClient
-	SocksPort int
-	Close     func()
-}
-
-// ProxyTestEnv encapsulates both server and client test environments
-type ProxyTestEnv struct {
-	Server    *ProxyTestServer
-	Client    *ProxyTestClient
-	WSPort    int // WebSocket server port
-	SocksPort int // SOCKS proxy port (client port for forward mode, server port for reverse mode)
-	Close     func()
-}
-
-// ProxyConfig contains proxy configuration options
-type ProxyConfig struct {
-	Port     int
-	Username string
-	Password string
-}
 
 var (
 	// Global test servers
@@ -75,457 +25,58 @@ var (
 	globalHTTPServer        string
 	globalHTTPServerV6      string
 	globalCleanupFuncs      []func()
-
-	// Global test logger
-	testLogger zerolog.Logger
 )
 
-const (
-	udpTestAttempts = 10 // Number of UDP test attempts
-)
+func TestMain(m *testing.M) {
+	// Initialize test logger
+	TestLogger = createPrefixedLogger("TEST")
 
-// forwardServer creates a WSS server in forward mode
-func forwardServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
-	wsPort, err := getFreePort()
-	require.NoError(t, err)
+	var cleanup func()
+	var err error
 
-	token := ""
-
-	var serverOpt *wssocks.ServerOption
-	if opt == nil {
-		logger := createPrefixedLogger("SRV0")
-		serverOpt = wssocks.DefaultServerOption().
-			WithWSPort(wsPort).
-			WithLogger(logger)
-	} else {
-		// Set Token
-		token = opt.Token
-
-		// Use provided options or defaults
-		if opt.LoggerPrefix != "" {
-			logger := createPrefixedLogger(opt.LoggerPrefix)
-			serverOpt = wssocks.DefaultServerOption().WithLogger(logger)
-		} else {
-			logger := createPrefixedLogger("SRV0")
-			serverOpt = wssocks.DefaultServerOption().WithLogger(logger)
-		}
-
-		// Set WSPort
-		if opt.WSPort != 0 {
-			wsPort = opt.WSPort
-		}
-		serverOpt.WithWSPort(wsPort)
-
-		// Set PortPool if provided
-		if opt.PortPool != nil {
-			serverOpt.WithPortPool(opt.PortPool)
-		}
-	}
-	server := wssocks.NewWSSocksServer(serverOpt)
-	token = server.AddForwardToken(token)
-
-	require.NoError(t, server.WaitReady(5*time.Second))
-
-	return &ProxyTestServer{
-		Server: server,
-		WSPort: wsPort,
-		Token:  token,
-		Close:  server.Close,
-	}
-}
-
-// forwardClient creates a WSS client in forward mode
-func forwardClient(t *testing.T, wsPort int, token string) *ProxyTestClient {
-	socksPort, err := getFreePort()
-	require.NoError(t, err)
-
-	logger := createPrefixedLogger("CLT0")
-
-	clientOpt := wssocks.DefaultClientOption().
-		WithWSURL(fmt.Sprintf("ws://localhost:%d", wsPort)).
-		WithSocksPort(socksPort).
-		WithReconnectDelay(1 * time.Second).
-		WithLogger(logger)
-	client := wssocks.NewWSSocksClient(token, clientOpt)
-
-	require.NoError(t, client.WaitReady(5*time.Second))
-
-	return &ProxyTestClient{
-		Client:    client,
-		SocksPort: socksPort,
-		Close:     client.Close,
-	}
-}
-
-// reverseServer creates a WSS server in reverse mode
-func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
-	wsPort, err := getFreePort()
-	require.NoError(t, err)
-
-	token := ""
-	socksUser := ""
-	socksPassword := ""
-
-	socksPort, err := getFreePort()
-	require.NoError(t, err)
-
-	var serverOpt *wssocks.ServerOption
-	if opt == nil {
-		logger := createPrefixedLogger("SRV0")
-		serverOpt = wssocks.DefaultServerOption().
-			WithWSPort(wsPort).
-			WithLogger(logger)
-	} else {
-		token = opt.Token
-		socksUser = opt.SocksUser
-		socksPassword = opt.SocksPassword
-
-		// Use provided options or defaults
-		if opt.LoggerPrefix != "" {
-			logger := createPrefixedLogger(opt.LoggerPrefix)
-			serverOpt = wssocks.DefaultServerOption().WithLogger(logger)
-		} else {
-			logger := createPrefixedLogger("SRV0")
-			serverOpt = wssocks.DefaultServerOption().WithLogger(logger)
-		}
-
-		// Set WSPort
-		if opt.WSPort != 0 {
-			wsPort = opt.WSPort
-		}
-		serverOpt.WithWSPort(wsPort)
-
-		// Set PortPool if provided
-		if opt.PortPool != nil {
-			serverOpt.WithPortPool(opt.PortPool)
-		}
-
-		// Set SocksPort if provided
-		if opt.SocksPort != 0 {
-			socksPort = opt.SocksPort
-		}
-	}
-
-	server := wssocks.NewWSSocksServer(serverOpt)
-	token, socksPort = server.AddReverseToken(&wssocks.ReverseTokenOptions{
-		Port:     socksPort,
-		Token:    token,
-		Username: socksUser,
-		Password: socksPassword,
-	})
-	require.NotZero(t, socksPort)
-
-	require.NoError(t, server.WaitReady(5*time.Second))
-
-	return &ProxyTestServer{
-		Server:    server,
-		WSPort:    wsPort,
-		SocksPort: socksPort,
-		Token:     token,
-		Close:     server.Close,
-	}
-}
-
-// reverseClient creates a WSS client in reverse mode
-func reverseClient(t *testing.T, wsPort int, token string, prefix string) *ProxyTestClient {
-	logger := createPrefixedLogger(prefix)
-
-	clientOpt := wssocks.DefaultClientOption().
-		WithWSURL(fmt.Sprintf("ws://localhost:%d", wsPort)).
-		WithReconnectDelay(1 * time.Second).
-		WithReverse(true).
-		WithLogger(logger)
-	client := wssocks.NewWSSocksClient(token, clientOpt)
-
-	require.NoError(t, client.WaitReady(5*time.Second))
-
-	return &ProxyTestClient{
-		Client: client,
-		Close:  client.Close,
-	}
-}
-
-// forwardProxy creates a complete forward proxy test environment
-func forwardProxy(t *testing.T) *ProxyTestEnv {
-	server := forwardServer(t, nil)
-	client := forwardClient(t, server.WSPort, server.Token)
-
-	return &ProxyTestEnv{
-		Server:    server,
-		Client:    client,
-		WSPort:    server.WSPort,
-		SocksPort: client.SocksPort, // In forward mode, use client's SOCKS port
-		Close: func() {
-			client.Close()
-			server.Close()
-		},
-	}
-}
-
-// reverseProxy creates a complete reverse proxy test environment
-func reverseProxy(t *testing.T) *ProxyTestEnv {
-	server := reverseServer(t, nil)
-	client := reverseClient(t, server.WSPort, server.Token, "CLT0")
-
-	return &ProxyTestEnv{
-		Server:    server,
-		Client:    client,
-		WSPort:    server.WSPort,
-		SocksPort: server.SocksPort, // In reverse mode, use server's SOCKS port
-		Close: func() {
-			client.Close()
-			server.Close()
-		},
-	}
-}
-
-// testWebConnection tests HTTP connection through the proxy
-func testWebConnection(targetURL string, proxyConfig *ProxyConfig) error {
-	var httpClient *http.Client
-
-	if proxyConfig != nil {
-		proxyURL := fmt.Sprintf("socks5://%s", net.JoinHostPort("localhost", fmt.Sprint(proxyConfig.Port)))
-		if proxyConfig.Username != "" || proxyConfig.Password != "" {
-			proxyURL = fmt.Sprintf("socks5://%s:%s@%s",
-				url.QueryEscape(proxyConfig.Username),
-				url.QueryEscape(proxyConfig.Password),
-				net.JoinHostPort("localhost", fmt.Sprint(proxyConfig.Port)))
-		}
-
-		parsedURL, err := url.Parse(proxyURL)
-		if err != nil {
-			return err
-		}
-
-		httpClient = &http.Client{
-			Transport: &http.Transport{
-				Proxy: http.ProxyURL(parsedURL),
-			},
-		}
-	} else {
-		httpClient = &http.Client{}
-	}
-
-	// Log test start
-	if proxyConfig != nil {
-		testLogger.Info().
-			Str("url", targetURL).
-			Int("proxy_port", proxyConfig.Port).
-			Msg("Starting web connection test with proxy")
-	} else {
-		testLogger.Info().
-			Str("url", targetURL).
-			Msg("Starting web connection test without proxy")
-	}
-
-	resp, err := httpClient.Get(targetURL)
+	// Start UDP echo server
+	globalUDPServer, globalUDPServerDomain, cleanup, err = startUDPEchoServer(false)
 	if err != nil {
-		return err
+		TestLogger.Fatal().Err(err).Msg("Failed to start UDP server")
 	}
-	defer resp.Body.Close()
+	globalCleanupFuncs = append(globalCleanupFuncs, cleanup)
 
-	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	// Log test completion
-	testLogger.Info().
-		Str("url", targetURL).
-		Int("status", resp.StatusCode).
-		Msg("Web connection test completed")
-
-	return nil
-}
-
-// assertUDPConnection tests UDP connection through the proxy
-func assertUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConfig) {
-	testData := []byte("Hello UDP")
-	successCount := 0
-
-	var proxyAddr string
-	if proxyConfig != nil {
-		proxyAddr = net.JoinHostPort("localhost", fmt.Sprint(proxyConfig.Port))
-	} else {
-		proxyAddr = serverAddr
-	}
-
-	var conn net.Conn
-	if proxyConfig != nil {
-		// Create TCP connection for SOCKS5 negotiation
-		tcpConn, err := net.Dial("tcp", proxyAddr)
+	// Start UDP echo server (IPv6)
+	if hasIPv6Support() {
+		globalUDPServerV6, globalUDPServerV6Domain, cleanup, err = startUDPEchoServer(true)
 		if err != nil {
-			t.Fatal(err)
-		}
-		defer tcpConn.Close()
-
-		// SOCKS5 handshake
-		_, err = tcpConn.Write([]byte{0x05, 0x01, 0x00})
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Read handshake response
-		resp := make([]byte, 2)
-		_, err = io.ReadFull(tcpConn, resp)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp[0] != 0x05 || resp[1] != 0x00 {
-			t.Fatal("SOCKS5 handshake failed")
-		}
-
-		// UDP ASSOCIATE request
-		_, err = tcpConn.Write([]byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Read UDP ASSOCIATE response
-		resp = make([]byte, 10)
-		_, err = io.ReadFull(tcpConn, resp)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if resp[1] != 0x00 {
-			t.Fatal("UDP ASSOCIATE failed")
-		}
-
-		// Get UDP relay address and port
-		relayPort := binary.BigEndian.Uint16(resp[8:10])
-		proxyAddr = fmt.Sprintf("127.0.0.1:%d", relayPort)
-
-		// Create UDP connection
-		conn, err = net.Dial("udp", proxyAddr)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer conn.Close()
-
-		// Parse target address
-		host, portStr, err := net.SplitHostPort(serverAddr)
-		if err != nil {
-			t.Fatal(err)
-		}
-		port, err := strconv.Atoi(portStr)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Test UDP communication
-		for i := 0; i < udpTestAttempts; i++ {
-			conn.SetDeadline(time.Now().Add(time.Second))
-
-			// Create SOCKS5 UDP header
-			var header []byte
-			ip := net.ParseIP(host)
-			if ip == nil {
-				// Domain name
-				header = []byte{0, 0, 0, 0x03, byte(len(host))}
-				header = append(header, []byte(host)...)
-			} else if ip4 := ip.To4(); ip4 != nil {
-				// IPv4
-				header = []byte{0, 0, 0, 0x01}
-				header = append(header, ip4...)
-			} else {
-				// IPv6
-				header = []byte{0, 0, 0, 0x04}
-				header = append(header, ip.To16()...)
-			}
-			header = append(header, byte(port>>8), byte(port))
-
-			// Send data with UDP header
-			sendData := append(header, testData...)
-			_, err = conn.Write(sendData)
-			if err != nil {
-				testLogger.Error().Err(err).Msg("UDP test failed")
-				continue
-			}
-			testLogger.Info().Int("bytes", len(sendData)).Msg("UDP tester sent")
-
-			// Read response with a larger buffer to accommodate any header format
-			buf := make([]byte, 1024) // Large enough for any SOCKS5 UDP header + data
-			n, err := conn.Read(buf)
-			if err != nil {
-				testLogger.Error().Err(err).Msg("UDP test failed")
-				continue
-			}
-			testLogger.Info().Int("bytes", n).Msg("UDP tester received")
-
-			// Find the actual data after the UDP header
-			var responseData []byte
-			if n > 10 { // Minimum SOCKS5 UDP header size is 10 bytes
-				switch buf[3] { // Address type
-				case 0x01: // IPv4
-					responseData = buf[10:n]
-				case 0x03: // Domain
-					domainLen := int(buf[4])
-					responseData = buf[5+domainLen+2 : n]
-				case 0x04: // IPv6
-					responseData = buf[22:n]
-				}
-			}
-
-			if responseData != nil && bytes.Equal(responseData, testData) {
-				successCount++
-			}
-		}
-	} else {
-		conn, err := net.Dial("udp", proxyAddr)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer conn.Close()
-
-		for i := 0; i < udpTestAttempts; i++ {
-			conn.SetDeadline(time.Now().Add(time.Second))
-			_, err = conn.Write(testData)
-			if err != nil {
-				testLogger.Error().Err(err).Msg("UDP test failed")
-				continue
-			}
-			testLogger.Info().Int("data", len(testData)).Msg("UDP tester sent")
-
-			buf := make([]byte, len(testData))
-			n, err := conn.Read(buf)
-			if err != nil {
-				testLogger.Error().Err(err).Msg("UDP test failed")
-				continue
-			}
-			testLogger.Info().Int("bytes", n).Msg("UDP tester received")
-
-			if n == len(testData) && string(buf[:n]) == string(testData) {
-				successCount++
-			}
+			TestLogger.Warn().Err(err).Msg("Failed to start IPv6 UDP server")
+		} else {
+			globalCleanupFuncs = append(globalCleanupFuncs, cleanup)
 		}
 	}
 
-	if successCount < udpTestAttempts {
-		t.Errorf("UDP test failed: only %d/%d packets were successfully echoed", successCount, udpTestAttempts)
+	// Start HTTP test server
+	globalHTTPServer, cleanup, err = startTestHTTPServer(false)
+	if err != nil {
+		TestLogger.Fatal().Err(err).Msg("Failed to start HTTP server")
 	}
-}
+	globalCleanupFuncs = append(globalCleanupFuncs, cleanup)
 
-// apiRequest is a helper function to send API requests to the test server
-func apiRequest(t *testing.T, method, url string, apiKey string, body interface{}) (*http.Response, error) {
-	var bodyReader io.Reader
-	if body != nil {
-		bodyBytes, err := json.Marshal(body)
-		require.NoError(t, err)
-		bodyReader = bytes.NewReader(bodyBytes)
-	}
-
-	req, err := http.NewRequest(method, url, bodyReader)
-	require.NoError(t, err)
-
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	// Start HTTP test server (IPv6)
+	if hasIPv6Support() {
+		globalHTTPServerV6, cleanup, err = startTestHTTPServer(true)
+		if err != nil {
+			TestLogger.Warn().Err(err).Msg("Failed to start IPv6 HTTP server")
+		} else {
+			globalCleanupFuncs = append(globalCleanupFuncs, cleanup)
+		}
 	}
 
-	if apiKey != "" {
-		req.Header.Set("X-API-Key", apiKey)
+	// Run tests
+	code := m.Run()
+
+	// Cleanup
+	for _, cleanup := range globalCleanupFuncs {
+		cleanup()
 	}
 
-	client := &http.Client{}
-	return client.Do(req)
+	os.Exit(code)
 }
 
 func TestHTTPServer(t *testing.T) {
@@ -658,7 +209,7 @@ func TestUDPReverseProxyV6(t *testing.T) {
 
 func TestForwardReconnect(t *testing.T) {
 	server := forwardServer(t, nil)
-	client := forwardClient(t, server.WSPort, server.Token)
+	client := forwardClient(t, server.WSPort, server.Token, "CLT0")
 	defer client.Close()
 
 	// Test initial connection
@@ -726,7 +277,7 @@ func TestReverseReconnect(t *testing.T) {
 
 func TestForwardRemoveToken(t *testing.T) {
 	server := forwardServer(t, nil)
-	client := forwardClient(t, server.WSPort, server.Token)
+	client := forwardClient(t, server.WSPort, server.Token, "CLT0")
 	defer func() {
 		client.Close()
 		server.Close()
@@ -750,10 +301,13 @@ func TestForwardRemoveToken(t *testing.T) {
 	assert.Error(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: client.SocksPort}))
 
 	// Add token back
-	server.Token = server.Server.AddForwardToken(server.Token)
+	var err error
+	server.Token, err = server.Server.AddForwardToken(server.Token)
+	require.NoError(t, err)
+	assert.NotEmpty(t, server.Token)
 
 	// Start new client with same port
-	newClient := forwardClient(t, server.WSPort, server.Token)
+	newClient := forwardClient(t, server.WSPort, server.Token, "CLT0")
 	defer newClient.Close()
 
 	// Connection should work again
@@ -779,11 +333,23 @@ func TestReverseRemoveToken(t *testing.T) {
 	defer server.Close()
 
 	// Add first token
-	token1, port1 := server.AddReverseToken(nil)
+	token1, port1, err := server.AddReverseToken(&wssocks.ReverseTokenOptions{
+		Port:     socksPort,
+		Token:    "",
+		Username: "",
+		Password: "",
+	})
+	require.NoError(t, err)
 	require.NotZero(t, port1)
 
 	// Try to add second token (should fail due to port being in use)
-	_, port2 := server.AddReverseToken(nil)
+	_, port2, err := server.AddReverseToken(&wssocks.ReverseTokenOptions{
+		Port:     socksPort,
+		Token:    "",
+		Username: "",
+		Password: "",
+	})
+	require.Error(t, err)
 	require.Zero(t, port2)
 
 	// Start first client and test
@@ -795,7 +361,13 @@ func TestReverseRemoveToken(t *testing.T) {
 	server.RemoveToken(token1)
 
 	// Add second token
-	token2, port2 := server.AddReverseToken(nil)
+	token2, port2, err := server.AddReverseToken(&wssocks.ReverseTokenOptions{
+		Port:     socksPort,
+		Token:    "",
+		Username: "",
+		Password: "",
+	})
+	require.NoError(t, err)
 	require.NotZero(t, port2)
 
 	// Wait for client to detect disconnection with timeout
@@ -848,9 +420,10 @@ func TestApi(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&tokenResp))
 	require.True(t, tokenResp.Success)
 	require.NotEmpty(t, tokenResp.Token)
+	require.Empty(t, tokenResp.Error)
 
 	// Start client and test connection
-	client := forwardClient(t, wsPort, tokenResp.Token)
+	client := forwardClient(t, wsPort, tokenResp.Token, "CLT0")
 	defer client.Close()
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: client.SocksPort}))
 
@@ -871,230 +444,31 @@ func TestApi(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, resp4.StatusCode)
 }
 
-func TestMain(m *testing.M) {
-	// Initialize test logger
-	testLogger = createPrefixedLogger("TEST")
-
-	var cleanup func()
-	var err error
-
-	// Start UDP echo server
-	globalUDPServer, globalUDPServerDomain, cleanup, err = startUDPEchoServer(false)
-	if err != nil {
-		testLogger.Fatal().Err(err).Msg("Failed to start UDP server")
-	}
-	globalCleanupFuncs = append(globalCleanupFuncs, cleanup)
-
-	// Start UDP echo server (IPv6)
-	if hasIPv6Support() {
-		globalUDPServerV6, globalUDPServerV6Domain, cleanup, err = startUDPEchoServer(true)
-		if err != nil {
-			testLogger.Warn().Err(err).Msg("Failed to start IPv6 UDP server")
-		} else {
-			globalCleanupFuncs = append(globalCleanupFuncs, cleanup)
-		}
-	}
-
-	// Start HTTP test server
-	globalHTTPServer, cleanup, err = startTestHTTPServer(false)
-	if err != nil {
-		testLogger.Fatal().Err(err).Msg("Failed to start HTTP server")
-	}
-	globalCleanupFuncs = append(globalCleanupFuncs, cleanup)
-
-	// Start HTTP test server (IPv6)
-	if hasIPv6Support() {
-		globalHTTPServerV6, cleanup, err = startTestHTTPServer(true)
-		if err != nil {
-			testLogger.Warn().Err(err).Msg("Failed to start IPv6 HTTP server")
-		} else {
-			globalCleanupFuncs = append(globalCleanupFuncs, cleanup)
-		}
-	}
-
-	// Run tests
-	code := m.Run()
-
-	// Cleanup
-	for _, cleanup := range globalCleanupFuncs {
-		cleanup()
-	}
-
-	os.Exit(code)
-}
-
-// hasIPv6Support checks if IPv6 is supported on the system
-func hasIPv6Support() bool {
-	conn, err := net.Dial("udp6", "[::1]:0")
-	if err != nil {
-		return false
-	}
-	conn.Close()
-	return true
-}
-
-// getFreePort returns a free port number
-func getFreePort() (int, error) {
-	addr, err := net.ResolveTCPAddr("tcp", "localhost:0")
-	if err != nil {
-		return 0, err
-	}
-
-	l, err := net.ListenTCP("tcp", addr)
-	if err != nil {
-		return 0, err
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
-}
-
-// startUDPEchoServer starts a UDP echo server (IPv4 or IPv6) and returns both IP and domain-based addresses
-func startUDPEchoServer(useIPv6 bool) (string, string, func(), error) {
-	port, err := getFreePort()
-	if err != nil {
-		return "", "", nil, err
-	}
-
-	network := "udp"
-	ip := "127.0.0.1"
-	if useIPv6 {
-		network = "udp6"
-		ip = "::1"
-		if conn, err := net.Dial("udp6", "[::1]:0"); err != nil {
-			return "", "", nil, fmt.Errorf("IPv6 not supported: %w", err)
-		} else {
-			conn.Close()
-		}
-	}
-
-	// Create both IP and domain-based addresses
-	ipAddr := ip
-	if useIPv6 {
-		ipAddr = fmt.Sprintf("[%s]", ip)
-	}
-	ipBasedAddr := fmt.Sprintf("%s:%d", ipAddr, port)
-	domainBasedAddr := fmt.Sprintf("localhost:%d", port)
-
-	conn, err := net.ListenUDP(network, &net.UDPAddr{
-		IP:   net.ParseIP(ip),
-		Port: port,
+func TestConnector(t *testing.T) {
+	server := reverseServer(t, &ProxyTestServerOption{
+		ConnectorToken: "CONNECTOR",
 	})
-	if err != nil {
-		return "", "", nil, err
-	}
-
-	done := make(chan struct{})
-	go func() {
-		defer conn.Close()
-		buf := make([]byte, 1024)
-		for {
-			select {
-			case <-done:
-				return
-			default:
-				n, remoteAddr, err := conn.ReadFromUDP(buf)
-				if err != nil {
-					continue
-				}
-				testLogger.Info().Int("bytes", n).Msg("UDP echo server received")
-
-				_, err = conn.WriteToUDP(buf[:n], remoteAddr)
-				if err != nil {
-					continue
-				}
-				testLogger.Info().Int("bytes", n).Msg("UDP echo server sent")
-			}
-		}
-	}()
-
-	cleanup := func() {
-		close(done)
-		conn.Close()
-	}
-
-	return ipBasedAddr, domainBasedAddr, cleanup, nil
+	defer server.Close()
+	client1 := reverseClient(t, server.WSPort, server.Token, "CLT1")
+	defer client1.Close()
+	client2 := forwardClient(t, server.WSPort, "CONNECTOR", "CLT2")
+	defer client2.Close()
+	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort}))
+	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: client2.SocksPort}))
 }
 
-// startTestHTTPServer starts a test HTTP server that returns 204 for /generate_204
-func startTestHTTPServer(useIPv6 bool) (string, func(), error) {
-	port, err := getFreePort()
-	if err != nil {
-		return "", nil, err
-	}
-
-	ip := "127.0.0.1"
-	if useIPv6 {
-		ip = "::1"
-	}
-
-	addr := fmt.Sprintf("%s:%d", ip, port)
-	if useIPv6 {
-		addr = fmt.Sprintf("[%s]:%d", ip, port)
-	}
-
-	server := &http.Server{
-		Addr: addr,
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/generate_204" {
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
-			w.WriteHeader(http.StatusNotFound)
-		}),
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := server.ListenAndServe(); err != http.ErrServerClosed {
-			testLogger.Error().Err(err).Msg("HTTP server error")
-		}
-	}()
-
-	// Wait for server to start
-	urlAddr := fmt.Sprintf("http://%s/generate_204", addr)
-	var startupErr error
-	for i := 0; i < 10; i++ {
-		if _, err := http.Get(urlAddr); err == nil {
-			startupErr = nil
-			break
-		}
-		startupErr = err
-		time.Sleep(100 * time.Millisecond)
-	}
-	if startupErr != nil {
-		return "", nil, fmt.Errorf("server failed to start: %w", startupErr)
-	}
-
-	cleanup := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		server.Shutdown(ctx)
-		wg.Wait()
-	}
-
-	return urlAddr, cleanup, nil
-}
-
-// createPrefixedLogger creates a zerolog.Logger with customized level prefixes
-func createPrefixedLogger(prefix string) zerolog.Logger {
-	return zerolog.New(zerolog.ConsoleWriter{
-		Out: os.Stdout,
-		FormatLevel: func(i interface{}) string {
-			level := i.(string)
-			switch level {
-			case "debug":
-				return fmt.Sprintf("%s DBG", prefix)
-			case "info":
-				return fmt.Sprintf("%s INF", prefix)
-			case "warn":
-				return fmt.Sprintf("%s WRN", prefix)
-			case "error":
-				return fmt.Sprintf("%s ERR", prefix)
-			default:
-				return fmt.Sprintf("%s %s", prefix, level[:3])
-			}
-		},
-	}).With().Timestamp().Logger()
+func TestConnectorAutonomy(t *testing.T) {
+	server := reverseServer(t, &ProxyTestServerOption{
+		ConnectorAutonomy: true,
+	})
+	defer server.Close()
+	client1 := reverseClient(t, server.WSPort, server.Token, "CLT1")
+	defer client1.Close()
+	token, err := client1.Client.AddConnector("CONNECTOR")
+	require.NoError(t, err)
+	require.NotEmpty(t, token)
+	client2 := forwardClient(t, server.WSPort, "CONNECTOR", "CLT2")
+	defer client2.Close()
+	require.Error(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort}))
+	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: client2.SocksPort}))
 }
