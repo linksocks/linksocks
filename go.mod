@@ -1,4 +1,4 @@
-module wssocks
+module github.com/zetxtech/wssocks
 
 go 1.20
 

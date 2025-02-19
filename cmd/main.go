@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 
-	"wssocks/wssocks"
+	"github.com/zetxtech/wssocks/wssocks"
 )
 
 func main() {

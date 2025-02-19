@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
-	"wssocks/wssocks"
+
+	"github.com/zetxtech/wssocks/wssocks"
 
 	"github.com/stretchr/testify/require"
 )
