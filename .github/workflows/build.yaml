@@ -27,6 +27,9 @@ jobs:
           - os: linux
             arch: arm64
             extension: ""
+          - os: linux
+            arch: mips64
+            extension: ""
           
           # macOS builds
           - os: darwin
@@ -34,6 +37,11 @@ jobs:
             extension: ""
           - os: darwin
             arch: arm64
+            extension: ""
+
+          # FreeBSD builds
+          - os: freebsd
+            arch: amd64
             extension: ""
 
     steps:
