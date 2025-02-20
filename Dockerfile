@@ -14,7 +14,7 @@ RUN go mod download
 COPY . .
 
 # Build the binary
-RUN go build -o wssocks ./cmd
+RUN CGO_ENABLED=0 go build -o wssocks ./cmd/wssocks
 
 # Final stage
 FROM alpine:3.19
