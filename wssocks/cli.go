@@ -166,13 +166,15 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	defer client.Close()
 
 	if err := client.WaitReady(cmd.Context(), 0); err != nil {
-		return err
+		logger.Fatal().Msgf("Exit due to error: %s", err.Error())
+		return nil
 	}
 
 	// Add connector token if provided
 	if connectorToken != "" && reverse {
 		if _, err := client.AddConnector(connectorToken); err != nil {
-			return fmt.Errorf("failed to add connector token: %w", err)
+			logger.Fatal().Msg("failed to add connector token")
+			return nil
 		}
 	}
 
@@ -182,7 +184,8 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 		client.Close()
 		return cmd.Context().Err()
 	case err := <-client.errors:
-		return err
+		logger.Fatal().Msgf("Exit due to error: %s", err.Error())
+		return nil
 	}
 }
 

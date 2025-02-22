@@ -15,6 +15,15 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// nonRetriableError represents an error that should not be retried
+type nonRetriableError struct {
+	msg string
+}
+
+func (e *nonRetriableError) Error() string {
+	return e.msg
+}
+
 // WSSocksClient represents a SOCKS5 over WebSocket protocol client
 type WSSocksClient struct {
 	Connected    chan struct{} // Channel that is closed when connection is established
@@ -349,7 +358,8 @@ func (c *WSSocksClient) startForward(ctx context.Context) error {
 					return
 				default:
 					if err := c.maintainWebSocketConnection(ctx, index); err != nil {
-						if !c.reconnect {
+						var nrErr *nonRetriableError
+						if !c.reconnect || errors.As(err, &nrErr) {
 							errChan <- err
 							return
 						}
@@ -463,7 +473,8 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 			c.log.Error().Msgf("Authentication failed (%d/%d)", count, total)
 		})
 		wsConn.Close()
-		return errors.New("authentication failed")
+		// Return a non-retriable error to prevent reconnection attempts
+		return &nonRetriableError{msg: "authentication failed"}
 	}
 
 	c.batchLogger.log("auth_success", c.threads, func(count, total int) {
@@ -529,7 +540,8 @@ func (c *WSSocksClient) startReverse(ctx context.Context) error {
 					return
 				default:
 					if err := c.maintainWebSocketConnection(ctx, index); err != nil {
-						if !c.reconnect {
+						var nrErr *nonRetriableError
+						if !c.reconnect || errors.As(err, &nrErr) {
 							errChan <- err
 							return
 						}
