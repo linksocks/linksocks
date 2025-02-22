@@ -167,13 +167,13 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 
 	if err := client.WaitReady(cmd.Context(), 0); err != nil {
 		logger.Fatal().Msgf("Exit due to error: %s", err.Error())
-		return nil
+		return err
 	}
 
 	// Add connector token if provided
 	if connectorToken != "" && reverse {
 		if _, err := client.AddConnector(connectorToken); err != nil {
-			logger.Fatal().Msg("failed to add connector token")
+			logger.Fatal().Msg("Failed to add connector token")
 			return nil
 		}
 	}
