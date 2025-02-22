@@ -26,6 +26,12 @@ type WSConn struct {
 
 // NewWSConn creates a new mutex-protected websocket connection
 func NewWSConn(conn *websocket.Conn) *WSConn {
+	// Set some basic configs
+	conn.SetReadLimit(32 * 1024 * 1024) // 32MB max message size
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	})
+
 	return &WSConn{
 		conn:         conn,
 		batchData:    make([][]byte, 0, 16),

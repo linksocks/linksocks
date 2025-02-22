@@ -73,6 +73,7 @@ func (cli *CLI) initCommands() {
 	clientCmd.Flags().BoolP("socks-no-wait", "i", false, "Start the SOCKS server immediately")
 	clientCmd.Flags().BoolP("no-reconnect", "R", false, "Stop when the server disconnects")
 	clientCmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
+	clientCmd.Flags().IntP("threads", "T", 16, "Number of threads for data transfer")
 
 	// Bind environment variables
 	clientCmd.Flags().Lookup("token").Usage += " (env: WSSOCKS_TOKEN)"
@@ -137,6 +138,7 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	socksNoWait, _ := cmd.Flags().GetBool("socks-no-wait")
 	noReconnect, _ := cmd.Flags().GetBool("no-reconnect")
 	debug, _ := cmd.Flags().GetCount("debug")
+	threads, _ := cmd.Flags().GetInt("threads")
 
 	// Setup logging
 	logger := cli.initLogging(debug)
@@ -149,7 +151,8 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 		WithSocksPort(socksPort).
 		WithSocksWaitServer(!socksNoWait). // Note: inverted flag
 		WithReconnect(!noReconnect).       // Note: inverted flag
-		WithLogger(logger)
+		WithLogger(logger).
+		WithThreads(threads)
 
 	// Add authentication options if provided
 	if socksUsername != "" {

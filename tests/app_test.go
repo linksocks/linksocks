@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"testing"
@@ -293,7 +294,7 @@ func TestForwardRemoveToken(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Timeout waiting for client disconnection")
 	}
-	
+
 	// Add token back
 	var err error
 	server.Token, err = server.Server.AddForwardToken(server.Token)
@@ -405,4 +406,28 @@ func TestConnectorAutonomy(t *testing.T) {
 	defer client2.Close()
 	require.Error(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort}))
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: client2.SocksPort}))
+}
+
+func TestClientThread(t *testing.T) {
+	server := forwardServer(t, &ProxyTestServerOption{
+		ConnectorAutonomy: true,
+	})
+	defer server.Close()
+
+	socksPort, err := getFreePort()
+	require.NoError(t, err)
+	logger := createPrefixedLogger("CLT0")
+	clientOpt := wssocks.DefaultClientOption().
+		WithWSURL(fmt.Sprintf("ws://localhost:%d", server.WSPort)).
+		WithSocksPort(socksPort).
+		WithReconnectDelay(1 * time.Second).
+		WithThreads(2).
+		WithLogger(logger)
+	client := wssocks.NewWSSocksClient(server.Token, clientOpt)
+	require.NoError(t, client.WaitReady(context.Background(), 5*time.Second))
+
+	// Execute web connection test three times
+	for i := 0; i < 3; i++ {
+		require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: socksPort}))
+	}
 }
