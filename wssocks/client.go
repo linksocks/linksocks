@@ -19,6 +19,7 @@ import (
 type WSSocksClient struct {
 	Connected    chan struct{} // Channel that is closed when connection is established
 	Disconnected chan struct{} // Channel that is closed when connection is lost
+	IsConnected  bool          // Boolean flag indicating current connection status
 	errors       chan error    // Channel for errors
 
 	relay           *Relay
@@ -40,7 +41,8 @@ type WSSocksClient struct {
 	reconnectDelay time.Duration
 	threads        int // Number of concurrent WebSocket connections
 
-	mu sync.RWMutex
+	mu           sync.RWMutex // General mutex
+	connectionMu sync.Mutex   // Dedicated mutex for connection status
 
 	cancelFunc context.CancelFunc
 
@@ -196,7 +198,8 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 		reconnectDelay:  opt.ReconnectDelay,
 		errors:          make(chan error, 1),
 		Connected:       make(chan struct{}),
-		Disconnected:    make(chan struct{}),
+		Disconnected:    disconnected,
+		IsConnected:     false,
 		threads:         opt.Threads,
 		websockets:      make([]*WSConn, 0, opt.Threads),
 	}
@@ -419,15 +422,7 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 
 	// For forward mode, mark as connected after first successful connection
 	if !c.reverse && len(c.websockets) == 1 {
-		select {
-		case <-c.Connected:
-			// Reset Connected channel if it was previously closed
-			c.Connected = make(chan struct{})
-		default:
-		}
-		close(c.Connected)
-		// Reset Disconnected channel
-		c.Disconnected = make(chan struct{})
+		c.setConnectionStatus(true)
 	}
 	c.mu.Unlock()
 
@@ -481,17 +476,7 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 
 	// For reverse mode, mark as connected after first successful authentication
 	if c.reverse && index == 0 {
-		c.mu.Lock()
-		select {
-		case <-c.Connected:
-			// Reset Connected channel if it was previously closed
-			c.Connected = make(chan struct{})
-		default:
-		}
-		close(c.Connected)
-		// Reset Disconnected channel
-		c.Disconnected = make(chan struct{})
-		c.mu.Unlock()
+		c.setConnectionStatus(true)
 	}
 
 	errChan := make(chan error, 2)
@@ -521,19 +506,7 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 		}
 	}
 	if allDown {
-		select {
-		case <-c.Connected:
-			// Reset Connected channel
-			c.Connected = make(chan struct{})
-		default:
-		}
-		select {
-		case <-c.Disconnected:
-			// Reset Disconnected channel if it was previously closed
-			c.Disconnected = make(chan struct{})
-		default:
-		}
-		close(c.Disconnected)
+		c.setConnectionStatus(false)
 	}
 	c.mu.Unlock()
 
@@ -865,5 +838,40 @@ func (c *WSSocksClient) RemoveConnector(connectorToken string) error {
 		return nil
 	case <-time.After(10 * time.Second):
 		return errors.New("timeout waiting for connector response")
+	}
+}
+
+// setConnectionStatus safely handle channel operations
+func (c *WSSocksClient) setConnectionStatus(connected bool) {
+	c.connectionMu.Lock()
+	defer c.connectionMu.Unlock()
+
+	// Only update if status actually changed
+	if c.IsConnected == connected {
+		return
+	}
+
+	c.IsConnected = connected
+
+	if connected {
+		// Reset Connected channel if it was previously closed
+		select {
+		case <-c.Connected:
+			c.Connected = make(chan struct{})
+		default:
+		}
+		close(c.Connected)
+		// Reset Disconnected channel
+		c.Disconnected = make(chan struct{})
+	} else {
+		// Reset Connected channel
+		c.Connected = make(chan struct{})
+		// Reset Disconnected channel if it was previously closed
+		select {
+		case <-c.Disconnected:
+			c.Disconnected = make(chan struct{})
+		default:
+		}
+		close(c.Disconnected)
 	}
 }
