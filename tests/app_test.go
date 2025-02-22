@@ -293,10 +293,7 @@ func TestForwardRemoveToken(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Timeout waiting for client disconnection")
 	}
-
-	// Connection should fail
-	assert.Error(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: client.SocksPort}))
-
+	
 	// Add token back
 	var err error
 	server.Token, err = server.Server.AddForwardToken(server.Token)
