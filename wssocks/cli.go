@@ -7,7 +7,6 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 // CLI represents the command-line interface for WSSocks
@@ -75,16 +74,10 @@ func (cli *CLI) initCommands() {
 	clientCmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
 	clientCmd.Flags().IntP("threads", "T", 16, "Number of threads for data transfer")
 
-	// Bind environment variables
+	// Update usage to show environment variables
 	clientCmd.Flags().Lookup("token").Usage += " (env: WSSOCKS_TOKEN)"
 	clientCmd.Flags().Lookup("connector-token").Usage += " (env: WSSOCKS_CONNECTOR_TOKEN)"
 	clientCmd.Flags().Lookup("socks-password").Usage += " (env: WSSOCKS_SOCKS_PASSWORD)"
-	_ = viper.BindEnv("token", "WSSOCKS_TOKEN")
-	_ = viper.BindEnv("connector-token", "WSSOCKS_CONNECTOR_TOKEN")
-	_ = viper.BindPFlag("token", clientCmd.Flags().Lookup("token"))
-	_ = viper.BindPFlag("connector-token", clientCmd.Flags().Lookup("connector-token"))
-	_ = viper.BindEnv("socks-password", "WSSOCKS_SOCKS_PASSWORD")
-	_ = viper.BindPFlag("socks-password", clientCmd.Flags().Lookup("socks-password"))
 
 	// Mark required flags
 	clientCmd.MarkFlagRequired("token")
@@ -105,36 +98,34 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
 	serverCmd.Flags().StringP("api-key", "k", "", "Enable HTTP API with specified key")
 
-	// Bind environment variables
+	// Update usage to show environment variables
 	serverCmd.Flags().Lookup("token").Usage += " (env: WSSOCKS_TOKEN)"
 	serverCmd.Flags().Lookup("connector-token").Usage += " (env: WSSOCKS_CONNECTOR_TOKEN)"
 	serverCmd.Flags().Lookup("socks-password").Usage += " (env: WSSOCKS_SOCKS_PASSWORD)"
-	_ = viper.BindEnv("token", "WSSOCKS_TOKEN")
-	_ = viper.BindEnv("connector-token", "WSSOCKS_CONNECTOR_TOKEN")
-	_ = viper.BindPFlag("token", serverCmd.Flags().Lookup("token"))
-	_ = viper.BindEnv("socks-password", "WSSOCKS_SOCKS_PASSWORD")
-	_ = viper.BindPFlag("socks-password", serverCmd.Flags().Lookup("socks-password"))
 
 	// Add commands to root
 	cli.rootCmd.AddCommand(clientCmd, serverCmd, versionCmd)
 }
 
 func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
-	// Get flags
-	token := viper.GetString("token")
-	if flagToken, _ := cmd.Flags().GetString("token"); flagToken != "" {
-		token = flagToken
+	// Get flags and environment variables
+	token, _ := cmd.Flags().GetString("token")
+	if envToken := os.Getenv("WSSOCKS_TOKEN"); envToken != "" && token == "" {
+		token = envToken
 	}
-	connectorToken := viper.GetString("connector-token")
-	if flagConnectorToken, _ := cmd.Flags().GetString("connector-token"); flagConnectorToken != "" {
-		connectorToken = flagConnectorToken
+	connectorToken, _ := cmd.Flags().GetString("connector-token")
+	if envConnectorToken := os.Getenv("WSSOCKS_CONNECTOR_TOKEN"); envConnectorToken != "" && connectorToken == "" {
+		connectorToken = envConnectorToken
+	}
+	socksPassword, _ := cmd.Flags().GetString("socks-password")
+	if envSocksPassword := os.Getenv("WSSOCKS_SOCKS_PASSWORD"); envSocksPassword != "" && socksPassword == "" {
+		socksPassword = envSocksPassword
 	}
 	url, _ := cmd.Flags().GetString("url")
 	reverse, _ := cmd.Flags().GetBool("reverse")
 	socksHost, _ := cmd.Flags().GetString("socks-host")
 	socksPort, _ := cmd.Flags().GetInt("socks-port")
 	socksUsername, _ := cmd.Flags().GetString("socks-username")
-	socksPassword := viper.GetString("socks-password")
 	socksNoWait, _ := cmd.Flags().GetBool("socks-no-wait")
 	noReconnect, _ := cmd.Flags().GetBool("no-reconnect")
 	debug, _ := cmd.Flags().GetCount("debug")
@@ -190,14 +181,18 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 }
 
 func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
-	// Get flags
-	token := viper.GetString("token")
-	if flagToken, _ := cmd.Flags().GetString("token"); flagToken != "" {
-		token = flagToken
+	// Get flags and environment variables
+	token, _ := cmd.Flags().GetString("token")
+	if envToken := os.Getenv("WSSOCKS_TOKEN"); envToken != "" && token == "" {
+		token = envToken
 	}
-	connectorToken := viper.GetString("connector-token")
-	if flagConnectorToken, _ := cmd.Flags().GetString("connector-token"); flagConnectorToken != "" {
-		connectorToken = flagConnectorToken
+	connectorToken, _ := cmd.Flags().GetString("connector-token")
+	if envConnectorToken := os.Getenv("WSSOCKS_CONNECTOR_TOKEN"); envConnectorToken != "" && connectorToken == "" {
+		connectorToken = envConnectorToken
+	}
+	socksPassword, _ := cmd.Flags().GetString("socks-password")
+	if envSocksPassword := os.Getenv("WSSOCKS_SOCKS_PASSWORD"); envSocksPassword != "" && socksPassword == "" {
+		socksPassword = envSocksPassword
 	}
 	wsHost, _ := cmd.Flags().GetString("ws-host")
 	wsPort, _ := cmd.Flags().GetInt("ws-port")
@@ -205,7 +200,6 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 	socksHost, _ := cmd.Flags().GetString("socks-host")
 	socksPort, _ := cmd.Flags().GetInt("socks-port")
 	socksUsername, _ := cmd.Flags().GetString("socks-username")
-	socksPassword := viper.GetString("socks-password")
 	debug, _ := cmd.Flags().GetCount("debug")
 	apiKey, _ := cmd.Flags().GetString("api-key")
 	connectorAutonomy, _ := cmd.Flags().GetBool("connector-autonomy")
