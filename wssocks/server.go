@@ -642,16 +642,20 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 	msg, err := wsConn.ReadMessage()
 	if err != nil {
 		s.log.Debug().Err(err).Msg("Failed to read auth message")
+		authResponse := AuthResponseMessage{Success: false}
+		s.relay.logMessage(authResponse, "send")
+		wsConn.WriteMessage(authResponse)
+		wsConn.flushBatch()
 		return
 	}
 
 	s.relay.logMessage(msg, "recv")
-
 	authMsg, ok := msg.(AuthMessage)
 	if !ok {
 		authResponse := AuthResponseMessage{Success: false}
 		s.relay.logMessage(authResponse, "send")
 		wsConn.WriteMessage(authResponse)
+		wsConn.flushBatch()
 		return
 	}
 
@@ -668,6 +672,7 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 		authResponse := AuthResponseMessage{Success: false}
 		s.relay.logMessage(authResponse, "send")
 		wsConn.WriteMessage(authResponse)
+		wsConn.flushBatch()
 		return
 	}
 
@@ -731,6 +736,7 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 	s.relay.logMessage(authResponse, "send")
 	if err := wsConn.WriteMessage(authResponse); err != nil {
 		s.log.Debug().Err(err).Msg("Failed to send auth response")
+		wsConn.flushBatch()
 		return
 	}
 
