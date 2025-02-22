@@ -2,7 +2,6 @@ package wssocks
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -11,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog"
 	"golang.org/x/sync/errgroup"
@@ -57,6 +57,7 @@ type ClientOption struct {
 	Logger          zerolog.Logger
 	BufferSize      int
 	ChannelTimeout  time.Duration
+	ConnectTimeout  time.Duration
 }
 
 // DefaultClientOption returns default client options
@@ -70,8 +71,9 @@ func DefaultClientOption() *ClientOption {
 		Reconnect:       true,
 		ReconnectDelay:  5 * time.Second,
 		Logger:          zerolog.New(os.Stdout).With().Timestamp().Logger(),
-		BufferSize:      BufferSize,
-		ChannelTimeout:  ChannelTimeout,
+		BufferSize:      DefaultBufferSize,
+		ChannelTimeout:  DefaultChannelTimeout,
+		ConnectTimeout:  DefaultConnectTimeout,
 	}
 }
 
@@ -147,6 +149,12 @@ func (o *ClientOption) WithChannelTimeout(timeout time.Duration) *ClientOption {
 	return o
 }
 
+// WithConnectTimeout sets the connect timeout duration
+func (o *ClientOption) WithConnectTimeout(timeout time.Duration) *ClientOption {
+	o.ConnectTimeout = timeout
+	return o
+}
+
 // NewWSSocksClient creates a new WSSocksClient instance
 func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 	if opt == nil {
@@ -156,8 +164,13 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 	disconnected := make(chan struct{})
 	close(disconnected)
 
+	relayOpt := NewDefaultRelayOption().
+		WithBufferSize(opt.BufferSize).
+		WithChannelTimeout(opt.ChannelTimeout).
+		WithConnectTimeout(opt.ConnectTimeout)
+
 	client := &WSSocksClient{
-		relay:           NewRelay(opt.Logger, opt.BufferSize, opt.ChannelTimeout),
+		relay:           NewRelay(opt.Logger, relayOpt),
 		log:             opt.Logger,
 		token:           token,
 		wsURL:           opt.WSURL,
@@ -260,7 +273,7 @@ func (c *WSSocksClient) startForward(ctx context.Context) error {
 			ws, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
 			if err != nil {
 				if c.reconnect {
-					c.log.Error().Err(err).Msg("WebSocket connection closed. Retrying in 5 seconds...")
+					c.log.Warn().Err(err).Msg("WebSocket connection closed. Retrying in 5 seconds...")
 					time.Sleep(c.reconnectDelay)
 					continue
 				}
@@ -286,31 +299,37 @@ func (c *WSSocksClient) startForward(ctx context.Context) error {
 
 			// Send authentication
 			authMsg := AuthMessage{
-				Type:    TypeAuth,
 				Reverse: false,
 				Token:   c.token,
 			}
 
 			c.relay.logMessage(authMsg, "send")
-			if err := wsConn.SyncWriteJSON(authMsg); err != nil {
+			if err := wsConn.WriteMessage(authMsg); err != nil {
 				wsConn.Close()
 				if c.reconnect {
-					c.log.Error().Err(err).Msg("Failed to send auth message. Retrying...")
+					c.log.Warn().Err(err).Msg("Failed to send auth message. Retrying...")
 					time.Sleep(c.reconnectDelay)
 					continue
 				}
 				return err
 			}
 
-			var authResponse AuthResponseMessage
-			if err := wsConn.ReadJSON(&authResponse); err != nil {
+			// Read auth response
+			msg, err := wsConn.ReadMessage()
+			if err != nil {
 				wsConn.Close()
 				if c.reconnect {
-					c.log.Error().Err(err).Msg("Failed to read auth response. Retrying...")
+					c.log.Warn().Err(err).Msg("Failed to read auth response. Retrying...")
 					time.Sleep(c.reconnectDelay)
 					continue
 				}
 				return err
+			}
+
+			authResponse, ok := msg.(AuthResponseMessage)
+			if !ok {
+				wsConn.Close()
+				return errors.New("unexpected message type for auth response")
 			}
 
 			c.relay.logMessage(authResponse, "recv")
@@ -361,7 +380,7 @@ func (c *WSSocksClient) startForward(ctx context.Context) error {
 			if err != nil && err != context.Canceled {
 				if errors.Is(err, net.ErrClosed) || websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					if c.reconnect {
-						c.log.Error().Msg("WebSocket connection closed. Retrying in 5 seconds...")
+						c.log.Warn().Msg("WebSocket connection closed. Retrying in 5 seconds...")
 						time.Sleep(c.reconnectDelay)
 						continue
 					}
@@ -369,7 +388,7 @@ func (c *WSSocksClient) startForward(ctx context.Context) error {
 					return err
 				}
 				if c.reconnect {
-					c.log.Error().Err(err).Msg("Operation error. Retrying in 5 seconds...")
+					c.log.Warn().Err(err).Msg("Operation error. Retrying in 5 seconds...")
 					time.Sleep(c.reconnectDelay)
 					continue
 				}
@@ -390,7 +409,7 @@ func (c *WSSocksClient) startReverse(ctx context.Context) error {
 			ws, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
 			if err != nil {
 				if c.reconnect {
-					c.log.Error().Err(err).Msg("WebSocket connection closed. Retrying in 5 seconds...")
+					c.log.Warn().Err(err).Msg("WebSocket connection closed. Retrying in 5 seconds...")
 					time.Sleep(c.reconnectDelay)
 					continue
 				}
@@ -406,33 +425,38 @@ func (c *WSSocksClient) startReverse(ctx context.Context) error {
 
 			// Send authentication
 			authMsg := AuthMessage{
-				Type:    TypeAuth,
 				Reverse: true,
 				Token:   c.token,
 			}
 
 			c.relay.logMessage(authMsg, "send")
-			if err := wsConn.SyncWriteJSON(authMsg); err != nil {
+			if err := wsConn.WriteMessage(authMsg); err != nil {
 				wsConn.Close()
 				if c.reconnect {
-					c.log.Error().Err(err).Msg("Failed to send auth message. Retrying...")
+					c.log.Warn().Err(err).Msg("Failed to send auth message. Retrying...")
 					time.Sleep(c.reconnectDelay)
 					continue
 				}
 				return err
 			}
 
-			var authResponse struct {
-				Success bool `json:"success"`
-			}
-			if err := wsConn.ReadJSON(&authResponse); err != nil {
+			// Read auth response
+			msg, err := wsConn.ReadMessage()
+			if err != nil {
 				wsConn.Close()
 				if c.reconnect {
-					c.log.Error().Err(err).Msg("Failed to read auth response. Retrying...")
+					c.log.Warn().Err(err).Msg("Failed to read auth response. Retrying...")
 					time.Sleep(c.reconnectDelay)
 					continue
 				}
 				return err
+			}
+
+			c.relay.logMessage(msg, "recv")
+			authResponse, ok := msg.(AuthResponseMessage)
+			if !ok {
+				wsConn.Close()
+				return errors.New("unexpected message type for auth response")
 			}
 
 			if !authResponse.Success {
@@ -474,7 +498,7 @@ func (c *WSSocksClient) startReverse(ctx context.Context) error {
 			if err != nil && err != context.Canceled {
 				if errors.Is(err, net.ErrClosed) || websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					if c.reconnect {
-						c.log.Error().Msg("WebSocket connection closed. Retrying in 5 seconds...")
+						c.log.Warn().Msg("WebSocket connection closed. Retrying in 5 seconds...")
 						time.Sleep(c.reconnectDelay)
 						continue
 					}
@@ -482,7 +506,7 @@ func (c *WSSocksClient) startReverse(ctx context.Context) error {
 					return err
 				}
 				if c.reconnect {
-					c.log.Error().Err(err).Msg("Operation error. Retrying in 5 seconds...")
+					c.log.Warn().Err(err).Msg("Operation error. Retrying in 5 seconds...")
 					time.Sleep(c.reconnectDelay)
 					continue
 				}
@@ -500,49 +524,42 @@ func (c *WSSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) error
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			var rawMsg json.RawMessage
-			err := ws.ReadJSON(&rawMsg)
+			msg, err := ws.ReadMessage()
 			if err != nil {
 				return err
-			}
-
-			msg, err := ParseMessage(rawMsg)
-			if err != nil {
-				c.log.Warn().Err(err).Msg("Failed to parse message")
-				continue
 			}
 
 			c.relay.logMessage(msg, "recv")
 
 			switch m := msg.(type) {
-			case *DataMessage:
+			case DataMessage:
 				channelID := m.ChannelID
 				if queue, ok := c.relay.messageQueues.Load(channelID); ok {
 					select {
-					case queue.(chan DataMessage) <- *m:
-						c.log.Debug().Str("channel_id", channelID).Msg("Message forwarded to channel")
+					case queue.(chan DataMessage) <- m:
+						c.log.Trace().Str("channel_id", channelID.String()).Msg("Message forwarded to channel")
 					default:
-						c.log.Warn().Str("channel_id", channelID).Msg("Message queue full")
+						c.log.Debug().Str("channel_id", channelID.String()).Msg("Message queue full")
 					}
 				} else {
-					c.log.Warn().Str("channel_id", channelID).Msg("Received data for unknown channel")
+					c.log.Debug().Str("channel_id", channelID.String()).Msg("Received data for unknown channel")
 				}
 
-			case *ConnectMessage:
+			case ConnectMessage:
 				go func() {
-					if err := c.relay.HandleNetworkConnection(ctx, ws, *m); err != nil && !errors.Is(err, context.Canceled) {
-						c.log.Warn().Err(err).Msg("Network connection handler error")
+					if err := c.relay.HandleNetworkConnection(ctx, ws, m); err != nil && !errors.Is(err, context.Canceled) {
+						c.log.Debug().Err(err).Msg("Network connection handler error")
 					}
 				}()
 
-			case *ConnectResponseMessage:
+			case ConnectResponseMessage:
 				if queue, ok := c.relay.messageQueues.Load(m.ConnectID); ok {
-					queue.(chan ConnectResponseMessage) <- *m
+					queue.(chan ConnectResponseMessage) <- m
 				} else {
-					c.log.Debug().Str("connect_id", m.ConnectID).Msg("Received connect response for unknown channel")
+					c.log.Debug().Str("connect_id", m.ConnectID.String()).Msg("Received connect response for unknown channel")
 				}
 
-			case *DisconnectMessage:
+			case DisconnectMessage:
 				if cancelVal, ok := c.relay.tcpChannels.LoadAndDelete(m.ChannelID); ok {
 					if cancel, ok := cancelVal.(context.CancelFunc); ok {
 						cancel()
@@ -556,15 +573,15 @@ func (c *WSSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) error
 				c.relay.udpClientAddrs.Delete(m.ChannelID)
 				c.relay.messageQueues.Delete(m.ChannelID)
 
-			case *ConnectorResponseMessage:
+			case ConnectorResponseMessage:
 				if queue, ok := c.relay.messageQueues.Load(m.ConnectID); ok {
-					queue.(chan ConnectorResponseMessage) <- *m
+					queue.(chan ConnectorResponseMessage) <- m
 				} else {
-					c.log.Debug().Str("connect_id", m.ConnectID).Msg("Received connector response for unknown channel")
+					c.log.Debug().Str("connect_id", m.ConnectID.String()).Msg("Received connector response for unknown channel")
 				}
 
 			default:
-				c.log.Warn().Str("type", msg.GetType()).Msg("Received unknown message type")
+				c.log.Debug().Str("type", msg.GetType()).Msg("Received unknown message type")
 			}
 		}
 	}
@@ -583,13 +600,13 @@ func (c *WSSocksClient) heartbeatHandler(ctx context.Context, ws *WSConn) error 
 			err := ws.SyncWriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
-					c.log.Warn().Msg("WebSocket connection closed, stopping heartbeat")
+					c.log.Trace().Msg("WebSocket connection closed, stopping heartbeat")
 				} else {
-					c.log.Error().Err(err).Msg("Heartbeat error")
+					c.log.Debug().Err(err).Msg("Heartbeat error")
 				}
 				return err
 			}
-			c.log.Debug().Msg("Heartbeat: Sent ping, received pong")
+			c.log.Trace().Msg("Heartbeat: Sent ping, received pong")
 		}
 	}
 }
@@ -633,7 +650,7 @@ func (c *WSSocksClient) runSocksServer(ctx context.Context, readyEvent chan<- st
 				if errors.Is(err, net.ErrClosed) {
 					return nil
 				}
-				c.log.Error().Err(err).Msg("Error accepting SOCKS connection")
+				c.log.Warn().Err(err).Msg("Error accepting SOCKS connection")
 				continue
 			}
 
@@ -656,16 +673,16 @@ func (c *WSSocksClient) handleSocksRequest(ctx context.Context, socksConn net.Co
 
 		if ws != nil {
 			if err := c.relay.HandleSocksRequest(ctx, ws, socksConn, c.socksUsername, c.socksPassword); err != nil && !errors.Is(err, context.Canceled) {
-				c.log.Error().Err(err).Msg("Error handling SOCKS request")
+				c.log.Warn().Err(err).Msg("Error handling SOCKS request")
 			}
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	c.log.Debug().Msg("No valid websockets connection after waiting 10s, refusing socks request")
+	c.log.Warn().Msg("No valid websockets connection after waiting 10s, refusing socks request")
 	if err := c.relay.RefuseSocksRequest(socksConn, 0x03); err != nil {
-		c.log.Error().Err(err).Msg("Error refusing SOCKS request")
+		c.log.Warn().Err(err).Msg("Error refusing SOCKS request")
 	}
 }
 
@@ -680,7 +697,7 @@ func (c *WSSocksClient) Close() {
 	// Close SOCKS listener if it exists
 	if c.socksListener != nil {
 		if err := c.socksListener.Close(); err != nil {
-			c.log.Error().Err(err).Msg("Error closing SOCKS listener")
+			c.log.Warn().Err(err).Msg("Error closing SOCKS listener")
 		}
 		c.socksListener = nil
 	}
@@ -688,7 +705,7 @@ func (c *WSSocksClient) Close() {
 	// Close WebSocket connection if it exists
 	if c.websocket != nil {
 		if err := c.websocket.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			c.log.Error().Err(err).Msg("Error closing WebSocket connection")
+			c.log.Warn().Err(err).Msg("Error closing WebSocket connection")
 		}
 		c.websocket = nil
 	}
@@ -699,7 +716,7 @@ func (c *WSSocksClient) Close() {
 		c.cancelFunc = nil
 	}
 
-	c.log.Debug().Msg("Client stopped")
+	c.log.Info().Msg("Client stopped")
 }
 
 // AddConnector sends a request to add a new connector token and waits for response.
@@ -717,9 +734,8 @@ func (c *WSSocksClient) AddConnector(connectorToken string) (string, error) {
 		return "", errors.New("client not connected")
 	}
 
-	connectID := generateRandomToken(8)
+	connectID := uuid.New()
 	msg := ConnectorMessage{
-		Type:           TypeConnector,
 		Operation:      "add",
 		ConnectID:      connectID,
 		ConnectorToken: connectorToken,
@@ -732,7 +748,7 @@ func (c *WSSocksClient) AddConnector(connectorToken string) (string, error) {
 
 	// Send request
 	c.relay.logMessage(msg, "send")
-	if err := ws.SyncWriteJSON(msg); err != nil {
+	if err := ws.WriteMessage(msg); err != nil {
 		return "", fmt.Errorf("failed to send connector request: %w", err)
 	}
 
@@ -763,9 +779,8 @@ func (c *WSSocksClient) RemoveConnector(connectorToken string) error {
 		return errors.New("client not connected")
 	}
 
-	connectID := generateRandomToken(8)
+	connectID := uuid.New()
 	msg := ConnectorMessage{
-		Type:           TypeConnector,
 		Operation:      "remove",
 		ConnectID:      connectID,
 		ConnectorToken: connectorToken,
@@ -778,7 +793,7 @@ func (c *WSSocksClient) RemoveConnector(connectorToken string) error {
 
 	// Send request
 	c.relay.logMessage(msg, "send")
-	if err := ws.SyncWriteJSON(msg); err != nil {
+	if err := ws.WriteMessage(msg); err != nil {
 		return fmt.Errorf("failed to send connector request: %w", err)
 	}
 

@@ -3,7 +3,6 @@ package wssocks
 import (
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,50 +16,87 @@ import (
 )
 
 const (
-	BufferSize     = 32 * 1024 // 32KB buffer size
-	ChannelTimeout = 12 * time.Hour
+	// DefaultBufferSize is the size of reusable buffers
+	// Larger buffers improve throughput but consume more memory
+	DefaultBufferSize     = 256 * 1024 // 256KB buffer size
+	DefaultChannelTimeout = 12 * time.Hour
+	DefaultConnectTimeout = 10 * time.Second
 )
+
+// RelayOption contains configuration options for Relay
+type RelayOption struct {
+	// BufferSize controls the size of reusable buffers
+	// Larger values may improve performance but increase memory usage
+	BufferSize     int
+	ChannelTimeout time.Duration
+	ConnectTimeout time.Duration
+}
+
+// Global buffer pool using pointer type
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, DefaultBufferSize)
+		return &b
+	},
+}
+
+// NewDefaultRelayOption creates a RelayOption with default values
+func NewDefaultRelayOption() *RelayOption {
+	return &RelayOption{
+		BufferSize:     DefaultBufferSize,
+		ChannelTimeout: DefaultChannelTimeout,
+		ConnectTimeout: DefaultConnectTimeout,
+	}
+}
+
+// WithBufferSize sets the buffer size for the relay
+func (o *RelayOption) WithBufferSize(size int) *RelayOption {
+	o.BufferSize = size
+	return o
+}
+
+// WithChannelTimeout sets the channel timeout for the relay
+func (o *RelayOption) WithChannelTimeout(timeout time.Duration) *RelayOption {
+	o.ChannelTimeout = timeout
+	return o
+}
+
+// WithConnectTimeout sets the connect timeout for the relay
+func (o *RelayOption) WithConnectTimeout(timeout time.Duration) *RelayOption {
+	o.ConnectTimeout = timeout
+	return o
+}
 
 // Relay handles stream transport between SOCKS5 and WebSocket
 type Relay struct {
 	log            zerolog.Logger
-	messageQueues  sync.Map // map[string]chan Message
-	tcpChannels    sync.Map // map[string]context.CancelFunc
-	udpChannels    sync.Map // map[string]context.CancelFunc
-	udpClientAddrs sync.Map // map[string]*net.UDPAddr
-	lastActivity   sync.Map // map[string]time.Time
-	bufferSize     int
-	channelTimeout time.Duration
+	messageQueues  sync.Map // map[uuid.UUID]chan Message
+	tcpChannels    sync.Map // map[uuid.UUID]context.CancelFunc
+	udpChannels    sync.Map // map[uuid.UUID]context.CancelFunc
+	udpClientAddrs sync.Map // map[uuid.UUID]*net.UDPAddr
+	lastActivity   sync.Map // map[uuid.UUID]time.Time
+	option         *RelayOption
 	done           chan struct{}
 }
 
 // NewRelay creates a new Relay instance
-func NewRelay(logger zerolog.Logger, bufferSize int, channelTimeout time.Duration) *Relay {
-	// If buffer size is not positive, use default
-	if bufferSize <= 0 {
-		bufferSize = BufferSize
-	}
-
-	// If channel timeout is not positive, use default
-	if channelTimeout <= 0 {
-		channelTimeout = ChannelTimeout
+func NewRelay(logger zerolog.Logger, option *RelayOption) *Relay {
+	if option == nil {
+		option = NewDefaultRelayOption()
 	}
 
 	r := &Relay{
-		log:            logger,
-		bufferSize:     bufferSize,
-		channelTimeout: channelTimeout,
-		done:           make(chan struct{}),
+		log:    logger,
+		option: option,
+		done:   make(chan struct{}),
 	}
 
-	// Start timeout checker
-	go r.checkTimeouts()
+	go r.channelCleaner()
 
 	return r
 }
 
-// Add new method to check timeouts
-func (r *Relay) checkTimeouts() {
+func (r *Relay) channelCleaner() {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
@@ -73,15 +109,15 @@ func (r *Relay) checkTimeouts() {
 
 			// Check TCP channels
 			r.tcpChannels.Range(func(key, value interface{}) bool {
-				channelID := key.(string)
+				channelID := key.(uuid.UUID)
 				cancel := value.(context.CancelFunc)
 
 				if lastTime, ok := r.lastActivity.Load(channelID); ok {
-					if now.Sub(lastTime.(time.Time)) > r.channelTimeout {
-						r.log.Debug().
-							Str("channel_id", channelID).
+					if now.Sub(lastTime.(time.Time)) > r.option.ChannelTimeout {
+						r.log.Trace().
+							Str("channel_id", channelID.String()).
 							Str("type", "tcp").
-							Dur("timeout", r.channelTimeout).
+							Dur("timeout", r.option.ChannelTimeout).
 							Msg("Channel timed out, closing")
 						cancel()
 						r.tcpChannels.Delete(channelID)
@@ -93,15 +129,15 @@ func (r *Relay) checkTimeouts() {
 
 			// Check UDP channels
 			r.udpChannels.Range(func(key, value interface{}) bool {
-				channelID := key.(string)
+				channelID := key.(uuid.UUID)
 				cancel := value.(context.CancelFunc)
 
 				if lastTime, ok := r.lastActivity.Load(channelID); ok {
-					if now.Sub(lastTime.(time.Time)) > r.channelTimeout {
-						r.log.Debug().
-							Str("channel_id", channelID).
+					if now.Sub(lastTime.(time.Time)) > r.option.ChannelTimeout {
+						r.log.Trace().
+							Str("channel_id", channelID.String()).
 							Str("type", "udp").
-							Dur("timeout", r.channelTimeout).
+							Dur("timeout", r.option.ChannelTimeout).
 							Msg("Channel timed out, closing")
 						cancel()
 						r.udpChannels.Delete(channelID)
@@ -115,7 +151,7 @@ func (r *Relay) checkTimeouts() {
 }
 
 // Add new method to update activity timestamp
-func (r *Relay) updateActivityTime(channelID string) {
+func (r *Relay) updateActivityTime(channelID uuid.UUID) {
 	r.lastActivity.Store(channelID, time.Now())
 }
 
@@ -138,6 +174,10 @@ func (r *Relay) RefuseSocksRequest(conn net.Conn, reason byte) error {
 	// Read request
 	n, err = conn.Read(buffer)
 	if err != nil {
+		if err == io.EOF {
+			r.log.Debug().Msg("Client closed SOCKS connection")
+			return nil
+		}
 		return fmt.Errorf("read request error: %w", err)
 	}
 	if n < 7 {
@@ -173,7 +213,7 @@ func (r *Relay) HandleNetworkConnection(ctx context.Context, ws *WSConn, request
 // HandleTCPConnection handles TCP network connection
 func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request ConnectMessage) error {
 	// Generate channel_id
-	channelID := uuid.New().String()
+	channelID := uuid.New()
 
 	if request.Port <= 0 || request.Port > 65535 {
 		return fmt.Errorf("invalid port number: %d", request.Port)
@@ -184,9 +224,9 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 	r.log.Debug().Str("address", request.Address).Int("port", request.Port).
 		Str("target", targetAddr).Msg("Attempting TCP connection to")
 
-	conn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
+	conn, err := net.DialTimeout("tcp", targetAddr, r.option.ConnectTimeout)
 	if err != nil {
-		r.log.Error().
+		r.log.Debug().
 			Err(err).
 			Str("address", request.Address).
 			Int("port", request.Port).
@@ -194,16 +234,15 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 			Msg("Failed to connect to target")
 
 		response := ConnectResponseMessage{
-			Type:      TypeConnectResponse,
 			Success:   false,
 			Error:     err.Error(),
 			ConnectID: request.ConnectID,
 		}
 		r.logMessage(response, "send")
-		if err := ws.SyncWriteJSON(response); err != nil {
+		if err := ws.WriteMessage(response); err != nil {
 			return fmt.Errorf("write error response error: %w", err)
 		}
-		return fmt.Errorf("tcp connect error: %w", err)
+		return nil
 	}
 
 	// Create child context
@@ -218,14 +257,13 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 
 	// Send success response
 	response := ConnectResponseMessage{
-		Type:      TypeConnectResponse,
 		Success:   true,
 		ChannelID: channelID,
 		ConnectID: request.ConnectID,
 		Protocol:  "tcp",
 	}
 	r.logMessage(response, "send")
-	if err := ws.SyncWriteJSON(response); err != nil {
+	if err := ws.WriteMessage(response); err != nil {
 		return fmt.Errorf("write success response error: %w", err)
 	}
 
@@ -236,7 +274,7 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 // HandleUDPConnection handles UDP network connection
 func (r *Relay) HandleUDPConnection(ctx context.Context, ws *WSConn, request ConnectMessage) error {
 	// Generate channel_id
-	channelID := uuid.New().String()
+	channelID := uuid.New()
 
 	// Try dual-stack first
 	localAddr := &net.UDPAddr{
@@ -250,13 +288,12 @@ func (r *Relay) HandleUDPConnection(ctx context.Context, ws *WSConn, request Con
 		conn, err = net.ListenUDP("udp", localAddr)
 		if err != nil {
 			response := ConnectResponseMessage{
-				Type:      TypeConnectResponse,
 				Success:   false,
 				Error:     err.Error(),
 				ConnectID: request.ConnectID,
 			}
 			r.logMessage(response, "send")
-			if err := ws.SyncWriteJSON(response); err != nil {
+			if err := ws.WriteMessage(response); err != nil {
 				return fmt.Errorf("write error response error: %w", err)
 			}
 			return fmt.Errorf("udp listen error: %w", err)
@@ -275,14 +312,13 @@ func (r *Relay) HandleUDPConnection(ctx context.Context, ws *WSConn, request Con
 
 	// Send success response
 	response := ConnectResponseMessage{
-		Type:      TypeConnectResponse,
 		Success:   true,
 		ChannelID: channelID,
 		ConnectID: request.ConnectID,
 		Protocol:  "udp",
 	}
 	r.logMessage(response, "send")
-	if err := ws.SyncWriteJSON(response); err != nil {
+	if err := ws.WriteMessage(response); err != nil {
 		return fmt.Errorf("write success response error: %w", err)
 	}
 
@@ -385,6 +421,10 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 	// Read request
 	n, err = socksConn.Read(buffer)
 	if err != nil {
+		if err == io.EOF {
+			r.log.Debug().Msg("Client closed SOCKS connection")
+			return nil
+		}
 		return fmt.Errorf("read request error: %w", err)
 	}
 	if n < 7 {
@@ -425,8 +465,8 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 	targetPort = binary.BigEndian.Uint16(buffer[offset : offset+2])
 
 	// Generate unique client ID and connect ID
-	connectID := uuid.New().String()
-	r.log.Debug().Str("connect_id", connectID).Msg("Starting SOCKS request handling")
+	connectID := uuid.New()
+	r.log.Trace().Str("connect_id", connectID.String()).Msg("Starting SOCKS request handling")
 
 	// Handle different commands
 	switch cmd {
@@ -438,14 +478,14 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 
 		// Send connection request to server
 		requestData := ConnectMessage{
-			Type:      TypeConnect,
 			Protocol:  "tcp",
 			Address:   targetAddr,
 			Port:      int(targetPort),
 			ConnectID: connectID,
 		}
+		r.log.Debug().Str("address", targetAddr).Int("port", int(targetPort)).Msg("Requesting TCP connecting to")
 		r.logMessage(requestData, "send")
-		if err := ws.SyncWriteJSON(requestData); err != nil {
+		if err := ws.WriteMessage(requestData); err != nil {
 			// Return connection failure response to SOCKS client (0x04 = Host unreachable)
 			resp := []byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 			socksConn.Write(resp)
@@ -457,11 +497,12 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 		select {
 		case msg := <-connectQueue:
 			response = msg
-		case <-time.After(10 * time.Second):
+		case <-time.After(r.option.ConnectTimeout + 5*time.Second):
 			// Return connection failure response to SOCKS client (0x04 = Host unreachable)
 			resp := []byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 			socksConn.Write(resp)
-			return fmt.Errorf("remote connection response timeout")
+			r.log.Debug().Str("addr", targetAddr).Int("port", int(targetPort)).Msg("Remote connection response timeout")
+			return nil
 		}
 
 		if !response.Success {
@@ -470,11 +511,11 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 			if _, err := socksConn.Write(resp); err != nil {
 				return fmt.Errorf("write failure response error: %w", err)
 			}
-			r.log.Error().Str("error", response.Error).Msg("Target connection failed")
-			return fmt.Errorf("remote connection failed: %s", response.Error)
+			r.log.Debug().Str("error", response.Error).Msg("Remote connection failed")
+			return nil
 		}
 
-		r.log.Debug().Str("addr", targetAddr).Int("port", int(targetPort)).Msg("Remote successfully connected")
+		r.log.Trace().Str("addr", targetAddr).Int("port", int(targetPort)).Msg("Remote successfully connected")
 
 		// Send success response to client
 		resp := []byte{
@@ -513,12 +554,12 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 
 		// Send UDP associate request to server
 		requestData := ConnectMessage{
-			Type:      TypeConnect,
 			Protocol:  "udp",
 			ConnectID: connectID,
 		}
+		r.log.Debug().Msg("Requesting UDP Associate")
 		r.logMessage(requestData, "send")
-		if err := ws.SyncWriteJSON(requestData); err != nil {
+		if err := ws.WriteMessage(requestData); err != nil {
 			udpConn.Close()
 			return fmt.Errorf("write UDP request error: %w", err)
 		}
@@ -555,7 +596,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 			return fmt.Errorf("write UDP associate response error: %w", err)
 		}
 
-		r.log.Debug().Int("port", localAddr.Port).Msg("UDP association established")
+		r.log.Trace().Int("port", localAddr.Port).Msg("UDP association established")
 
 		// Monitor TCP connection for closure
 		go func() {
@@ -573,7 +614,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 }
 
 // HandleRemoteTCPForward handles remote TCP forwarding
-func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteConn net.Conn, channelID string) error {
+func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteConn net.Conn, channelID uuid.UUID) error {
 	// Initialize activity time
 	r.updateActivityTime(channelID)
 
@@ -588,27 +629,31 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 	// TCP to WebSocket
 	go func() {
 		defer wg.Done()
-		buffer := make([]byte, r.bufferSize)
+
+		// Get a buffer from the pool
+		buffer := *(bufferPool.Get().(*[]byte))
+		// Return the buffer to the pool when done
+		defer bufferPool.Put(&buffer)
+
 		for {
 			n, err := remoteConn.Read(buffer)
 			if err != nil {
 				if err == io.EOF {
-					r.log.Debug().Msg("Remote connection closed")
+					r.log.Trace().Msg("Remote connection closed")
 					disconnectMsg := DisconnectMessage{
-						Type:      TypeDisconnect,
 						ChannelID: channelID,
 					}
 					r.logMessage(disconnectMsg, "send")
-					ws.SyncWriteJSON(disconnectMsg)
+					ws.WriteMessage(disconnectMsg)
 				} else if opErr, ok := err.(*net.OpError); ok {
 					if errors.Is(opErr.Err, net.ErrClosed) {
-						r.log.Debug().Msg("TCP connection closed as instructed by connector")
+						r.log.Trace().Msg("TCP connection closed as instructed by connector")
 					} else {
-						r.log.Error().Err(err).Msg("Remote TCP read error")
+						r.log.Debug().Err(err).Msg("Remote TCP read error")
 						errChan <- fmt.Errorf("remote read error: %w", err)
 					}
 				} else {
-					r.log.Error().Err(err).Msg("Unexpected connection error")
+					r.log.Debug().Err(err).Msg("Unexpected connection error")
 					errChan <- fmt.Errorf("remote read error: %w", err)
 				}
 				return
@@ -620,18 +665,26 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 			// Update activity time
 			r.updateActivityTime(channelID)
 
+			// Create a new slice only for the actual data to be sent
+			// This ensures we don't hold onto more memory than needed
+			data := make([]byte, n)
+			copy(data, buffer[:n])
+
+			// Prepare the message for WebSocket transmission
 			msg := DataMessage{
-				Type:      TypeData,
-				Protocol:  "tcp",
-				ChannelID: channelID,
-				Data:      hex.EncodeToString(buffer[:n]),
+				Protocol:    "tcp",
+				ChannelID:   channelID,
+				Data:        data,
+				Compression: r.determineCompression(n),
 			}
+
+			// Log and send the message
 			r.logMessage(msg, "send")
-			if err := ws.SyncWriteJSON(msg); err != nil {
+			if err := ws.WriteMessage(msg); err != nil {
 				errChan <- fmt.Errorf("websocket write error: %w", err)
 				return
 			}
-			r.log.Debug().Int("size", n).Msg("Sent TCP data to WebSocket")
+			r.log.Trace().Int("size", n).Msg("Sent TCP data to WebSocket")
 		}
 	}()
 
@@ -646,18 +699,12 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 				// Update activity time
 				r.updateActivityTime(channelID)
 
-				data, err := hex.DecodeString(msg.Data)
-				if err != nil {
-					errChan <- fmt.Errorf("hex decode error: %w", err)
-					return
-				}
-
-				_, err = remoteConn.Write(data)
+				_, err := remoteConn.Write(msg.Data)
 				if err != nil {
 					errChan <- fmt.Errorf("remote write error: %w", err)
 					return
 				}
-				r.log.Debug().Int("size", len(data)).Msg("Sent TCP data to target")
+				r.log.Trace().Int("size", len(msg.Data)).Msg("Sent TCP data to target")
 			}
 		}
 	}()
@@ -680,7 +727,7 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 }
 
 // HandleRemoteUDPForward handles remote UDP forwarding
-func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn *net.UDPConn, channelID string) error {
+func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn *net.UDPConn, channelID uuid.UUID) error {
 	// Initialize activity time
 	r.updateActivityTime(channelID)
 
@@ -695,15 +742,15 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 	// UDP to WebSocket
 	go func() {
 		defer wg.Done()
-		buffer := make([]byte, r.bufferSize)
+		buffer := make([]byte, r.option.BufferSize)
 		for {
 			n, remoteAddr, err := udpConn.ReadFromUDP(buffer)
 			if err != nil {
 				if opErr, ok := err.(*net.OpError); ok {
 					if errors.Is(opErr.Err, net.ErrClosed) {
-						r.log.Debug().Msg("UDP port closed as instructed by connector")
+						r.log.Trace().Msg("UDP connection closed as instructed by connector")
 					} else {
-						r.log.Error().Err(err).Msg("Remote UDP read error")
+						r.log.Debug().Err(err).Msg("Remote UDP read error")
 						errChan <- fmt.Errorf("udp read error: %w", err)
 					}
 				} else {
@@ -716,19 +763,19 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 			r.updateActivityTime(channelID)
 
 			msg := DataMessage{
-				Type:      TypeData,
-				Protocol:  "udp",
-				ChannelID: channelID,
-				Data:      hex.EncodeToString(buffer[:n]),
-				Address:   remoteAddr.IP.String(),
-				Port:      remoteAddr.Port,
+				Protocol:    "udp",
+				ChannelID:   channelID,
+				Data:        buffer[:n],
+				Address:     remoteAddr.IP.String(),
+				Port:        remoteAddr.Port,
+				Compression: r.determineCompression(n),
 			}
 			r.logMessage(msg, "send")
-			if err := ws.SyncWriteJSON(msg); err != nil {
+			if err := ws.WriteMessage(msg); err != nil {
 				errChan <- fmt.Errorf("websocket write error: %w", err)
 				return
 			}
-			r.log.Debug().Int("size", n).Str("addr", remoteAddr.String()).Msg("Sent UDP data to WebSocket")
+			r.log.Trace().Int("size", n).Str("addr", remoteAddr.String()).Msg("Sent UDP data to WebSocket")
 		}
 	}()
 
@@ -743,12 +790,6 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 				// Update activity time
 				r.updateActivityTime(channelID)
 
-				data, err := hex.DecodeString(msg.Data)
-				if err != nil {
-					errChan <- fmt.Errorf("hex decode error: %w", err)
-					return
-				}
-
 				// Resolve domain name if necessary
 				var targetIP net.IP
 				if ip := net.ParseIP(msg.TargetAddr); ip != nil {
@@ -757,7 +798,7 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 					// Attempt to resolve domain name
 					addrs, err := net.LookupHost(msg.TargetAddr)
 					if err != nil {
-						r.log.Error().
+						r.log.Debug().
 							Err(err).
 							Str("domain", msg.TargetAddr).
 							Msg("Failed to resolve domain name")
@@ -766,7 +807,7 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 					// Parse the first resolved address
 					targetIP = net.ParseIP(addrs[0])
 					if targetIP == nil {
-						r.log.Error().
+						r.log.Debug().
 							Str("addr", addrs[0]).
 							Str("domain", msg.TargetAddr).
 							Msg("Failed to parse resolved IP address")
@@ -779,13 +820,13 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 					Port: msg.TargetPort,
 				}
 
-				_, err = udpConn.WriteToUDP(data, targetAddr)
+				_, err := udpConn.WriteToUDP(msg.Data, targetAddr)
 				if err != nil {
 					errChan <- fmt.Errorf("udp write error: %w", err)
 					return
 				}
-				r.log.Debug().
-					Int("size", len(data)).
+				r.log.Trace().
+					Int("size", len(msg.Data)).
 					Str("addr", targetAddr.String()).
 					Str("original_addr", msg.TargetAddr).
 					Str("original_port", fmt.Sprintf("%d", msg.TargetPort)).
@@ -812,7 +853,7 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 }
 
 // HandleSocksTCPForward handles TCP forwarding between SOCKS client and WebSocket
-func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn net.Conn, channelID string) error {
+func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn net.Conn, channelID uuid.UUID) error {
 	// Create a child context that can be cancelled
 	ctx, cancel := context.WithCancel(ctx)
 	r.tcpChannels.Store(channelID, cancel)
@@ -825,11 +866,10 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 	// Send disconnect message
 	defer func() {
 		disconnectMsg := DisconnectMessage{
-			Type:      TypeDisconnect,
 			ChannelID: channelID,
 		}
 		r.logMessage(disconnectMsg, "send")
-		ws.SyncWriteJSON(disconnectMsg)
+		ws.WriteMessage(disconnectMsg)
 	}()
 
 	// Create message queue for this channel
@@ -844,8 +884,13 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 	// SOCKS to WebSocket
 	go func() {
 		defer wg.Done()
-		defer cancel() // Cancel context when this goroutine exits
-		buffer := make([]byte, r.bufferSize)
+		defer cancel()
+
+		// Get a buffer from the pool
+		buffer := *(bufferPool.Get().(*[]byte))
+		// Return the buffer to the pool when done
+		defer bufferPool.Put(&buffer)
+
 		for {
 			n, err := socksConn.Read(buffer)
 			if err != nil {
@@ -858,21 +903,28 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 				return
 			}
 
-			// Update activity time
+			// Update last activity timestamp
 			r.updateActivityTime(channelID)
 
+			// Create a new slice only for the actual data to be sent
+			data := make([]byte, n)
+			copy(data, buffer[:n])
+
+			// Prepare the message for WebSocket transmission
 			msg := DataMessage{
-				Type:      TypeData,
-				Protocol:  "tcp",
-				ChannelID: channelID,
-				Data:      hex.EncodeToString(buffer[:n]),
+				Protocol:    "tcp",
+				ChannelID:   channelID,
+				Data:        data,
+				Compression: r.determineCompression(n),
 			}
+
+			// Log and send the message
 			r.logMessage(msg, "send")
-			if err := ws.SyncWriteJSON(msg); err != nil {
+			if err := ws.WriteMessage(msg); err != nil {
 				errChan <- fmt.Errorf("websocket write error: %w", err)
 				return
 			}
-			r.log.Debug().Int("size", n).Msg("Sent TCP data to WebSocket")
+			r.log.Trace().Int("size", n).Msg("Sent TCP data to WebSocket")
 		}
 	}()
 
@@ -887,18 +939,12 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 				// Update activity time
 				r.updateActivityTime(channelID)
 
-				data, err := hex.DecodeString(msg.Data)
-				if err != nil {
-					errChan <- fmt.Errorf("hex decode error: %w", err)
-					return
-				}
-
-				_, err = socksConn.Write(data)
+				_, err := socksConn.Write(msg.Data)
 				if err != nil {
 					errChan <- fmt.Errorf("socks write error: %w", err)
 					return
 				}
-				r.log.Debug().Int("size", len(data)).Msg("Sent TCP data to SOCKS")
+				r.log.Trace().Int("size", len(msg.Data)).Msg("Sent TCP data to SOCKS")
 			}
 		}
 	}()
@@ -921,7 +967,7 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 }
 
 // HandleSocksUDPForward handles SOCKS5 UDP forwarding
-func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *net.UDPConn, socksConn net.Conn, channelID string) error {
+func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *net.UDPConn, socksConn net.Conn, channelID uuid.UUID) error {
 	// Create a child context that can be cancelled
 	ctx, cancel := context.WithCancel(ctx)
 	r.udpChannels.Store(channelID, cancel)
@@ -934,11 +980,10 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 	// Send disconnect message on exit
 	defer func() {
 		disconnectMsg := DisconnectMessage{
-			Type:      TypeDisconnect,
 			ChannelID: channelID,
 		}
 		r.logMessage(disconnectMsg, "send")
-		ws.SyncWriteJSON(disconnectMsg)
+		ws.WriteMessage(disconnectMsg)
 	}()
 
 	msgChan := make(chan DataMessage, 100)
@@ -956,14 +1001,14 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 		buffer := make([]byte, 1)
 		socksConn.Read(buffer)
 		udpConn.Close()
-		r.log.Debug().Msg("SOCKS TCP connection closed")
+		r.log.Trace().Msg("SOCKS TCP connection closed")
 	}()
 
 	// UDP to WebSocket with SOCKS5 header handling
 	go func() {
 		defer wg.Done()
 		defer cancel() // Cancel context when this goroutine exits
-		buffer := make([]byte, BufferSize)
+		buffer := make([]byte, r.option.BufferSize)
 		for {
 			n, remoteAddr, err := udpConn.ReadFromUDP(buffer)
 			if err != nil {
@@ -1003,7 +1048,7 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 					targetPort = int(binary.BigEndian.Uint16(portBytes))
 					payload = buffer[22:n]
 				default:
-					r.log.Debug().Msg("Cannot parse UDP packet from associated port")
+					r.log.Trace().Msg("Cannot parse UDP packet from associated port")
 					continue
 				}
 
@@ -1011,19 +1056,19 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 				r.updateActivityTime(channelID)
 
 				msg := DataMessage{
-					Type:       TypeData,
-					Protocol:   "udp",
-					ChannelID:  channelID,
-					Data:       hex.EncodeToString(payload),
-					TargetAddr: targetAddr,
-					TargetPort: targetPort,
+					Protocol:    "udp",
+					ChannelID:   channelID,
+					Data:        payload,
+					TargetAddr:  targetAddr,
+					TargetPort:  targetPort,
+					Compression: r.determineCompression(len(payload)),
 				}
 				r.logMessage(msg, "send")
-				if err := ws.SyncWriteJSON(msg); err != nil {
+				if err := ws.WriteMessage(msg); err != nil {
 					errChan <- fmt.Errorf("websocket write error: %w", err)
 					return
 				}
-				r.log.Debug().Int("size", len(payload)).Msg("Sent UDP data to WebSocket")
+				r.log.Trace().Int("size", len(payload)).Msg("Sent UDP data to WebSocket")
 			}
 		}
 	}()
@@ -1038,12 +1083,6 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 			case msg := <-msgChan:
 				// Update activity time
 				r.updateActivityTime(channelID)
-
-				data, err := hex.DecodeString(msg.Data)
-				if err != nil {
-					errChan <- fmt.Errorf("hex decode error: %w", err)
-					return
-				}
 
 				// Construct SOCKS UDP header
 				udpHeader := []byte{0, 0, 0} // RSV + FRAG
@@ -1068,11 +1107,11 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 				portBytes := make([]byte, 2)
 				binary.BigEndian.PutUint16(portBytes, uint16(msg.Port))
 				udpHeader = append(udpHeader, portBytes...)
-				udpHeader = append(udpHeader, data...)
+				udpHeader = append(udpHeader, msg.Data...)
 
 				addr, ok := r.udpClientAddrs.Load(msg.ChannelID)
 				if !ok {
-					r.log.Warn().Msg("Dropping UDP packet: no socks client address available")
+					r.log.Debug().Msg("Dropping UDP packet: no socks client address available")
 					continue
 				}
 
@@ -1081,7 +1120,7 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 					errChan <- fmt.Errorf("udp write error: %w", err)
 					return
 				}
-				r.log.Debug().Int("size", len(data)).Str("addr", clientAddr.String()).Msg("Sent UDP data to SOCKS")
+				r.log.Trace().Int("size", len(msg.Data)).Str("addr", clientAddr.String()).Msg("Sent UDP data to SOCKS")
 			}
 		}
 	}()
@@ -1106,11 +1145,11 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 // Add this helper method to Relay struct
 func (r *Relay) logMessage(msg BaseMessage, direction string) {
 	// Only process if debug level is enabled
-	if !r.log.Debug().Enabled() {
+	if !r.log.Trace().Enabled() {
 		return
 	}
 
-	logEvent := r.log.Debug()
+	logEvent := r.log.Trace()
 
 	// Create a copy for logging
 	data, _ := json.Marshal(msg)
@@ -1165,4 +1204,13 @@ func (r *Relay) Close() {
 		r.lastActivity.Delete(key)
 		return true
 	})
+}
+
+// determineCompression decides compression method based on data size
+func (r *Relay) determineCompression(dataSize int) byte {
+	const compressionThreshold = 1024 // 1KB threshold
+	if dataSize >= compressionThreshold {
+		return DataCompressionGzip
+	}
+	return DataCompressionNone
 }

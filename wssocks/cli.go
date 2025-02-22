@@ -72,7 +72,7 @@ func (cli *CLI) initCommands() {
 	clientCmd.Flags().StringP("socks-password", "w", "", "SOCKS5 authentication password")
 	clientCmd.Flags().BoolP("socks-no-wait", "i", false, "Start the SOCKS server immediately")
 	clientCmd.Flags().BoolP("no-reconnect", "R", false, "Stop when the server disconnects")
-	clientCmd.Flags().BoolP("debug", "d", false, "Show debug logs")
+	clientCmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
 
 	// Bind environment variables
 	clientCmd.Flags().Lookup("token").Usage += " (env: WSSOCKS_TOKEN)"
@@ -94,14 +94,14 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().StringP("token", "t", "", "Specify auth token, auto-generate if not provided")
 	serverCmd.Flags().StringP("connector-token", "c", "", "Specify connector token for reverse proxy, auto-generate if not provided")
 	serverCmd.Flags().BoolP("connector-autonomy", "a", false, "Allow connector clients to manage their own tokens")
-	serverCmd.Flags().IntP("buffer-size", "b", BufferSize, "Set buffer size for data transfer")
+	serverCmd.Flags().IntP("buffer-size", "b", DefaultBufferSize, "Set buffer size for data transfer")
 	serverCmd.Flags().BoolP("reverse", "r", false, "Use reverse socks5 proxy")
 	serverCmd.Flags().StringP("socks-host", "s", "127.0.0.1", "SOCKS5 server listen address for reverse proxy")
 	serverCmd.Flags().IntP("socks-port", "p", 1080, "SOCKS5 server listen port for reverse proxy")
 	serverCmd.Flags().StringP("socks-username", "n", "", "SOCKS5 username for authentication")
 	serverCmd.Flags().StringP("socks-password", "w", "", "SOCKS5 password for authentication")
 	serverCmd.Flags().BoolP("socks-nowait", "i", false, "Start the SOCKS server immediately")
-	serverCmd.Flags().BoolP("debug", "d", false, "Show debug logs")
+	serverCmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
 	serverCmd.Flags().StringP("api-key", "k", "", "Enable HTTP API with specified key")
 
 	// Bind environment variables
@@ -136,7 +136,7 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	socksPassword := viper.GetString("socks-password")
 	socksNoWait, _ := cmd.Flags().GetBool("socks-no-wait")
 	noReconnect, _ := cmd.Flags().GetBool("no-reconnect")
-	debug, _ := cmd.Flags().GetBool("debug")
+	debug, _ := cmd.Flags().GetCount("debug")
 
 	// Setup logging
 	logger := cli.initLogging(debug)
@@ -200,7 +200,7 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 	socksPort, _ := cmd.Flags().GetInt("socks-port")
 	socksUsername, _ := cmd.Flags().GetString("socks-username")
 	socksPassword := viper.GetString("socks-password")
-	debug, _ := cmd.Flags().GetBool("debug")
+	debug, _ := cmd.Flags().GetCount("debug")
 	apiKey, _ := cmd.Flags().GetString("api-key")
 	connectorAutonomy, _ := cmd.Flags().GetBool("connector-autonomy")
 	bufferSize, _ := cmd.Flags().GetInt("buffer-size")
@@ -290,11 +290,15 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 }
 
 // initLogging sets up zerolog with appropriate level
-func (cli *CLI) initLogging(debug bool) zerolog.Logger {
+func (cli *CLI) initLogging(debug int) zerolog.Logger {
 	// Set global log level
-	zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	if debug {
+	switch debug {
+	case 0:
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	case 1:
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	default:
+		zerolog.SetGlobalLevel(zerolog.TraceLevel)
 	}
 
 	// Create console writer

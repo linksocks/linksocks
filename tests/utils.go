@@ -40,6 +40,8 @@ func createPrefixedLogger(prefix string) zerolog.Logger {
 		FormatLevel: func(i interface{}) string {
 			level := i.(string)
 			switch level {
+			case "trace":
+				return fmt.Sprintf("%s TRC", prefix)
 			case "debug":
 				return fmt.Sprintf("%s DBG", prefix)
 			case "info":

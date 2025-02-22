@@ -145,10 +145,11 @@ func TestInitLogging(t *testing.T) {
 
 	tests := []struct {
 		name  string
-		debug bool
+		debug int
 	}{
-		{"info level", false},
-		{"debug level", true},
+		{"info level", 0},
+		{"debug level", 1},
+		{"trace level", 2},
 	}
 
 	for _, tt := range tests {
