@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -421,7 +422,7 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 		return err
 	}
 
-	wsConn := NewWSConn(ws)
+	wsConn := NewWSConn(ws, strconv.Itoa(index), c.log)
 
 	c.mu.Lock()
 	if len(c.websockets) <= index {
@@ -442,7 +443,7 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 		Token:   c.token,
 	}
 
-	c.relay.logMessage(authMsg, "send")
+	c.relay.logMessage(authMsg, "send", wsConn.Label())
 	if err := wsConn.WriteMessage(authMsg); err != nil {
 		wsConn.Close()
 		c.batchLogger.log("auth_send_error", c.threads, func(count, total int) {
@@ -461,7 +462,7 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 		return err
 	}
 
-	c.relay.logMessage(msg, "recv")
+	c.relay.logMessage(msg, "recv", wsConn.Label())
 	authResponse, ok := msg.(AuthResponseMessage)
 	if !ok {
 		wsConn.Close()
@@ -488,6 +489,15 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 	// For reverse mode, mark as connected after first successful authentication
 	if c.reverse && index == 0 {
 		c.setConnectionStatus(true)
+	}
+
+	if err := wsConn.SyncWriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+		if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
+			c.log.Trace().Msg("WebSocket connection closed, stopping heartbeat")
+		} else {
+			c.log.Debug().Err(err).Msg("Heartbeat error")
+		}
+		return err
 	}
 
 	errChan := make(chan error, 2)
@@ -580,7 +590,7 @@ func (c *WSSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) error
 				return err
 			}
 
-			c.relay.logMessage(msg, "recv")
+			c.relay.logMessage(msg, "recv", ws.Label())
 
 			switch m := msg.(type) {
 			case DataMessage:
@@ -648,8 +658,8 @@ func (c *WSSocksClient) heartbeatHandler(ctx context.Context, ws *WSConn) error 
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			err := ws.SyncWriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
-			if err != nil {
+			// Just send the ping - RTT will be measured when pong is received
+			if err := ws.SyncWriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
 					c.log.Trace().Msg("WebSocket connection closed, stopping heartbeat")
 				} else {
@@ -657,7 +667,6 @@ func (c *WSSocksClient) heartbeatHandler(ctx context.Context, ws *WSConn) error 
 				}
 				return err
 			}
-			c.log.Trace().Msg("Heartbeat: Sent ping, received pong")
 		}
 	}
 }
@@ -794,7 +803,7 @@ func (c *WSSocksClient) AddConnector(connectorToken string) (string, error) {
 	defer c.relay.messageQueues.Delete(connectID)
 
 	// Send request
-	c.relay.logMessage(msg, "send")
+	c.relay.logMessage(msg, "send", ws.Label())
 	if err := ws.WriteMessage(msg); err != nil {
 		return "", fmt.Errorf("failed to send connector request: %w", err)
 	}
@@ -836,7 +845,7 @@ func (c *WSSocksClient) RemoveConnector(connectorToken string) error {
 	defer c.relay.messageQueues.Delete(connectID)
 
 	// Send request
-	c.relay.logMessage(msg, "send")
+	c.relay.logMessage(msg, "send", ws.Label())
 	if err := ws.WriteMessage(msg); err != nil {
 		return fmt.Errorf("failed to send connector request: %w", err)
 	}

@@ -238,7 +238,7 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 			Error:     err.Error(),
 			ConnectID: request.ConnectID,
 		}
-		r.logMessage(response, "send")
+		r.logMessage(response, "send", ws.Label())
 		if err := ws.WriteMessage(response); err != nil {
 			return fmt.Errorf("write error response error: %w", err)
 		}
@@ -262,7 +262,7 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 		ConnectID: request.ConnectID,
 		Protocol:  "tcp",
 	}
-	r.logMessage(response, "send")
+	r.logMessage(response, "send", ws.Label())
 	if err := ws.WriteMessage(response); err != nil {
 		return fmt.Errorf("write success response error: %w", err)
 	}
@@ -292,7 +292,7 @@ func (r *Relay) HandleUDPConnection(ctx context.Context, ws *WSConn, request Con
 				Error:     err.Error(),
 				ConnectID: request.ConnectID,
 			}
-			r.logMessage(response, "send")
+			r.logMessage(response, "send", ws.Label())
 			if err := ws.WriteMessage(response); err != nil {
 				return fmt.Errorf("write error response error: %w", err)
 			}
@@ -317,7 +317,7 @@ func (r *Relay) HandleUDPConnection(ctx context.Context, ws *WSConn, request Con
 		ConnectID: request.ConnectID,
 		Protocol:  "udp",
 	}
-	r.logMessage(response, "send")
+	r.logMessage(response, "send", ws.Label())
 	if err := ws.WriteMessage(response); err != nil {
 		return fmt.Errorf("write success response error: %w", err)
 	}
@@ -484,7 +484,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 			ConnectID: connectID,
 		}
 		r.log.Debug().Str("address", targetAddr).Int("port", int(targetPort)).Msg("Requesting TCP connecting to")
-		r.logMessage(requestData, "send")
+		r.logMessage(requestData, "send", ws.Label())
 		if err := ws.WriteMessage(requestData); err != nil {
 			// Return connection failure response to SOCKS client (0x04 = Host unreachable)
 			resp := []byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
@@ -558,7 +558,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 			ConnectID: connectID,
 		}
 		r.log.Debug().Msg("Requesting UDP Associate")
-		r.logMessage(requestData, "send")
+		r.logMessage(requestData, "send", ws.Label())
 		if err := ws.WriteMessage(requestData); err != nil {
 			udpConn.Close()
 			return fmt.Errorf("write UDP request error: %w", err)
@@ -643,7 +643,7 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 					disconnectMsg := DisconnectMessage{
 						ChannelID: channelID,
 					}
-					r.logMessage(disconnectMsg, "send")
+					r.logMessage(disconnectMsg, "send", ws.Label())
 					ws.WriteMessage(disconnectMsg)
 				} else if opErr, ok := err.(*net.OpError); ok {
 					if errors.Is(opErr.Err, net.ErrClosed) {
@@ -679,7 +679,7 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 			}
 
 			// Log and send the message
-			r.logMessage(msg, "send")
+			r.logMessage(msg, "send", ws.Label())
 			if err := ws.WriteMessage(msg); err != nil {
 				errChan <- fmt.Errorf("websocket write error: %w", err)
 				return
@@ -770,7 +770,7 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 				Port:        remoteAddr.Port,
 				Compression: r.determineCompression(n),
 			}
-			r.logMessage(msg, "send")
+			r.logMessage(msg, "send", ws.Label())
 			if err := ws.WriteMessage(msg); err != nil {
 				errChan <- fmt.Errorf("websocket write error: %w", err)
 				return
@@ -868,7 +868,7 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 		disconnectMsg := DisconnectMessage{
 			ChannelID: channelID,
 		}
-		r.logMessage(disconnectMsg, "send")
+		r.logMessage(disconnectMsg, "send", ws.Label())
 		ws.WriteMessage(disconnectMsg)
 	}()
 
@@ -919,7 +919,7 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 			}
 
 			// Log and send the message
-			r.logMessage(msg, "send")
+			r.logMessage(msg, "send", ws.Label())
 			if err := ws.WriteMessage(msg); err != nil {
 				errChan <- fmt.Errorf("websocket write error: %w", err)
 				return
@@ -982,7 +982,7 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 		disconnectMsg := DisconnectMessage{
 			ChannelID: channelID,
 		}
-		r.logMessage(disconnectMsg, "send")
+		r.logMessage(disconnectMsg, "send", ws.Label())
 		ws.WriteMessage(disconnectMsg)
 	}()
 
@@ -1063,7 +1063,7 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 					TargetPort:  targetPort,
 					Compression: r.determineCompression(len(payload)),
 				}
-				r.logMessage(msg, "send")
+				r.logMessage(msg, "send", ws.Label())
 				if err := ws.WriteMessage(msg); err != nil {
 					errChan <- fmt.Errorf("websocket write error: %w", err)
 					return
@@ -1143,13 +1143,13 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 }
 
 // Add this helper method to Relay struct
-func (r *Relay) logMessage(msg BaseMessage, direction string) {
+func (r *Relay) logMessage(msg BaseMessage, direction string, label string) {
 	// Only process if debug level is enabled
 	if !r.log.Trace().Enabled() {
 		return
 	}
 
-	logEvent := r.log.Trace()
+	logEvent := r.log.Trace().Str("label", label)
 
 	// Create a copy for logging
 	data, _ := json.Marshal(msg)

@@ -625,7 +625,7 @@ func (s *WSSocksServer) WaitReady(ctx context.Context, timeout time.Duration) er
 // handleWebSocket handles WebSocket connection
 func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn) {
 	// Wrap the websocket connection
-	wsConn := NewWSConn(ws)
+	wsConn := NewWSConn(ws, "", s.log)
 
 	var clientID uuid.UUID
 	var token string
@@ -643,17 +643,17 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 	if err != nil {
 		s.log.Debug().Err(err).Msg("Failed to read auth message")
 		authResponse := AuthResponseMessage{Success: false}
-		s.relay.logMessage(authResponse, "send")
+		s.relay.logMessage(authResponse, "send", wsConn.Label())
 		wsConn.WriteMessage(authResponse)
 		wsConn.flushBatch()
 		return
 	}
 
-	s.relay.logMessage(msg, "recv")
+	s.relay.logMessage(msg, "recv", wsConn.Label())
 	authMsg, ok := msg.(AuthMessage)
 	if !ok {
 		authResponse := AuthResponseMessage{Success: false}
-		s.relay.logMessage(authResponse, "send")
+		s.relay.logMessage(authResponse, "send", wsConn.Label())
 		wsConn.WriteMessage(authResponse)
 		wsConn.flushBatch()
 		return
@@ -670,13 +670,14 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 
 	if !isValidReverse && !isValidForward && !isValidConnector {
 		authResponse := AuthResponseMessage{Success: false}
-		s.relay.logMessage(authResponse, "send")
+		s.relay.logMessage(authResponse, "send", wsConn.Label())
 		wsConn.WriteMessage(authResponse)
 		wsConn.flushBatch()
 		return
 	}
 
 	clientID = uuid.New()
+	wsConn.setLabel(clientID.String())
 
 	s.mu.Lock()
 	// For reverse tokens with AllowManageConnector, generate a unique internal token
@@ -733,7 +734,7 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 
 	// Send auth response
 	authResponse := AuthResponseMessage{Success: true}
-	s.relay.logMessage(authResponse, "send")
+	s.relay.logMessage(authResponse, "send", wsConn.Label())
 	if err := wsConn.WriteMessage(authResponse); err != nil {
 		s.log.Debug().Err(err).Msg("Failed to send auth response")
 		wsConn.flushBatch()
@@ -756,11 +757,6 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 		}()
 	}
 
-	// Start heartbeat
-	go func() {
-		errChan <- s.wsHeartbeat(ctx, wsConn, clientID)
-	}()
-
 	// Wait for either routine to finish
 	<-errChan
 }
@@ -780,7 +776,7 @@ func (s *WSSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clien
 				return err
 			}
 
-			s.relay.logMessage(msg, "recv")
+			s.relay.logMessage(msg, "recv", ws.Label())
 
 			switch m := msg.(type) {
 			case DataMessage:
@@ -802,7 +798,7 @@ func (s *WSSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clien
 				s.connCache.mu.RUnlock()
 
 				if exists {
-					s.relay.logMessage(m, "send")
+					s.relay.logMessage(m, "send", ws.Label())
 					if err := targetWS.WriteMessage(m); err != nil {
 						s.log.Debug().Err(err).Msg("Failed to forward data message to connector client")
 					}
@@ -835,7 +831,7 @@ func (s *WSSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clien
 						s.connCache.channelIDToClient[m.ChannelID] = connectorWS
 						s.connCache.channelIDToConnector[m.ChannelID] = ws
 						// Forward the response to the connector
-						s.relay.logMessage(m, "send")
+						s.relay.logMessage(m, "send", ws.Label())
 						if err := connectorWS.WriteMessage(m); err != nil {
 							s.log.Debug().Err(err).Msg("Failed to forward connect response to connector")
 						}
@@ -849,7 +845,7 @@ func (s *WSSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clien
 				// Forward disconnect message to connector if exists
 				s.connCache.mu.Lock()
 				if targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]; exists {
-					s.relay.logMessage(m, "send")
+					s.relay.logMessage(m, "send", ws.Label())
 					if err := targetWS.WriteMessage(m); err != nil {
 						s.log.Debug().Err(err).Msg("Failed to forward disconnect message")
 					}
@@ -952,7 +948,7 @@ func (s *WSSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clien
 				}
 
 				// Send response
-				s.relay.logMessage(response, "send")
+				s.relay.logMessage(response, "send", ws.Label())
 				if err := ws.WriteMessage(response); err != nil {
 					s.log.Warn().Err(err).Msg("Failed to send connector response")
 					return err
@@ -980,7 +976,7 @@ func (s *WSSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSCo
 				return err
 			}
 
-			s.relay.logMessage(msg, "recv")
+			s.relay.logMessage(msg, "recv", ws.Label())
 
 			switch m := msg.(type) {
 			case ConnectMessage:
@@ -1000,7 +996,7 @@ func (s *WSSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSCo
 					s.log.Debug().Err(err).Msg("Failed to get reverse client")
 					continue
 				}
-				s.relay.logMessage(m, "send")
+				s.relay.logMessage(m, "send", ws.Label())
 				if err := reverseWS.WriteMessage(m); err != nil {
 					s.log.Debug().Err(err).Msg("Failed to forward connect message")
 				}
@@ -1012,7 +1008,7 @@ func (s *WSSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSCo
 				s.connCache.mu.RUnlock()
 
 				if exists {
-					s.relay.logMessage(m, "send")
+					s.relay.logMessage(m, "send", ws.Label())
 					if err := targetWS.WriteMessage(m); err != nil {
 						s.log.Debug().Err(err).Msg("Failed to forward data message")
 					}
@@ -1022,7 +1018,7 @@ func (s *WSSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSCo
 				// Clean up channel mappings and forward message
 				s.connCache.mu.Lock()
 				if targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]; exists {
-					s.relay.logMessage(m, "send")
+					s.relay.logMessage(m, "send", ws.Label())
 					if err := targetWS.WriteMessage(m); err != nil {
 						s.log.Debug().Err(err).Msg("Failed to forward disconnect message")
 					}
@@ -1030,24 +1026,6 @@ func (s *WSSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSCo
 					delete(s.connCache.channelIDToClient, m.ChannelID)
 				}
 				s.connCache.mu.Unlock()
-			}
-		}
-	}
-}
-
-// wsHeartbeat maintains WebSocket connection with periodic pings
-func (s *WSSocksServer) wsHeartbeat(ctx context.Context, ws *WSConn, clientID uuid.UUID) error {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			if err := ws.SyncWriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
-				s.log.Trace().Str("client_id", clientID.String()).Msg("Heartbeat detected disconnection")
-				return err
 			}
 		}
 	}

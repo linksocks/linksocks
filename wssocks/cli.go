@@ -173,7 +173,7 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	// Add connector token if provided
 	if connectorToken != "" && reverse {
 		if _, err := client.AddConnector(connectorToken); err != nil {
-			logger.Fatal().Msg("Failed to add connector token")
+			logger.Fatal().Err(err).Msg("Failed to add connector token")
 			return nil
 		}
 	}

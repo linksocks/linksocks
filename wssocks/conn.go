@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/rs/zerolog"
 )
 
 // WSConn wraps a websocket.Conn with mutex protection
@@ -22,21 +23,49 @@ type WSConn struct {
 	// Message queue for received batch messages
 	messageQueue []BaseMessage
 	queueMu      sync.Mutex
+
+	pingTime time.Time  // Track when ping was sent
+	pingMu   sync.Mutex // Mutex for ping timing
+
+	label string
+}
+
+func (c *WSConn) Label() string {
+	return c.label
+}
+
+func (c *WSConn) setLabel(label string) {
+	c.label = label
 }
 
 // NewWSConn creates a new mutex-protected websocket connection
-func NewWSConn(conn *websocket.Conn) *WSConn {
-	// Set some basic configs
-	conn.SetReadLimit(32 * 1024 * 1024) // 32MB max message size
-	conn.SetPongHandler(func(string) error {
-		return conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-	})
-
-	return &WSConn{
+func NewWSConn(conn *websocket.Conn, label string, logger zerolog.Logger) *WSConn {
+	wsConn := &WSConn{
 		conn:         conn,
 		batchData:    make([][]byte, 0, 16),
 		messageQueue: make([]BaseMessage, 0),
+		label:        label,
 	}
+
+	// Set read limit
+	conn.SetReadLimit(32 * 1024 * 1024) // 32MB max message size
+
+	// Set pong handler to measure RTT
+	conn.SetPongHandler(func(string) error {
+		wsConn.pingMu.Lock()
+		rtt := time.Since(wsConn.pingTime)
+		wsConn.pingMu.Unlock()
+
+		// Log the actual RTT when pong is received
+		logger.
+			Trace().
+			Int64("rtt_ms", rtt.Milliseconds()).
+			Msg("Received pong, RTT measured")
+
+		return conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	})
+
+	return wsConn
 }
 
 // packBatchMessages combines multiple messages into a single byte slice
@@ -191,8 +220,14 @@ func (c *WSConn) flushBatch() error {
 	return c.SyncWriteBinary(batchedData)
 }
 
-// SyncWriteControl performs thread-safe control message writes to the websocket connection
+// SyncWriteControl performs thread-safe control message writes and tracks ping time
 func (c *WSConn) SyncWriteControl(messageType int, data []byte, deadline time.Time) error {
+	if messageType == websocket.PingMessage {
+		c.pingMu.Lock()
+		c.pingTime = time.Now()
+		c.pingMu.Unlock()
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.conn.WriteControl(messageType, data, deadline)
