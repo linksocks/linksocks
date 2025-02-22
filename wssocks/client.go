@@ -417,8 +417,8 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 		c.websockets[index] = wsConn
 	}
 
-	// Mark as connected when first connection is established
-	if len(c.websockets) == 1 {
+	// For forward mode, mark as connected after first successful connection
+	if !c.reverse && len(c.websockets) == 1 {
 		select {
 		case <-c.Connected:
 			// Reset Connected channel if it was previously closed
@@ -433,20 +433,16 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 
 	// Send authentication
 	authMsg := AuthMessage{
-		Reverse: false,
+		Reverse: c.reverse,
 		Token:   c.token,
 	}
 
 	c.relay.logMessage(authMsg, "send")
 	if err := wsConn.WriteMessage(authMsg); err != nil {
 		wsConn.Close()
-		if c.reconnect {
-			c.batchLogger.log("auth_send_error", c.threads, func(count, total int) {
-				c.log.Warn().Err(err).Msgf("Failed to send auth message (%d/%d)", count, total)
-			})
-			time.Sleep(c.reconnectDelay)
-			return err
-		}
+		c.batchLogger.log("auth_send_error", c.threads, func(count, total int) {
+			c.log.Warn().Err(err).Msgf("Failed to send auth message (%d/%d)", count, total)
+		})
 		return err
 	}
 
@@ -454,13 +450,9 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 	msg, err := wsConn.ReadMessage()
 	if err != nil {
 		wsConn.Close()
-		if c.reconnect {
-			c.batchLogger.log("auth_read_error", c.threads, func(count, total int) {
-				c.log.Warn().Err(err).Msgf("Failed to read auth response (%d/%d)", count, total)
-			})
-			time.Sleep(c.reconnectDelay)
-			return err
-		}
+		c.batchLogger.log("auth_read_error", c.threads, func(count, total int) {
+			c.log.Warn().Err(err).Msgf("Failed to read auth response (%d/%d)", count, total)
+		})
 		return err
 	}
 
@@ -480,8 +472,27 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 	}
 
 	c.batchLogger.log("auth_success", c.threads, func(count, total int) {
-		c.log.Info().Msgf("Authentication successful for forward proxy (%d/%d)", count, total)
+		mode := "forward"
+		if c.reverse {
+			mode = "reverse"
+		}
+		c.log.Info().Msgf("Authentication successful for %s proxy (%d/%d)", mode, count, total)
 	})
+
+	// For reverse mode, mark as connected after first successful authentication
+	if c.reverse && index == 0 {
+		c.mu.Lock()
+		select {
+		case <-c.Connected:
+			// Reset Connected channel if it was previously closed
+			c.Connected = make(chan struct{})
+		default:
+		}
+		close(c.Connected)
+		// Reset Disconnected channel
+		c.Disconnected = make(chan struct{})
+		c.mu.Unlock()
+	}
 
 	errChan := make(chan error, 2)
 
@@ -544,7 +555,7 @@ func (c *WSSocksClient) startReverse(ctx context.Context) error {
 				case <-ctx.Done():
 					return
 				default:
-					if err := c.maintainReverseWebSocketConnection(ctx, index); err != nil {
+					if err := c.maintainWebSocketConnection(ctx, index); err != nil {
 						if !c.reconnect {
 							errChan <- err
 							return
@@ -570,132 +581,6 @@ func (c *WSSocksClient) startReverse(ctx context.Context) error {
 		return err
 	}
 	return nil
-}
-
-// maintainReverseWebSocketConnection maintains a single reverse WebSocket connection
-func (c *WSSocksClient) maintainReverseWebSocketConnection(ctx context.Context, index int) error {
-	// Create batch logger if not exists
-	c.mu.Lock()
-	if c.batchLogger == nil {
-		c.batchLogger = newBatchLogger(c.log)
-	}
-	c.mu.Unlock()
-
-	ws, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
-	if err != nil {
-		c.batchLogger.log("dial_error", c.threads, func(count, total int) {
-			c.log.Warn().Err(err).Msgf("Failed to dial WebSocket (%d/%d)", count, total)
-		})
-		return err
-	}
-
-	wsConn := NewWSConn(ws)
-
-	c.mu.Lock()
-	if len(c.websockets) <= index {
-		c.websockets = append(c.websockets, wsConn)
-	} else {
-		c.websockets[index] = wsConn
-	}
-	c.mu.Unlock()
-
-	// Send authentication
-	authMsg := AuthMessage{
-		Reverse: true,
-		Token:   c.token,
-	}
-
-	c.relay.logMessage(authMsg, "send")
-	if err := wsConn.WriteMessage(authMsg); err != nil {
-		wsConn.Close()
-		return err
-	}
-
-	// Read auth response
-	msg, err := wsConn.ReadMessage()
-	if err != nil {
-		wsConn.Close()
-		return err
-	}
-
-	c.relay.logMessage(msg, "recv")
-	authResponse, ok := msg.(AuthResponseMessage)
-	if !ok {
-		wsConn.Close()
-		return errors.New("unexpected message type for auth response")
-	}
-
-	if !authResponse.Success {
-		c.batchLogger.log("auth_failed", c.threads, func(count, total int) {
-			c.log.Error().Msgf("Authentication failed (%d/%d)", count, total)
-		})
-		wsConn.Close()
-		return errors.New("authentication failed")
-	}
-
-	c.batchLogger.log("auth_success", c.threads, func(count, total int) {
-		c.log.Info().Msgf("Authentication successful for reverse proxy (%d/%d)", count, total)
-	})
-
-	// Mark as connected after successful authentication
-	c.mu.Lock()
-	if index == 0 {
-		select {
-		case <-c.Connected:
-			// Reset Connected channel if it was previously closed
-			c.Connected = make(chan struct{})
-		default:
-		}
-		close(c.Connected)
-		// Reset Disconnected channel
-		c.Disconnected = make(chan struct{})
-	}
-	c.mu.Unlock()
-
-	errChan := make(chan error, 2)
-
-	// Start message dispatcher and heartbeat
-	go func() {
-		errChan <- c.messageDispatcher(ctx, wsConn)
-	}()
-	go func() {
-		errChan <- c.heartbeatHandler(ctx, wsConn)
-	}()
-
-	// Wait for first error
-	err = <-errChan
-
-	c.mu.Lock()
-	if index < len(c.websockets) {
-		c.websockets[index] = nil
-	}
-
-	// Check if all connections are down
-	allDown := true
-	for _, ws := range c.websockets {
-		if ws != nil {
-			allDown = false
-			break
-		}
-	}
-	if allDown {
-		select {
-		case <-c.Connected:
-			// Reset Connected channel
-			c.Connected = make(chan struct{})
-		default:
-		}
-		select {
-		case <-c.Disconnected:
-			// Reset Disconnected channel if it was previously closed
-			c.Disconnected = make(chan struct{})
-		default:
-		}
-		close(c.Disconnected)
-	}
-	c.mu.Unlock()
-
-	return err
 }
 
 // messageDispatcher handles global WebSocket message dispatching
