@@ -13,15 +13,6 @@ type WSConn struct {
 	conn *websocket.Conn
 	mu   sync.Mutex
 
-	// Batch processing fields
-	batchMu    sync.Mutex
-	batchData  [][]byte
-	batchTimer *time.Timer
-
-	// Message queue for received batch messages
-	messageQueue []BaseMessage
-	queueMu      sync.Mutex
-
 	pingTime time.Time  // Track when ping was sent
 	pingMu   sync.Mutex // Mutex for ping timing
 
@@ -39,10 +30,8 @@ func (c *WSConn) setLabel(label string) {
 // NewWSConn creates a new mutex-protected websocket connection
 func NewWSConn(conn *websocket.Conn, label string, logger zerolog.Logger) *WSConn {
 	wsConn := &WSConn{
-		conn:         conn,
-		batchData:    make([][]byte, 0, 16),
-		messageQueue: make([]BaseMessage, 0),
-		label:        label,
+		conn:  conn,
+		label: label,
 	}
 
 	// Set read limit

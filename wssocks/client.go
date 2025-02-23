@@ -75,7 +75,8 @@ type ClientOption struct {
 	BufferSize      int
 	ChannelTimeout  time.Duration
 	ConnectTimeout  time.Duration
-	Threads         int // Number of concurrent WebSocket connections
+	Threads         int
+	StrictConnect   bool
 }
 
 // DefaultClientOption returns default client options
@@ -86,13 +87,14 @@ func DefaultClientOption() *ClientOption {
 		SocksHost:       "127.0.0.1",
 		SocksPort:       1080,
 		SocksWaitServer: true,
-		Reconnect:       true,
+		Reconnect:       false,
 		ReconnectDelay:  5 * time.Second,
 		Logger:          zerolog.New(os.Stdout).With().Timestamp().Logger(),
 		BufferSize:      DefaultBufferSize,
 		ChannelTimeout:  DefaultChannelTimeout,
 		ConnectTimeout:  DefaultConnectTimeout,
 		Threads:         1,
+		StrictConnect:   false,
 	}
 }
 
@@ -180,6 +182,12 @@ func (o *ClientOption) WithThreads(threads int) *ClientOption {
 	return o
 }
 
+// WithStrictConnect controls whether to wait for connect success response
+func (o *ClientOption) WithStrictConnect(strict bool) *ClientOption {
+	o.StrictConnect = strict
+	return o
+}
+
 // NewWSSocksClient creates a new WSSocksClient instance
 func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 	if opt == nil {
@@ -192,7 +200,8 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 	relayOpt := NewDefaultRelayOption().
 		WithBufferSize(opt.BufferSize).
 		WithChannelTimeout(opt.ChannelTimeout).
-		WithConnectTimeout(opt.ConnectTimeout)
+		WithConnectTimeout(opt.ConnectTimeout).
+		WithStrictConnect(opt.StrictConnect)
 
 	client := &WSSocksClient{
 		instanceID:      uuid.New(),
@@ -367,7 +376,7 @@ func (c *WSSocksClient) startForward(ctx context.Context) error {
 							return
 						}
 						c.batchLogger.log("retry_error", c.threads, func(count, total int) {
-							c.log.Warn().Msgf("Connection error, retrying... (%d/%d)", count, total)
+							c.log.Warn().Err(err).Msgf("Connection error, retrying... (%d/%d)", count, total)
 						})
 						time.Sleep(c.reconnectDelay)
 					}
@@ -432,11 +441,6 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 	} else {
 		c.websockets[index] = wsConn
 	}
-
-	// For forward mode, mark as connected after first successful connection
-	if !c.reverse && len(c.websockets) == 1 {
-		c.setConnectionStatus(true)
-	}
 	c.mu.Unlock()
 
 	// Send authentication
@@ -489,8 +493,7 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 		c.log.Info().Msgf("Authentication successful for %s proxy (%d/%d)", mode, count, total)
 	})
 
-	// For reverse mode, mark as connected after first successful authentication
-	if c.reverse && index == 0 {
+	if index == 0 {
 		c.setConnectionStatus(true)
 	}
 
@@ -559,7 +562,7 @@ func (c *WSSocksClient) startReverse(ctx context.Context) error {
 							return
 						}
 						c.batchLogger.log("retry_error", c.threads, func(count, total int) {
-							c.log.Warn().Msgf("Connection error, retrying... (%d/%d)", count, total)
+							c.log.Warn().Err(err).Msgf("Connection error, retrying... (%d/%d)", count, total)
 						})
 						time.Sleep(c.reconnectDelay)
 					}
@@ -595,58 +598,64 @@ func (c *WSSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) error
 
 			c.relay.logMessage(msg, "recv", ws.Label())
 
-			switch m := msg.(type) {
-			case DataMessage:
-				channelID := m.ChannelID
-				if queue, ok := c.relay.messageQueues.Load(channelID); ok {
-					select {
-					case queue.(chan DataMessage) <- m:
-						c.log.Trace().Str("channel_id", channelID.String()).Msg("Message forwarded to channel")
-					default:
-						c.log.Debug().Str("channel_id", channelID.String()).Msg("Message queue full")
+			// Handle message asynchronously to prevent blocking
+			go func(msg BaseMessage) {
+				switch m := msg.(type) {
+				case DataMessage:
+					if queue, ok := c.relay.messageQueues.Load(m.ChannelID); ok {
+						select {
+						case queue.(chan BaseMessage) <- m:
+							c.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Message forwarded to channel")
+						default:
+							// Drop message if queue is full instead of blocking
+							c.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Message queue full, dropping message")
+						}
 					}
-				} else {
-					c.log.Debug().Str("channel_id", channelID.String()).Msg("Received data for unknown channel")
-				}
 
-			case ConnectMessage:
-				go func() {
-					if err := c.relay.HandleNetworkConnection(ctx, ws, m); err != nil && !errors.Is(err, context.Canceled) {
-						c.log.Debug().Err(err).Msg("Network connection handler error")
+				case ConnectMessage:
+					if c.reverse {
+						msgChan := make(chan BaseMessage, 1000)
+						c.relay.messageQueues.Store(m.ChannelID, msgChan)
+						go func() {
+							if err := c.relay.HandleNetworkConnection(ctx, ws, m); err != nil && !errors.Is(err, context.Canceled) {
+								c.log.Debug().Err(err).Msg("Network connection handler error")
+							}
+						}()
 					}
-				}()
 
-			case ConnectResponseMessage:
-				if queue, ok := c.relay.messageQueues.Load(m.ConnectID); ok {
-					queue.(chan ConnectResponseMessage) <- m
-				} else {
-					c.log.Debug().Str("connect_id", m.ConnectID.String()).Msg("Received connect response for unknown channel")
-				}
-
-			case DisconnectMessage:
-				if cancelVal, ok := c.relay.tcpChannels.LoadAndDelete(m.ChannelID); ok {
-					if cancel, ok := cancelVal.(context.CancelFunc); ok {
-						cancel()
+				case ConnectResponseMessage:
+					if !c.relay.option.StrictConnect {
+						if m.Success {
+							c.relay.SetConnectionSuccess(m.ChannelID)
+						} else {
+							c.relay.disconnectChannel(m.ChannelID)
+						}
+					} else if queue, ok := c.relay.messageQueues.Load(m.ChannelID); ok {
+						// Non-blocking send for connect response
+						select {
+						case queue.(chan BaseMessage) <- m:
+						default:
+							c.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Connect response queue full")
+						}
 					}
-				}
-				if cancelVal, ok := c.relay.udpChannels.LoadAndDelete(m.ChannelID); ok {
-					if cancel, ok := cancelVal.(context.CancelFunc); ok {
-						cancel()
+
+				case DisconnectMessage:
+					c.relay.disconnectChannel(m.ChannelID)
+
+				case ConnectorResponseMessage:
+					if queue, ok := c.relay.messageQueues.Load(m.ChannelID); ok {
+						// Non-blocking send for connector response
+						select {
+						case queue.(chan BaseMessage) <- m:
+						default:
+							c.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Connector response queue full")
+						}
 					}
-				}
-				c.relay.udpClientAddrs.Delete(m.ChannelID)
-				c.relay.messageQueues.Delete(m.ChannelID)
 
-			case ConnectorResponseMessage:
-				if queue, ok := c.relay.messageQueues.Load(m.ConnectID); ok {
-					queue.(chan ConnectorResponseMessage) <- m
-				} else {
-					c.log.Debug().Str("connect_id", m.ConnectID.String()).Msg("Received connector response for unknown channel")
+				default:
+					c.log.Debug().Str("type", msg.GetType()).Msg("Received unknown message type")
 				}
-
-			default:
-				c.log.Debug().Str("type", msg.GetType()).Msg("Received unknown message type")
-			}
+			}(msg)
 		}
 	}
 }
@@ -793,17 +802,17 @@ func (c *WSSocksClient) AddConnector(connectorToken string) (string, error) {
 		return "", errors.New("client not connected")
 	}
 
-	connectID := uuid.New()
+	channelID := uuid.New()
 	msg := ConnectorMessage{
 		Operation:      "add",
-		ConnectID:      connectID,
+		ChannelID:      channelID,
 		ConnectorToken: connectorToken,
 	}
 
 	// Create response channel
-	respChan := make(chan ConnectorResponseMessage, 1)
-	c.relay.messageQueues.Store(connectID, respChan)
-	defer c.relay.messageQueues.Delete(connectID)
+	respChan := make(chan BaseMessage, 1)
+	c.relay.messageQueues.Store(channelID, respChan)
+	defer c.relay.messageQueues.Delete(channelID)
 
 	// Send request
 	c.relay.logMessage(msg, "send", ws.Label())
@@ -814,10 +823,14 @@ func (c *WSSocksClient) AddConnector(connectorToken string) (string, error) {
 	// Wait for response with timeout
 	select {
 	case resp := <-respChan:
-		if !resp.Success {
-			return "", fmt.Errorf("connector request failed: %s", resp.Error)
+		connResp, ok := resp.(ConnectorResponseMessage)
+		if !ok {
+			return "", errors.New("unexpected message type for connector response")
 		}
-		return resp.ConnectorToken, nil
+		if !connResp.Success {
+			return "", fmt.Errorf("connector request failed: %s", connResp.Error)
+		}
+		return connResp.ConnectorToken, nil
 	case <-time.After(10 * time.Second):
 		return "", errors.New("timeout waiting for connector response")
 	}
@@ -835,17 +848,17 @@ func (c *WSSocksClient) RemoveConnector(connectorToken string) error {
 		return errors.New("client not connected")
 	}
 
-	connectID := uuid.New()
+	channelID := uuid.New()
 	msg := ConnectorMessage{
 		Operation:      "remove",
-		ConnectID:      connectID,
+		ChannelID:      channelID,
 		ConnectorToken: connectorToken,
 	}
 
 	// Create response channel
-	respChan := make(chan ConnectorResponseMessage, 1)
-	c.relay.messageQueues.Store(connectID, respChan)
-	defer c.relay.messageQueues.Delete(connectID)
+	respChan := make(chan BaseMessage, 1)
+	c.relay.messageQueues.Store(channelID, respChan)
+	defer c.relay.messageQueues.Delete(channelID)
 
 	// Send request
 	c.relay.logMessage(msg, "send", ws.Label())
@@ -856,8 +869,12 @@ func (c *WSSocksClient) RemoveConnector(connectorToken string) error {
 	// Wait for response with timeout
 	select {
 	case resp := <-respChan:
-		if !resp.Success {
-			return fmt.Errorf("connector request failed: %s", resp.Error)
+		connResp, ok := resp.(ConnectorResponseMessage)
+		if !ok {
+			return errors.New("unexpected message type for connector response")
+		}
+		if !connResp.Success {
+			return fmt.Errorf("connector request failed: %s", connResp.Error)
 		}
 		return nil
 	case <-time.After(10 * time.Second):

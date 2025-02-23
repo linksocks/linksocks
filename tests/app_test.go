@@ -2,7 +2,6 @@ package tests
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"os"
 	"testing"
@@ -111,8 +110,14 @@ func TestProxyAuth(t *testing.T) {
 		SocksPassword: "test_pass",
 	})
 	defer server.Close()
-	client := reverseClient(t, server.WSPort, server.Token, "CLT0")
+
+	client := reverseClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        server.Token,
+		LoggerPrefix: "CLT0",
+	})
 	defer client.Close()
+
 	require.Error(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort}))
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort, Username: "test_user", Password: "test_pass"}))
 }
@@ -207,7 +212,12 @@ func TestUDPReverseProxyV6(t *testing.T) {
 
 func TestForwardReconnect(t *testing.T) {
 	server := forwardServer(t, nil)
-	client := forwardClient(t, server.WSPort, server.Token, "CLT0")
+	client := forwardClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        server.Token,
+		LoggerPrefix: "CLT0",
+		Reconnect:    true,
+	})
 	defer client.Close()
 
 	// Test initial connection
@@ -246,7 +256,11 @@ func TestForwardReconnect(t *testing.T) {
 
 func TestReverseReconnect(t *testing.T) {
 	server := reverseServer(t, nil)
-	client := reverseClient(t, server.WSPort, server.Token, "CLT1")
+	client := reverseClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        server.Token,
+		LoggerPrefix: "CLT1",
+	})
 	defer server.Close()
 
 	// Test initial connection
@@ -261,7 +275,11 @@ func TestReverseReconnect(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond, "Server failed to detect client disconnection")
 
 	// Start new client with same port
-	newClient := reverseClient(t, server.WSPort, server.Token, "CLT2")
+	newClient := reverseClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        server.Token,
+		LoggerPrefix: "CLT2",
+	})
 	defer newClient.Close()
 
 	// Wait for client to establish connection by checking token clients
@@ -275,7 +293,11 @@ func TestReverseReconnect(t *testing.T) {
 
 func TestForwardRemoveToken(t *testing.T) {
 	server := forwardServer(t, nil)
-	client := forwardClient(t, server.WSPort, server.Token, "CLT0")
+	client := forwardClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        server.Token,
+		LoggerPrefix: "CLT0",
+	})
 	defer func() {
 		client.Close()
 		server.Close()
@@ -302,7 +324,11 @@ func TestForwardRemoveToken(t *testing.T) {
 	assert.NotEmpty(t, server.Token)
 
 	// Start new client with same port
-	newClient := forwardClient(t, server.WSPort, server.Token, "CLT0")
+	newClient := forwardClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        server.Token,
+		LoggerPrefix: "CLT0",
+	})
 	defer newClient.Close()
 
 	// Connection should work again
@@ -348,7 +374,11 @@ func TestReverseRemoveToken(t *testing.T) {
 	require.Zero(t, port2)
 
 	// Start first client and test
-	client1 := reverseClient(t, wsPort, token1, "CLT1")
+	client1 := reverseClient(t, &ProxyTestClientOption{
+		WSPort:       wsPort,
+		Token:        token1,
+		LoggerPrefix: "CLT1",
+	})
 	defer client1.Close()
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: port1}))
 
@@ -374,7 +404,11 @@ func TestReverseRemoveToken(t *testing.T) {
 	}
 
 	// Start second client and test
-	client2 := reverseClient(t, wsPort, token2, "CLT2")
+	client2 := reverseClient(t, &ProxyTestClientOption{
+		WSPort:       wsPort,
+		Token:        token2,
+		LoggerPrefix: "CLT2",
+	})
 	defer client2.Close()
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: port2}))
 }
@@ -384,10 +418,21 @@ func TestConnector(t *testing.T) {
 		ConnectorToken: "CONNECTOR",
 	})
 	defer server.Close()
-	client1 := reverseClient(t, server.WSPort, server.Token, "CLT1")
+
+	client1 := reverseClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        server.Token,
+		LoggerPrefix: "CLT1",
+	})
 	defer client1.Close()
-	client2 := forwardClient(t, server.WSPort, "CONNECTOR", "CLT2")
+
+	client2 := forwardClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        "CONNECTOR",
+		LoggerPrefix: "CLT2",
+	})
 	defer client2.Close()
+
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort}))
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: client2.SocksPort}))
 }
@@ -397,37 +442,206 @@ func TestConnectorAutonomy(t *testing.T) {
 		ConnectorAutonomy: true,
 	})
 	defer server.Close()
-	client1 := reverseClient(t, server.WSPort, server.Token, "CLT1")
+
+	client1 := reverseClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        server.Token,
+		LoggerPrefix: "CLT1",
+	})
 	defer client1.Close()
+
 	token, err := client1.Client.AddConnector("CONNECTOR")
 	require.NoError(t, err)
 	require.NotEmpty(t, token)
-	client2 := forwardClient(t, server.WSPort, "CONNECTOR", "CLT2")
+
+	client2 := forwardClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        "CONNECTOR",
+		LoggerPrefix: "CLT2",
+	})
 	defer client2.Close()
+
 	require.Error(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort}))
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: client2.SocksPort}))
 }
 
 func TestClientThread(t *testing.T) {
+	server := forwardServer(t, nil)
+	defer server.Close()
+
+	socksPort, err := getFreePort()
+	require.NoError(t, err)
+
+	client := forwardClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        server.Token,
+		LoggerPrefix: "CLT0",
+		SocksPort:    socksPort,
+		Threads:      2,
+	})
+	defer client.Close()
+
+	// Execute web connection test three times
+	for i := 0; i < 3; i++ {
+		require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: socksPort}))
+	}
+}
+
+func TestStrictForward(t *testing.T) {
+	server := forwardServer(t, nil)
+	defer server.Close()
+
+	socksPort, err := getFreePort()
+	require.NoError(t, err)
+
+	client := forwardClient(t, &ProxyTestClientOption{
+		WSPort:        server.WSPort,
+		Token:         server.Token,
+		LoggerPrefix:  "CLT0",
+		SocksPort:     socksPort,
+		StrictConnect: true,
+	})
+	defer client.Close()
+
+	// Execute web connection test three times
+	for i := 0; i < 3; i++ {
+		require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: socksPort}))
+	}
+}
+
+func TestStrictReverse(t *testing.T) {
+	server := reverseServer(t, &ProxyTestServerOption{
+		StrictConnect: true,
+	})
+	defer server.Close()
+
+	client := reverseClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        server.Token,
+		LoggerPrefix: "CLT0",
+	})
+	defer client.Close()
+
+	// Execute web connection test three times
+	for i := 0; i < 3; i++ {
+		require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort}))
+	}
+}
+
+func TestStrictStrictReverse(t *testing.T) {
+	server := reverseServer(t, &ProxyTestServerOption{
+		StrictConnect: true,
+	})
+	defer server.Close()
+
+	client := reverseClient(t, &ProxyTestClientOption{
+		WSPort:        server.WSPort,
+		Token:         server.Token,
+		LoggerPrefix:  "CLT0",
+		StrictConnect: true,
+	})
+	defer client.Close()
+
+	// Execute web connection test three times
+	for i := 0; i < 3; i++ {
+		require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort}))
+	}
+}
+
+func TestStrictStrictForward(t *testing.T) {
 	server := forwardServer(t, &ProxyTestServerOption{
-		ConnectorAutonomy: true,
+		StrictConnect: true,
 	})
 	defer server.Close()
 
 	socksPort, err := getFreePort()
 	require.NoError(t, err)
-	logger := createPrefixedLogger("CLT0")
-	clientOpt := wssocks.DefaultClientOption().
-		WithWSURL(fmt.Sprintf("ws://localhost:%d", server.WSPort)).
-		WithSocksPort(socksPort).
-		WithReconnectDelay(1 * time.Second).
-		WithThreads(2).
-		WithLogger(logger)
-	client := wssocks.NewWSSocksClient(server.Token, clientOpt)
-	require.NoError(t, client.WaitReady(context.Background(), 5*time.Second))
+
+	client := forwardClient(t, &ProxyTestClientOption{
+		WSPort:        server.WSPort,
+		Token:         server.Token,
+		LoggerPrefix:  "CLT0",
+		SocksPort:     socksPort,
+		StrictConnect: true,
+	})
+	defer client.Close()
 
 	// Execute web connection test three times
 	for i := 0; i < 3; i++ {
 		require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: socksPort}))
+	}
+}
+
+func TestStrictConnector(t *testing.T) {
+	server := reverseServer(t, &ProxyTestServerOption{
+		ConnectorToken: "CONNECTOR",
+		StrictConnect:  true,
+	})
+	defer server.Close()
+
+	client1 := reverseClient(t, &ProxyTestClientOption{
+		WSPort:        server.WSPort,
+		Token:         server.Token,
+		LoggerPrefix:  "CLT1",
+		StrictConnect: true,
+	})
+	defer client1.Close()
+
+	client2 := forwardClient(t, &ProxyTestClientOption{
+		WSPort:        server.WSPort,
+		Token:         "CONNECTOR",
+		LoggerPrefix:  "CLT2",
+		StrictConnect: true,
+	})
+	defer client2.Close()
+
+	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort}))
+	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: client2.SocksPort}))
+}
+
+func TestMixedStrictConnector(t *testing.T) {
+	// Test cases with different strict mode combinations
+	testCases := []struct {
+		name          string
+		serverStrict  bool
+		client1Strict bool
+		client2Strict bool
+	}{
+		{"AllStrict", true, true, true},
+		{"ServerStrict", true, false, false},
+		{"ConnectorStrict", false, false, true},
+		{"ClientStrict", false, true, false},
+		{"ClientAndConnectorStrict", false, true, true},
+		{"ClientAndServerStrict", true, true, false},
+		{"ServerAndConnectorStrict", true, false, true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := reverseServer(t, &ProxyTestServerOption{
+				ConnectorToken: "CONNECTOR",
+				StrictConnect:  tc.serverStrict,
+			})
+			defer server.Close()
+
+			client1 := reverseClient(t, &ProxyTestClientOption{
+				WSPort:        server.WSPort,
+				Token:         server.Token,
+				LoggerPrefix:  "CLT1",
+				StrictConnect: tc.client1Strict,
+			})
+			defer client1.Close()
+
+			client2 := forwardClient(t, &ProxyTestClientOption{
+				WSPort:        server.WSPort,
+				Token:         "CONNECTOR",
+				LoggerPrefix:  "CLT2",
+				StrictConnect: tc.client2Strict,
+			})
+			defer client2.Close()
+
+			require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort}))
+			require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: client2.SocksPort}))
+		})
 	}
 }

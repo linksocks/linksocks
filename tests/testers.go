@@ -49,9 +49,12 @@ func testWebConnection(targetURL string, proxyConfig *ProxyConfig) error {
 			Transport: &http.Transport{
 				Proxy: http.ProxyURL(parsedURL),
 			},
+			Timeout: 5 * time.Second,
 		}
 	} else {
-		httpClient = &http.Client{}
+		httpClient = &http.Client{
+			Timeout: 5 * time.Second,
+		}
 	}
 
 	// Log test start

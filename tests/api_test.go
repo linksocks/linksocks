@@ -61,7 +61,11 @@ func TestApiCreateForwardToken(t *testing.T) {
 	require.Empty(t, tokenResp.Error)
 
 	// Test the created token with a client
-	client := forwardClient(t, wsPort, tokenResp.Token, "CLT0")
+	client := forwardClient(t, &ProxyTestClientOption{
+		WSPort:       wsPort,
+		Token:        tokenResp.Token,
+		LoggerPrefix: "CLT0",
+	})
 	defer client.Close()
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: client.SocksPort}))
 }

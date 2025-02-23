@@ -11,6 +11,39 @@ import (
 	"github.com/google/uuid"
 )
 
+// Binary message format:
+/*
+All messages start with:
+    Version(1) + Type(1)
+
+AuthMessage:
+    Version(1) + Type(1) + TokenLen(1) + Token(N) + Reverse(1) + Instance(16)
+
+AuthResponseMessage:
+    Version(1) + Type(1) + Success(1) + [ErrorLen(1) + Error(N) if !Success]
+
+ConnectMessage:
+    Version(1) + Type(1) + Protocol(1) + ChannelID(16) + [AddrLen(1) + Addr(N) + Port(2) if TCP]
+
+ConnectResponseMessage:
+    Version(1) + Type(1) + Success(1) + ChannelID(16) + [ErrorLen(1) + Error(N) if !Success]
+
+DataMessage:
+    Version(1) + Type(1) + Protocol(1) + ChannelID(16) + Compression(1) + DataLen(4) + Data(N) + 
+    [if UDP: AddrLen(1) + Addr(N) + Port(2) + TargetAddrLen(1) + TargetAddr(N) + TargetPort(2)]
+
+DisconnectMessage:
+    Version(1) + Type(1) + ChannelID(16)
+
+ConnectorMessage:
+    Version(1) + Type(1) + ChannelID(16) + TokenLen(1) + Token(N) + Operation(1)
+
+ConnectorResponseMessage:
+    Version(1) + Type(1) + ChannelID(16) + Success(1) + 
+    [if !Success: ErrorLen(1) + Error(N)] + 
+    [if Success && HasToken: TokenLen(1) + Token(N)]
+*/
+
 const (
 	// Protocol version
 	ProtocolVersion = byte(0x01)
@@ -79,7 +112,7 @@ type ConnectMessage struct {
 	Protocol  string    `json:"protocol"`
 	Address   string    `json:"address,omitempty"`
 	Port      int       `json:"port,omitempty"`
-	ConnectID uuid.UUID `json:"connect_id"`
+	ChannelID uuid.UUID `json:"channel_id"`
 }
 
 func (m ConnectMessage) GetType() string {
@@ -90,9 +123,7 @@ func (m ConnectMessage) GetType() string {
 type ConnectResponseMessage struct {
 	Success   bool      `json:"success"`
 	Error     string    `json:"error,omitempty"`
-	ChannelID uuid.UUID `json:"channel_id,omitempty"`
-	ConnectID uuid.UUID `json:"connect_id"`
-	Protocol  string    `json:"protocol,omitempty"`
+	ChannelID uuid.UUID `json:"channel_id"`
 }
 
 func (m ConnectResponseMessage) GetType() string {
@@ -126,7 +157,7 @@ func (m DisconnectMessage) GetType() string {
 
 // ConnectorMessage represents a connector management command from reverse client
 type ConnectorMessage struct {
-	ConnectID      uuid.UUID `json:"connect_id"`
+	ChannelID      uuid.UUID `json:"channel_id"`
 	ConnectorToken string    `json:"connector_token"`
 	Operation      string    `json:"operation"` // "add" or "remove"
 }
@@ -139,7 +170,7 @@ func (m ConnectorMessage) GetType() string {
 type ConnectorResponseMessage struct {
 	Success        bool      `json:"success"`
 	Error          string    `json:"error,omitempty"`
-	ConnectID      uuid.UUID `json:"connect_id"`
+	ChannelID      uuid.UUID `json:"channel_id"`
 	ConnectorToken string    `json:"connector_token,omitempty"`
 }
 
@@ -253,11 +284,11 @@ func PackMessage(msg BaseMessage) ([]byte, error) {
 	case ConnectMessage:
 		buf = append(buf, BinaryTypeConnect)
 		buf = append(buf, protocolToBytes(m.Protocol))
-		connectID, err := uuidToBytes(m.ConnectID.String())
+		channelID, err := uuidToBytes(m.ChannelID.String())
 		if err != nil {
-			return nil, fmt.Errorf("invalid ConnectID: %w", err)
+			return nil, fmt.Errorf("invalid ChannelID: %w", err)
 		}
-		buf = append(buf, connectID...)
+		buf = append(buf, channelID...)
 		if m.Protocol == "tcp" {
 			buf = append(buf, byte(len(m.Address)))
 			buf = append(buf, []byte(m.Address)...)
@@ -272,13 +303,7 @@ func PackMessage(msg BaseMessage) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid ChannelID: %w", err)
 		}
-		connectID, err := uuidToBytes(m.ConnectID.String())
-		if err != nil {
-			return nil, fmt.Errorf("invalid ConnectID: %w", err)
-		}
 		buf = append(buf, channelID...)
-		buf = append(buf, connectID...)
-		buf = append(buf, protocolToBytes(m.Protocol))
 		if !m.Success {
 			buf = append(buf, byte(len(m.Error)))
 			buf = append(buf, []byte(m.Error)...)
@@ -334,11 +359,11 @@ func PackMessage(msg BaseMessage) ([]byte, error) {
 
 	case ConnectorMessage:
 		buf = append(buf, BinaryTypeConnector)
-		connectID, err := uuidToBytes(m.ConnectID.String())
+		channelID, err := uuidToBytes(m.ChannelID.String())
 		if err != nil {
-			return nil, fmt.Errorf("invalid ConnectID: %w", err)
+			return nil, fmt.Errorf("invalid ChannelID: %w", err)
 		}
-		buf = append(buf, connectID...)
+		buf = append(buf, channelID...)
 		buf = append(buf, byte(len(m.ConnectorToken)))
 		buf = append(buf, []byte(m.ConnectorToken)...)
 		buf = append(buf, operationToBytes(m.Operation))
@@ -346,12 +371,12 @@ func PackMessage(msg BaseMessage) ([]byte, error) {
 
 	case ConnectorResponseMessage:
 		buf = append(buf, BinaryTypeConnectorResponse)
-		buf = append(buf, boolToByte(m.Success))
-		connectID, err := uuidToBytes(m.ConnectID.String())
+		channelID, err := uuidToBytes(m.ChannelID.String())
 		if err != nil {
-			return nil, fmt.Errorf("invalid ConnectID: %w", err)
+			return nil, fmt.Errorf("invalid ChannelID: %w", err)
 		}
-		buf = append(buf, connectID...)
+		buf = append(buf, channelID...)
+		buf = append(buf, boolToByte(m.Success))
 		if !m.Success {
 			buf = append(buf, byte(len(m.Error)))
 			buf = append(buf, []byte(m.Error)...)
@@ -419,17 +444,17 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 		return msg, nil
 
 	case BinaryTypeConnect:
-		if len(payload) < 17 { // Protocol(1) + ConnectID(16)
+		if len(payload) < 17 { // Protocol(1) + ChannelID(16)
 			return nil, fmt.Errorf("invalid connect message")
 		}
 		protocol := bytesToProtocol(payload[0])
-		connectID, err := uuid.Parse(bytesToUUID(payload[1:17]))
+		channelID, err := uuid.Parse(bytesToUUID(payload[1:17]))
 		if err != nil {
-			return nil, fmt.Errorf("invalid ConnectID: %w", err)
+			return nil, fmt.Errorf("invalid ChannelID: %w", err)
 		}
 		msg := ConnectMessage{
 			Protocol:  protocol,
-			ConnectID: connectID,
+			ChannelID: channelID,
 		}
 		if protocol == "tcp" {
 			payload = payload[17:]
@@ -446,7 +471,7 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 		return msg, nil
 
 	case BinaryTypeConnectResponse:
-		if len(payload) < 34 { // Success(1) + ChannelID(16) + ConnectID(16) + Protocol(1)
+		if len(payload) < 17 { // Success(1) + ChannelID(16)
 			return nil, fmt.Errorf("invalid connect response message")
 		}
 		success := byteToBool(payload[0])
@@ -454,26 +479,19 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid ChannelID: %w", err)
 		}
-		connectID, err := uuid.Parse(bytesToUUID(payload[17:33]))
-		if err != nil {
-			return nil, fmt.Errorf("invalid ConnectID: %w", err)
-		}
-		protocol := bytesToProtocol(payload[33])
 		msg := ConnectResponseMessage{
 			Success:   success,
 			ChannelID: channelID,
-			ConnectID: connectID,
-			Protocol:  protocol,
 		}
 		if !success {
-			if len(payload) < 35 {
+			if len(payload) < 18 {
 				return nil, fmt.Errorf("invalid connect response error length")
 			}
-			errorLen := int(payload[34])
-			if len(payload) < 35+errorLen {
+			errorLen := int(payload[17])
+			if len(payload) < 18+errorLen {
 				return nil, fmt.Errorf("invalid connect response message length")
 			}
-			msg.Error = string(payload[35 : 35+errorLen])
+			msg.Error = string(payload[18 : 18+errorLen])
 		}
 		return msg, nil
 
@@ -551,40 +569,44 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 		}, nil
 
 	case BinaryTypeConnector:
-		if len(payload) < 17 { // ConnectID(16) + TokenLen(1)
+		if len(payload) < 16 { // ChannelID(16)
 			return nil, fmt.Errorf("invalid connector message")
 		}
-		connectID, err := uuid.Parse(bytesToUUID(payload[:16]))
+		channelID, err := uuid.Parse(bytesToUUID(payload[:16]))
 		if err != nil {
-			return nil, fmt.Errorf("invalid ConnectID: %w", err)
+			return nil, fmt.Errorf("invalid ChannelID: %w", err)
 		}
-		tokenLen := int(payload[16])
-		if len(payload) < 17+tokenLen+1 { // +1 for operation
+		payload = payload[16:]
+		if len(payload) < 1 {
 			return nil, fmt.Errorf("invalid connector message length")
 		}
-		token := string(payload[17 : 17+tokenLen])
-		operation := bytesToOperation(payload[17+tokenLen])
+		tokenLen := int(payload[0])
+		if len(payload) < 1+tokenLen+1 { // +1 for operation
+			return nil, fmt.Errorf("invalid connector message length")
+		}
+		token := string(payload[1 : 1+tokenLen])
+		operation := bytesToOperation(payload[1+tokenLen])
 		if operation == "" {
 			return nil, fmt.Errorf("invalid operation type")
 		}
 		return ConnectorMessage{
-			ConnectID:      connectID,
+			ChannelID:      channelID,
 			ConnectorToken: token,
 			Operation:      operation,
 		}, nil
 
 	case BinaryTypeConnectorResponse:
-		if len(payload) < 17 { // Success(1) + ConnectID(16)
+		if len(payload) < 17 { // ChannelID(16) + Success(1)
 			return nil, fmt.Errorf("invalid connector response message")
 		}
-		success := byteToBool(payload[0])
-		connectID, err := uuid.Parse(bytesToUUID(payload[1:17]))
+		channelID, err := uuid.Parse(bytesToUUID(payload[:16]))
 		if err != nil {
-			return nil, fmt.Errorf("invalid ConnectID: %w", err)
+			return nil, fmt.Errorf("invalid ChannelID: %w", err)
 		}
+		success := byteToBool(payload[16])
 		msg := ConnectorResponseMessage{
 			Success:   success,
-			ConnectID: connectID,
+			ChannelID: channelID,
 		}
 		if !success {
 			if len(payload) < 18 {

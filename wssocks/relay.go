@@ -30,6 +30,9 @@ type RelayOption struct {
 	BufferSize     int
 	ChannelTimeout time.Duration
 	ConnectTimeout time.Duration
+	// StrictConnect controls whether to wait for connect success response
+	// When false, assumes connection success immediately
+	StrictConnect bool
 }
 
 // Global buffer pool using pointer type
@@ -46,6 +49,7 @@ func NewDefaultRelayOption() *RelayOption {
 		BufferSize:     DefaultBufferSize,
 		ChannelTimeout: DefaultChannelTimeout,
 		ConnectTimeout: DefaultConnectTimeout,
+		StrictConnect:  false,
 	}
 }
 
@@ -67,16 +71,23 @@ func (o *RelayOption) WithConnectTimeout(timeout time.Duration) *RelayOption {
 	return o
 }
 
+// WithStrictConnect sets the strict connect mode for the relay
+func (o *RelayOption) WithStrictConnect(strict bool) *RelayOption {
+	o.StrictConnect = strict
+	return o
+}
+
 // Relay handles stream transport between SOCKS5 and WebSocket
 type Relay struct {
-	log            zerolog.Logger
-	messageQueues  sync.Map // map[uuid.UUID]chan Message
-	tcpChannels    sync.Map // map[uuid.UUID]context.CancelFunc
-	udpChannels    sync.Map // map[uuid.UUID]context.CancelFunc
-	udpClientAddrs sync.Map // map[uuid.UUID]*net.UDPAddr
-	lastActivity   sync.Map // map[uuid.UUID]time.Time
-	option         *RelayOption
-	done           chan struct{}
+	log                  zerolog.Logger
+	messageQueues        sync.Map // map[uuid.UUID]chan Message
+	tcpChannels          sync.Map // map[uuid.UUID]context.CancelFunc
+	udpChannels          sync.Map // map[uuid.UUID]context.CancelFunc
+	udpClientAddrs       sync.Map // map[uuid.UUID]*net.UDPAddr
+	lastActivity         sync.Map // map[uuid.UUID]time.Time
+	option               *RelayOption
+	done                 chan struct{}
+	connectionSuccessMap sync.Map
 }
 
 // NewRelay creates a new Relay instance
@@ -212,9 +223,6 @@ func (r *Relay) HandleNetworkConnection(ctx context.Context, ws *WSConn, request
 
 // HandleTCPConnection handles TCP network connection
 func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request ConnectMessage) error {
-	// Generate channel_id
-	channelID := uuid.New()
-
 	if request.Port <= 0 || request.Port > 65535 {
 		return fmt.Errorf("invalid port number: %d", request.Port)
 	}
@@ -236,7 +244,7 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 		response := ConnectResponseMessage{
 			Success:   false,
 			Error:     err.Error(),
-			ConnectID: request.ConnectID,
+			ChannelID: request.ChannelID,
 		}
 		r.logMessage(response, "send", ws.Label())
 		if err := ws.WriteMessage(response); err != nil {
@@ -247,20 +255,18 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 
 	// Create child context
 	childCtx, cancel := context.WithCancel(ctx)
-	r.tcpChannels.Store(channelID, cancel)
+	r.tcpChannels.Store(request.ChannelID, cancel)
 	defer func() {
 		cancel()
 		conn.Close()
-		r.tcpChannels.Delete(channelID)
-		r.lastActivity.Delete(channelID)
+		r.tcpChannels.Delete(request.ChannelID)
+		r.lastActivity.Delete(request.ChannelID)
 	}()
 
 	// Send success response
 	response := ConnectResponseMessage{
 		Success:   true,
-		ChannelID: channelID,
-		ConnectID: request.ConnectID,
-		Protocol:  "tcp",
+		ChannelID: request.ChannelID,
 	}
 	r.logMessage(response, "send", ws.Label())
 	if err := ws.WriteMessage(response); err != nil {
@@ -268,14 +274,11 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 	}
 
 	// Start relay with child context
-	return r.HandleRemoteTCPForward(childCtx, ws, conn, channelID)
+	return r.HandleRemoteTCPForward(childCtx, ws, conn, request.ChannelID)
 }
 
 // HandleUDPConnection handles UDP network connection
 func (r *Relay) HandleUDPConnection(ctx context.Context, ws *WSConn, request ConnectMessage) error {
-	// Generate channel_id
-	channelID := uuid.New()
-
 	// Try dual-stack first
 	localAddr := &net.UDPAddr{
 		IP:   net.IPv6zero,
@@ -290,7 +293,7 @@ func (r *Relay) HandleUDPConnection(ctx context.Context, ws *WSConn, request Con
 			response := ConnectResponseMessage{
 				Success:   false,
 				Error:     err.Error(),
-				ConnectID: request.ConnectID,
+				ChannelID: request.ChannelID,
 			}
 			r.logMessage(response, "send", ws.Label())
 			if err := ws.WriteMessage(response); err != nil {
@@ -302,20 +305,18 @@ func (r *Relay) HandleUDPConnection(ctx context.Context, ws *WSConn, request Con
 
 	// Create child context
 	childCtx, cancel := context.WithCancel(ctx)
-	r.udpChannels.Store(channelID, cancel)
+	r.udpChannels.Store(request.ChannelID, cancel)
 	defer func() {
 		cancel()
 		conn.Close()
-		r.udpChannels.Delete(channelID)
-		r.lastActivity.Delete(channelID)
+		r.udpChannels.Delete(request.ChannelID)
+		r.lastActivity.Delete(request.ChannelID)
 	}()
 
 	// Send success response
 	response := ConnectResponseMessage{
 		Success:   true,
-		ChannelID: channelID,
-		ConnectID: request.ConnectID,
-		Protocol:  "udp",
+		ChannelID: request.ChannelID,
 	}
 	r.logMessage(response, "send", ws.Label())
 	if err := ws.WriteMessage(response); err != nil {
@@ -323,7 +324,7 @@ func (r *Relay) HandleUDPConnection(ctx context.Context, ws *WSConn, request Con
 	}
 
 	// Start relay with child context
-	return r.HandleRemoteUDPForward(childCtx, ws, conn, channelID)
+	return r.HandleRemoteUDPForward(childCtx, ws, conn, request.ChannelID)
 }
 
 // HandleSocksRequest handles incoming SOCKS5 client request
@@ -465,23 +466,22 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 	targetPort = binary.BigEndian.Uint16(buffer[offset : offset+2])
 
 	// Generate unique client ID and connect ID
-	connectID := uuid.New()
-	r.log.Trace().Str("connect_id", connectID.String()).Msg("Starting SOCKS request handling")
+	channelID := uuid.New()
+	r.log.Trace().Str("channel_id", channelID.String()).Msg("Starting SOCKS request handling")
 
 	// Handle different commands
 	switch cmd {
 	case 0x01: // CONNECT
-		// Create temporary queue for connection response
-		connectQueue := make(chan ConnectResponseMessage, 1)
-		r.messageQueues.Store(connectID, connectQueue)
-		defer r.messageQueues.Delete(connectID)
+		channelQueue := make(chan BaseMessage, 1000)
+		r.messageQueues.Store(channelID, channelQueue)
+		defer r.messageQueues.Delete(channelID)
 
 		// Send connection request to server
 		requestData := ConnectMessage{
 			Protocol:  "tcp",
 			Address:   targetAddr,
 			Port:      int(targetPort),
-			ConnectID: connectID,
+			ChannelID: channelID,
 		}
 		r.log.Debug().Str("address", targetAddr).Int("port", int(targetPort)).Msg("Requesting TCP connecting to")
 		r.logMessage(requestData, "send", ws.Label())
@@ -492,30 +492,60 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 			return fmt.Errorf("write connect request error: %w", err)
 		}
 
-		// Wait for response with timeout
 		var response ConnectResponseMessage
-		select {
-		case msg := <-connectQueue:
-			response = msg
-		case <-time.After(r.option.ConnectTimeout + 5*time.Second):
-			// Return connection failure response to SOCKS client (0x04 = Host unreachable)
-			resp := []byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-			socksConn.Write(resp)
-			r.log.Debug().Str("addr", targetAddr).Int("port", int(targetPort)).Msg("Remote connection response timeout")
-			return nil
-		}
-
-		if !response.Success {
-			// Return connection failure response to SOCKS client (0x04 = Host unreachable)
-			resp := []byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-			if _, err := socksConn.Write(resp); err != nil {
-				return fmt.Errorf("write failure response error: %w", err)
+		if r.option.StrictConnect {
+			// Wait for response with timeout in strict mode
+			select {
+			case msg := <-channelQueue:
+				var ok bool
+				response, ok = msg.(ConnectResponseMessage)
+				if !ok {
+					resp := []byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+					if _, err := socksConn.Write(resp); err != nil {
+						return fmt.Errorf("write failure response error: %w", err)
+					}
+					return fmt.Errorf("unexpected message type for connect response")
+				}
+			case <-time.After(r.option.ConnectTimeout + 5*time.Second):
+				// Return connection failure response to SOCKS client (0x04 = Host unreachable)
+				resp := []byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+				if _, err := socksConn.Write(resp); err != nil {
+					return fmt.Errorf("write failure response error: %w", err)
+				}
+				r.log.Debug().Str("addr", targetAddr).Int("port", int(targetPort)).Msg("Remote connection response timeout")
+				return nil
 			}
-			r.log.Debug().Str("error", response.Error).Msg("Remote connection failed")
-			return nil
-		}
+			if !response.Success {
+				// Return connection failure response to SOCKS client (0x04 = Host unreachable)
+				resp := []byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+				if _, err := socksConn.Write(resp); err != nil {
+					return fmt.Errorf("write failure response error: %w", err)
+				}
+				r.log.Debug().Str("error", response.Error).Msg("Remote connection failed")
+				return nil
+			}
+			r.log.Trace().Str("addr", targetAddr).Int("port", int(targetPort)).Msg("Remote successfully connected")
+		} else {
+			r.log.Trace().Str("addr", targetAddr).Int("port", int(targetPort)).Msg("Assume successful connection in non-strict mode")
 
-		r.log.Trace().Str("addr", targetAddr).Int("port", int(targetPort)).Msg("Remote successfully connected")
+			go func() {
+				timer := time.NewTimer(r.option.ConnectTimeout + 5*time.Second)
+				defer timer.Stop()
+
+				select {
+				case <-timer.C:
+					if _, ok := r.connectionSuccessMap.LoadAndDelete(channelID); !ok {
+						r.log.Debug().
+							Str("addr", targetAddr).
+							Int("port", int(targetPort)).
+							Msg("Connection timeout without success confirmation")
+						r.disconnectChannel(channelID)
+					}
+				case <-ctx.Done():
+					return
+				}
+			}()
+		}
 
 		// Send success response to client
 		resp := []byte{
@@ -531,7 +561,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 		}
 
 		// Start TCP relay
-		return r.HandleSocksTCPForward(ctx, ws, socksConn, response.ChannelID)
+		return r.HandleSocksTCPForward(ctx, ws, socksConn, channelID)
 
 	case 0x03: // UDP ASSOCIATE
 		// Create UDP socket
@@ -548,14 +578,14 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 		localAddr := udpConn.LocalAddr().(*net.UDPAddr)
 
 		// Create temporary queue for connection response
-		connectQueue := make(chan ConnectResponseMessage, 1)
-		r.messageQueues.Store(connectID, connectQueue)
-		defer r.messageQueues.Delete(connectID)
+		connectQueue := make(chan BaseMessage, 1000)
+		r.messageQueues.Store(channelID, connectQueue)
+		defer r.messageQueues.Delete(channelID)
 
 		// Send UDP associate request to server
 		requestData := ConnectMessage{
 			Protocol:  "udp",
-			ConnectID: connectID,
+			ChannelID: channelID,
 		}
 		r.log.Debug().Msg("Requesting UDP Associate")
 		r.logMessage(requestData, "send", ws.Label())
@@ -564,19 +594,29 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 			return fmt.Errorf("write UDP request error: %w", err)
 		}
 
-		// Wait for response with timeout
-		var response ConnectResponseMessage
-		select {
-		case msg := <-connectQueue:
-			response = msg
-		case <-time.After(10 * time.Second):
-			udpConn.Close()
-			return fmt.Errorf("UDP association response timeout")
-		}
+		if r.option.StrictConnect {
+			// Wait for response with timeout
+			var response ConnectResponseMessage
+			select {
+			case msg := <-connectQueue:
+				var ok bool
+				response, ok = msg.(ConnectResponseMessage)
+				if !ok {
+					resp := []byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+					if _, err := socksConn.Write(resp); err != nil {
+						return fmt.Errorf("write failure response error: %w", err)
+					}
+					return fmt.Errorf("unexpected message type for connect response")
+				}
+			case <-time.After(r.option.ConnectTimeout + 5*time.Second):
+				udpConn.Close()
+				return fmt.Errorf("UDP association response timeout")
+			}
 
-		if !response.Success {
-			udpConn.Close()
-			return fmt.Errorf("UDP association failed: %s", response.Error)
+			if !response.Success {
+				udpConn.Close()
+				return fmt.Errorf("UDP association failed: %s", response.Error)
+			}
 		}
 
 		// Send UDP associate response
@@ -606,7 +646,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 		}()
 
 		// Start UDP relay
-		return r.HandleSocksUDPForward(ctx, ws, udpConn, socksConn, response.ChannelID)
+		return r.HandleSocksUDPForward(ctx, ws, udpConn, socksConn, channelID)
 
 	default:
 		return fmt.Errorf("unsupported command: %d", cmd)
@@ -618,8 +658,14 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 	// Initialize activity time
 	r.updateActivityTime(channelID)
 
-	msgChan := make(chan DataMessage, 100)
-	r.messageQueues.Store(channelID, msgChan)
+	// Create message queue for this channel if it doesn't exist
+	var msgChan chan BaseMessage
+	if queue, exists := r.messageQueues.Load(channelID); exists {
+		msgChan = queue.(chan BaseMessage)
+	} else {
+		msgChan = make(chan BaseMessage, 1000)
+		r.messageQueues.Store(channelID, msgChan)
+	}
 	defer r.messageQueues.Delete(channelID)
 
 	var wg sync.WaitGroup
@@ -696,15 +742,20 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 			case <-ctx.Done():
 				return
 			case msg := <-msgChan:
+				dataMsg, ok := msg.(DataMessage)
+				if !ok {
+					r.log.Debug().Str("type", msg.GetType()).Msg("Unexpected message type for data")
+					continue
+				}
 				// Update activity time
 				r.updateActivityTime(channelID)
 
-				_, err := remoteConn.Write(msg.Data)
+				_, err := remoteConn.Write(dataMsg.Data)
 				if err != nil {
 					errChan <- fmt.Errorf("remote write error: %w", err)
 					return
 				}
-				r.log.Trace().Int("size", len(msg.Data)).Msg("Sent TCP data to target")
+				r.log.Trace().Int("size", len(dataMsg.Data)).Msg("Sent TCP data to target")
 			}
 		}
 	}()
@@ -731,8 +782,14 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 	// Initialize activity time
 	r.updateActivityTime(channelID)
 
-	msgChan := make(chan DataMessage, 100)
-	r.messageQueues.Store(channelID, msgChan)
+	// Create message queue for this channel if it doesn't exist
+	var msgChan chan BaseMessage
+	if queue, exists := r.messageQueues.Load(channelID); exists {
+		msgChan = queue.(chan BaseMessage)
+	} else {
+		msgChan = make(chan BaseMessage, 1000)
+		r.messageQueues.Store(channelID, msgChan)
+	}
 	defer r.messageQueues.Delete(channelID)
 
 	var wg sync.WaitGroup
@@ -787,20 +844,26 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 			case <-ctx.Done():
 				return
 			case msg := <-msgChan:
+				// Type assert to DataMessage
+				dataMsg, ok := msg.(DataMessage)
+				if !ok {
+					r.log.Debug().Str("type", msg.GetType()).Msg("Unexpected message type for data")
+					continue
+				}
 				// Update activity time
 				r.updateActivityTime(channelID)
 
 				// Resolve domain name if necessary
 				var targetIP net.IP
-				if ip := net.ParseIP(msg.TargetAddr); ip != nil {
+				if ip := net.ParseIP(dataMsg.TargetAddr); ip != nil {
 					targetIP = ip
 				} else {
 					// Attempt to resolve domain name
-					addrs, err := net.LookupHost(msg.TargetAddr)
+					addrs, err := net.LookupHost(dataMsg.TargetAddr)
 					if err != nil {
 						r.log.Debug().
 							Err(err).
-							Str("domain", msg.TargetAddr).
+							Str("domain", dataMsg.TargetAddr).
 							Msg("Failed to resolve domain name")
 						continue
 					}
@@ -809,7 +872,7 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 					if targetIP == nil {
 						r.log.Debug().
 							Str("addr", addrs[0]).
-							Str("domain", msg.TargetAddr).
+							Str("domain", dataMsg.TargetAddr).
 							Msg("Failed to parse resolved IP address")
 						continue
 					}
@@ -817,19 +880,19 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 
 				targetAddr := &net.UDPAddr{
 					IP:   targetIP,
-					Port: msg.TargetPort,
+					Port: dataMsg.TargetPort,
 				}
 
-				_, err := udpConn.WriteToUDP(msg.Data, targetAddr)
+				_, err := udpConn.WriteToUDP(dataMsg.Data, targetAddr)
 				if err != nil {
 					errChan <- fmt.Errorf("udp write error: %w", err)
 					return
 				}
 				r.log.Trace().
-					Int("size", len(msg.Data)).
+					Int("size", len(dataMsg.Data)).
 					Str("addr", targetAddr.String()).
-					Str("original_addr", msg.TargetAddr).
-					Str("original_port", fmt.Sprintf("%d", msg.TargetPort)).
+					Str("original_addr", dataMsg.TargetAddr).
+					Str("original_port", fmt.Sprintf("%d", dataMsg.TargetPort)).
 					Msg("Sent UDP data to target")
 			}
 		}
@@ -872,9 +935,14 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 		ws.WriteMessage(disconnectMsg)
 	}()
 
-	// Create message queue for this channel
-	msgChan := make(chan DataMessage, 100)
-	r.messageQueues.Store(channelID, msgChan)
+	// Create message queue for this channel if it doesn't exist
+	var msgChan chan BaseMessage
+	if queue, exists := r.messageQueues.Load(channelID); exists {
+		msgChan = queue.(chan BaseMessage)
+	} else {
+		msgChan = make(chan BaseMessage, 1000)
+		r.messageQueues.Store(channelID, msgChan)
+	}
 	defer r.messageQueues.Delete(channelID)
 
 	var wg sync.WaitGroup
@@ -936,15 +1004,21 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 			case <-ctx.Done():
 				return
 			case msg := <-msgChan:
+				// Type assert to DataMessage
+				dataMsg, ok := msg.(DataMessage)
+				if !ok {
+					r.log.Debug().Str("type", msg.GetType()).Msg("Unexpected message type for data")
+					continue
+				}
 				// Update activity time
 				r.updateActivityTime(channelID)
 
-				_, err := socksConn.Write(msg.Data)
+				_, err := socksConn.Write(dataMsg.Data)
 				if err != nil {
 					errChan <- fmt.Errorf("socks write error: %w", err)
 					return
 				}
-				r.log.Trace().Int("size", len(msg.Data)).Msg("Sent TCP data to SOCKS")
+				r.log.Trace().Int("size", len(dataMsg.Data)).Msg("Sent TCP data to SOCKS")
 			}
 		}
 	}()
@@ -986,8 +1060,14 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 		ws.WriteMessage(disconnectMsg)
 	}()
 
-	msgChan := make(chan DataMessage, 100)
-	r.messageQueues.Store(channelID, msgChan)
+	// Create message queue for this channel if it doesn't exist
+	var msgChan chan BaseMessage
+	if queue, exists := r.messageQueues.Load(channelID); exists {
+		msgChan = queue.(chan BaseMessage)
+	} else {
+		msgChan = make(chan BaseMessage, 1000)
+		r.messageQueues.Store(channelID, msgChan)
+	}
 	defer r.messageQueues.Delete(channelID)
 
 	var wg sync.WaitGroup
@@ -1081,6 +1161,12 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 			case <-ctx.Done():
 				return
 			case msg := <-msgChan:
+				// Type assert to DataMessage
+				dataMsg, ok := msg.(DataMessage)
+				if !ok {
+					r.log.Debug().Str("type", msg.GetType()).Msg("Unexpected message type for data")
+					continue
+				}
 				// Update activity time
 				r.updateActivityTime(channelID)
 
@@ -1088,7 +1174,7 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 				udpHeader := []byte{0, 0, 0} // RSV + FRAG
 
 				// Try parsing as IPv4
-				if ip := net.ParseIP(msg.Address); ip != nil {
+				if ip := net.ParseIP(dataMsg.Address); ip != nil {
 					if ip4 := ip.To4(); ip4 != nil {
 						udpHeader = append(udpHeader, 0x01) // IPv4
 						udpHeader = append(udpHeader, ip4...)
@@ -1098,18 +1184,18 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 					}
 				} else {
 					// Treat as domain name
-					domainBytes := []byte(msg.Address)
+					domainBytes := []byte(dataMsg.Address)
 					udpHeader = append(udpHeader, 0x03) // Domain
 					udpHeader = append(udpHeader, byte(len(domainBytes)))
 					udpHeader = append(udpHeader, domainBytes...)
 				}
 
 				portBytes := make([]byte, 2)
-				binary.BigEndian.PutUint16(portBytes, uint16(msg.Port))
+				binary.BigEndian.PutUint16(portBytes, uint16(dataMsg.Port))
 				udpHeader = append(udpHeader, portBytes...)
-				udpHeader = append(udpHeader, msg.Data...)
+				udpHeader = append(udpHeader, dataMsg.Data...)
 
-				addr, ok := r.udpClientAddrs.Load(msg.ChannelID)
+				addr, ok := r.udpClientAddrs.Load(dataMsg.ChannelID)
 				if !ok {
 					r.log.Debug().Msg("Dropping UDP packet: no socks client address available")
 					continue
@@ -1120,7 +1206,7 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 					errChan <- fmt.Errorf("udp write error: %w", err)
 					return
 				}
-				r.log.Trace().Int("size", len(msg.Data)).Str("addr", clientAddr.String()).Msg("Sent UDP data to SOCKS")
+				r.log.Trace().Int("size", len(dataMsg.Data)).Str("addr", clientAddr.String()).Msg("Sent UDP data to SOCKS")
 			}
 		}
 	}()
@@ -1208,9 +1294,31 @@ func (r *Relay) Close() {
 
 // determineCompression decides compression method based on data size
 func (r *Relay) determineCompression(dataSize int) byte {
-	const compressionThreshold = 1024 // 1KB threshold
+	const compressionThreshold = 2048 // 1KB threshold
 	if dataSize >= compressionThreshold {
 		return DataCompressionGzip
 	}
 	return DataCompressionNone
+}
+
+// disconnectChannel handles cleanup of channel resources
+func (r *Relay) disconnectChannel(channelID uuid.UUID) {
+	if cancelVal, ok := r.tcpChannels.LoadAndDelete(channelID); ok {
+		if cancel, ok := cancelVal.(context.CancelFunc); ok {
+			cancel()
+		}
+	}
+	if cancelVal, ok := r.udpChannels.LoadAndDelete(channelID); ok {
+		if cancel, ok := cancelVal.(context.CancelFunc); ok {
+			cancel()
+		}
+	}
+	r.udpClientAddrs.Delete(channelID)
+	r.messageQueues.Delete(channelID)
+	r.connectionSuccessMap.Delete(channelID)
+}
+
+// SetConnectionSuccess sets the connection success status for a channel
+func (r *Relay) SetConnectionSuccess(channelID uuid.UUID) {
+	r.connectionSuccessMap.Store(channelID, true)
 }

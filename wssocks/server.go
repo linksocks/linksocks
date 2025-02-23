@@ -79,7 +79,6 @@ type waitingSocket struct {
 }
 
 type connectorCache struct {
-	connectIDToConnector map[uuid.UUID]*WSConn  // Maps connect_id to reverse client WebSocket connection
 	channelIDToClient    map[uuid.UUID]*WSConn  // Maps channel_id to reverse client WebSocket connection
 	channelIDToConnector map[uuid.UUID]*WSConn  // Maps channel_id to connector WebSocket connection
 	tokenCache           map[string][]uuid.UUID // Maps token to list of connect_ids and channel_ids
@@ -89,7 +88,6 @@ type connectorCache struct {
 // newConnectorCache creates a new connector cache
 func newConnectorCache() *connectorCache {
 	return &connectorCache{
-		connectIDToConnector: make(map[uuid.UUID]*WSConn),
 		channelIDToClient:    make(map[uuid.UUID]*WSConn),
 		channelIDToConnector: make(map[uuid.UUID]*WSConn),
 		tokenCache:           make(map[string][]uuid.UUID),
@@ -108,6 +106,7 @@ type ServerOption struct {
 	APIKey          string
 	ChannelTimeout  time.Duration
 	ConnectTimeout  time.Duration
+	StrictConnect   bool
 }
 
 // DefaultServerOption returns default server options
@@ -123,6 +122,7 @@ func DefaultServerOption() *ServerOption {
 		APIKey:          "",
 		ChannelTimeout:  DefaultChannelTimeout,
 		ConnectTimeout:  DefaultConnectTimeout,
+		StrictConnect:   false,
 	}
 }
 
@@ -186,6 +186,12 @@ func (o *ServerOption) WithConnectTimeout(timeout time.Duration) *ServerOption {
 	return o
 }
 
+// WithStrictConnect controls whether to wait for connect success response
+func (o *ServerOption) WithStrictConnect(strict bool) *ServerOption {
+	o.StrictConnect = strict
+	return o
+}
+
 // NewWSSocksServer creates a new WSSocksServer instance
 func NewWSSocksServer(opt *ServerOption) *WSSocksServer {
 	if opt == nil {
@@ -195,7 +201,8 @@ func NewWSSocksServer(opt *ServerOption) *WSSocksServer {
 	relayOpt := NewDefaultRelayOption().
 		WithBufferSize(opt.BufferSize).
 		WithChannelTimeout(opt.ChannelTimeout).
-		WithConnectTimeout(opt.ConnectTimeout)
+		WithConnectTimeout(opt.ConnectTimeout).
+		WithStrictConnect(opt.StrictConnect)
 
 	s := &WSSocksServer{
 		relay:           NewRelay(opt.Logger, relayOpt),
@@ -407,7 +414,6 @@ func (s *WSSocksServer) RemoveToken(token string) bool {
 		s.connCache.mu.Lock()
 		if ids, exists := s.connCache.tokenCache[token]; exists {
 			for _, id := range ids {
-				delete(s.connCache.connectIDToConnector, id)
 				delete(s.connCache.channelIDToClient, id)
 				delete(s.connCache.channelIDToConnector, id)
 			}
@@ -774,186 +780,152 @@ func (s *WSSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clien
 
 			s.relay.logMessage(msg, "recv", ws.Label())
 
-			switch m := msg.(type) {
-			case DataMessage:
-				channelID := m.ChannelID
-				// First try existing message queues
-				if queue, ok := s.relay.messageQueues.Load(channelID); ok {
-					select {
-					case queue.(chan DataMessage) <- m:
-						s.log.Trace().Str("channel_id", channelID.String()).Msg("Message forwarded to channel")
-					default:
-						s.log.Debug().Str("channel_id", channelID.String()).Msg("Message queue full")
-					}
-					continue
-				}
-
-				// If not in message queues, check connector channels
-				s.connCache.mu.RLock()
-				targetWS, exists := s.connCache.channelIDToClient[channelID]
-				s.connCache.mu.RUnlock()
-
-				if exists {
-					s.relay.logMessage(m, "send", ws.Label())
-					if err := targetWS.WriteMessage(m); err != nil {
-						s.log.Debug().Err(err).Msg("Failed to forward data message to connector client")
-					}
-				} else {
-					s.log.Debug().Str("channel_id", channelID.String()).Msg("Received data for unknown channel")
-				}
-
-			case ConnectMessage:
-				var isForwardClient bool
-				s.mu.RLock()
-				_, isForwardClient = s.clients[clientID]
-				s.mu.RUnlock()
-
-				if isForwardClient {
-					go func() {
-						if err := s.relay.HandleNetworkConnection(ctx, ws, m); err != nil && !errors.Is(err, context.Canceled) {
-							s.log.Debug().Err(err).Msg("Network connection handler error")
+			// Handle message asynchronously to prevent blocking
+			go func(msg BaseMessage) {
+				switch m := msg.(type) {
+				case DataMessage:
+					// Use non-blocking send for data messages
+					if queue, ok := s.relay.messageQueues.Load(m.ChannelID); ok {
+						select {
+						case queue.(chan BaseMessage) <- m:
+							s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Message forwarded to channel")
+						default:
+							s.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Message queue full, dropping message")
 						}
-					}()
-				}
+						return
+					}
 
-			case ConnectResponseMessage:
-				if queue, ok := s.relay.messageQueues.Load(m.ConnectID); ok {
-					queue.(chan ConnectResponseMessage) <- m
-				} else {
-					// Store channel mappings for connector routing
-					s.connCache.mu.Lock()
-					if connectorWS, exists := s.connCache.connectIDToConnector[m.ConnectID]; exists {
-						// Store both client and connector mappings for the new channel
-						s.connCache.channelIDToClient[m.ChannelID] = connectorWS
-						s.connCache.channelIDToConnector[m.ChannelID] = ws
-						// Forward the response to the connector
+					// Forward to connector if exists
+					s.connCache.mu.RLock()
+					targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]
+					s.connCache.mu.RUnlock()
+
+					if exists {
 						s.relay.logMessage(m, "send", ws.Label())
-						if err := connectorWS.WriteMessage(m); err != nil {
-							s.log.Debug().Err(err).Msg("Failed to forward connect response to connector")
+						if err := targetWS.WriteMessage(m); err != nil {
+							s.log.Debug().Err(err).Msg("Failed to forward data message to connector client")
 						}
 					} else {
-						s.log.Debug().Str("connect_id", m.ConnectID.String()).Msg("Received connect response for unknown channel")
+						s.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Received data for unknown channel")
 					}
-					s.connCache.mu.Unlock()
-				}
 
-			case DisconnectMessage:
-				// Forward disconnect message to connector if exists
-				s.connCache.mu.Lock()
-				if targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]; exists {
-					s.relay.logMessage(m, "send", ws.Label())
-					if err := targetWS.WriteMessage(m); err != nil {
-						s.log.Debug().Err(err).Msg("Failed to forward disconnect message")
-					}
-				}
-				s.connCache.mu.Unlock()
+				case ConnectMessage:
+					var isForwardClient bool
+					s.mu.RLock()
+					_, isForwardClient = s.clients[clientID]
+					s.mu.RUnlock()
 
-				// Clean up relay channels
-				if cancelVal, ok := s.relay.tcpChannels.LoadAndDelete(m.ChannelID); ok {
-					if cancel, ok := cancelVal.(context.CancelFunc); ok {
-						cancel()
-					}
-				}
-				if cancelVal, ok := s.relay.udpChannels.LoadAndDelete(m.ChannelID); ok {
-					if cancel, ok := cancelVal.(context.CancelFunc); ok {
-						cancel()
-					}
-				}
-				s.relay.udpClientAddrs.Delete(m.ChannelID)
-				s.relay.messageQueues.Delete(m.ChannelID)
-
-				// Clean up connector channel mappings
-				s.connCache.mu.Lock()
-				delete(s.connCache.channelIDToClient, m.ChannelID)
-				delete(s.connCache.channelIDToConnector, m.ChannelID)
-				s.connCache.mu.Unlock()
-
-			case ConnectorMessage:
-				// Check if this client has permission to manage connectors
-				s.mu.RLock()
-				var token string
-				var hasPermission bool
-				for t, clients := range s.tokenClients {
-					for _, client := range clients {
-						if client.ID == clientID {
-							token = t
-							// Check if this token has connector management permission
-							if opts, exists := s.tokenOptions[t]; exists {
-								hasPermission = opts.AllowManageConnector
+					if isForwardClient {
+						// Create buffered channel with larger capacity
+						msgChan := make(chan BaseMessage, 1000)
+						s.relay.messageQueues.Store(m.ChannelID, msgChan)
+						go func() {
+							if err := s.relay.HandleNetworkConnection(ctx, ws, m); err != nil && !errors.Is(err, context.Canceled) {
+								s.log.Debug().Err(err).Msg("Network connection handler error")
 							}
-							break
-						}
+						}()
 					}
-					if token != "" {
-						break
-					}
-				}
-				s.mu.RUnlock()
 
-				// Prepare response
-				response := ConnectorResponseMessage{
-					ConnectID: m.ConnectID,
-				}
-
-				if !hasPermission {
-					response.Success = false
-					response.Error = "Unauthorized connector management attempt"
-					s.log.Warn().
-						Str("client_id", clientID.String()).
-						Msg("Unauthorized connector management attempt")
-				} else {
-					switch m.Operation {
-					case "add":
-						newToken, err := s.AddConnectorToken(m.ConnectorToken, token)
-						if err != nil {
-							response.Success = false
-							response.Error = err.Error()
-							s.log.Warn().
-								Err(err).
-								Str("connector_token", m.ConnectorToken).
-								Msg("Failed to add connector token")
-						} else {
-							response.Success = true
-							response.ConnectorToken = newToken
-							s.log.Info().
-								Str("connector_token", newToken).
-								Msg("Added new connector token via WebSocket")
+				case ConnectResponseMessage:
+					// Non-blocking send for connect response
+					if queue, ok := s.relay.messageQueues.Load(m.ChannelID); ok {
+						if !s.relay.option.StrictConnect {
+							if m.Success {
+								s.relay.SetConnectionSuccess(m.ChannelID)
+							} else {
+								s.disconnectChannel(m.ChannelID, ws, m)
+							}
+							return
 						}
 
-					case "remove":
-						if removed := s.RemoveToken(m.ConnectorToken); !removed {
-							response.Success = false
-							response.Error = "Failed to remove connector token"
-							s.log.Warn().
-								Str("connector_token", m.ConnectorToken).
-								Msg("Failed to remove connector token")
-						} else {
-							response.Success = true
-							s.log.Info().
-								Str("connector_token", m.ConnectorToken).
-								Msg("Removed connector token via WebSocket")
+						select {
+						case queue.(chan BaseMessage) <- m:
+						default:
+							s.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Response queue full")
 						}
-
-					default:
-						response.Success = false
-						response.Error = fmt.Sprintf("Unknown connector operation: %s", m.Operation)
-						s.log.Info().
-							Str("operation", m.Operation).
-							Msg("Unknown connector operation")
+					} else {
+						// Forward to connector
+						s.connCache.mu.RLock()
+						if connectorWS, exists := s.connCache.channelIDToConnector[m.ChannelID]; exists {
+							s.relay.logMessage(m, "send", ws.Label())
+							if err := connectorWS.WriteMessage(m); err != nil {
+								s.log.Debug().Err(err).Msg("Failed to forward connect response")
+							}
+						}
+						s.connCache.mu.RUnlock()
 					}
-				}
 
-				// Send response
-				s.relay.logMessage(response, "send", ws.Label())
-				if err := ws.WriteMessage(response); err != nil {
-					s.log.Warn().Err(err).Msg("Failed to send connector response")
-					return err
-				}
+				case DisconnectMessage:
+					s.disconnectChannel(m.ChannelID, ws, m)
 
-			default:
-				s.log.Debug().Str("type", msg.GetType()).Msg("Received unknown message type")
+				case ConnectorMessage:
+					// Handle connector management messages asynchronously
+					go s.handleConnectorMessage(m, ws, clientID)
+				}
+			}(msg)
+		}
+	}
+}
+
+// New helper method to handle connector messages
+func (s *WSSocksServer) handleConnectorMessage(m ConnectorMessage, ws *WSConn, clientID uuid.UUID) {
+	// Check permissions
+	s.mu.RLock()
+	var token string
+	var hasPermission bool
+	for t, clients := range s.tokenClients {
+		for _, client := range clients {
+			if client.ID == clientID {
+				token = t
+				if opts, exists := s.tokenOptions[t]; exists {
+					hasPermission = opts.AllowManageConnector
+				}
+				break
 			}
 		}
+		if token != "" {
+			break
+		}
+	}
+	s.mu.RUnlock()
+
+	// Prepare response
+	response := ConnectorResponseMessage{
+		ChannelID: m.ChannelID,
+	}
+
+	if !hasPermission {
+		response.Success = false
+		response.Error = "Unauthorized connector management attempt"
+		s.log.Warn().Str("client_id", clientID.String()).Msg("Unauthorized connector management attempt")
+	} else {
+		switch m.Operation {
+		case "add":
+			newToken, err := s.AddConnectorToken(m.ConnectorToken, token)
+			if err != nil {
+				response.Success = false
+				response.Error = err.Error()
+			} else {
+				response.Success = true
+				response.ConnectorToken = newToken
+			}
+		case "remove":
+			if removed := s.RemoveToken(m.ConnectorToken); !removed {
+				response.Success = false
+				response.Error = "Failed to remove connector token"
+			} else {
+				response.Success = true
+			}
+		default:
+			response.Success = false
+			response.Error = fmt.Sprintf("Unknown connector operation: %s", m.Operation)
+		}
+	}
+
+	// Send response asynchronously
+	s.relay.logMessage(response, "send", ws.Label())
+	if err := ws.WriteMessage(response); err != nil {
+		s.log.Warn().Err(err).Msg("Failed to send connector response")
 	}
 }
 
@@ -976,18 +948,19 @@ func (s *WSSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSCo
 
 			switch m := msg.(type) {
 			case ConnectMessage:
+				reverseWS, err := s.getNextWebSocket(reverseToken)
+
 				// Store connect_id mapping for connector
 				s.connCache.mu.Lock()
-				s.connCache.connectIDToConnector[m.ConnectID] = ws
+				s.connCache.channelIDToConnector[m.ChannelID] = ws
+				s.connCache.channelIDToClient[m.ChannelID] = reverseWS
 				if ids, exists := s.connCache.tokenCache[reverseToken]; exists {
-					s.connCache.tokenCache[reverseToken] = append(ids, m.ConnectID)
+					s.connCache.tokenCache[reverseToken] = append(ids, m.ChannelID)
 				} else {
-					s.connCache.tokenCache[reverseToken] = []uuid.UUID{m.ConnectID}
+					s.connCache.tokenCache[reverseToken] = []uuid.UUID{m.ChannelID}
 				}
 				s.connCache.mu.Unlock()
 
-				// Forward to reverse client
-				reverseWS, err := s.getNextWebSocket(reverseToken)
 				if err != nil {
 					s.log.Debug().Err(err).Msg("Failed to get reverse client")
 					continue
@@ -1000,7 +973,7 @@ func (s *WSSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSCo
 			case DataMessage:
 				// Route data message based on channel_id
 				s.connCache.mu.RLock()
-				targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]
+				targetWS, exists := s.connCache.channelIDToClient[m.ChannelID]
 				s.connCache.mu.RUnlock()
 
 				if exists {
@@ -1008,6 +981,8 @@ func (s *WSSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSCo
 					if err := targetWS.WriteMessage(m); err != nil {
 						s.log.Debug().Err(err).Msg("Failed to forward data message")
 					}
+				} else {
+					s.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Received data for unknown channel")
 				}
 
 			case DisconnectMessage:
@@ -1025,6 +1000,23 @@ func (s *WSSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSCo
 			}
 		}
 	}
+}
+
+// disconnectChannel handles forwarding disconnect message and cleanup of channel resources
+func (s *WSSocksServer) disconnectChannel(channelID uuid.UUID, ws *WSConn, msg BaseMessage) {
+	// Forward disconnect message to connector if exists
+	s.connCache.mu.Lock()
+	if targetWS, exists := s.connCache.channelIDToConnector[channelID]; exists {
+		s.relay.logMessage(msg, "send", ws.Label())
+		if err := targetWS.WriteMessage(msg); err != nil {
+			s.log.Debug().Err(err).Msg("Failed to forward disconnect message")
+		}
+	}
+	delete(s.connCache.channelIDToClient, channelID)
+	delete(s.connCache.channelIDToConnector, channelID)
+	s.connCache.mu.Unlock()
+
+	s.relay.disconnectChannel(channelID)
 }
 
 // cleanupConnection cleans up resources when a client disconnects
