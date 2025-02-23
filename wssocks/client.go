@@ -598,64 +598,61 @@ func (c *WSSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) error
 
 			c.relay.logMessage(msg, "recv", ws.Label())
 
-			// Handle message asynchronously to prevent blocking
-			go func(msg BaseMessage) {
-				switch m := msg.(type) {
-				case DataMessage:
-					if queue, ok := c.relay.messageQueues.Load(m.ChannelID); ok {
-						select {
-						case queue.(chan BaseMessage) <- m:
-							c.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Message forwarded to channel")
-						default:
-							// Drop message if queue is full instead of blocking
-							c.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Message queue full, dropping message")
-						}
+			switch m := msg.(type) {
+			case DataMessage:
+				if queue, ok := c.relay.messageQueues.Load(m.ChannelID); ok {
+					select {
+					case queue.(chan BaseMessage) <- m:
+						c.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Message forwarded to channel")
+					default:
+						// Drop message if queue is full instead of blocking
+						c.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Message queue full, dropping message")
 					}
-
-				case ConnectMessage:
-					if c.reverse {
-						msgChan := make(chan BaseMessage, 1000)
-						c.relay.messageQueues.Store(m.ChannelID, msgChan)
-						go func() {
-							if err := c.relay.HandleNetworkConnection(ctx, ws, m); err != nil && !errors.Is(err, context.Canceled) {
-								c.log.Debug().Err(err).Msg("Network connection handler error")
-							}
-						}()
-					}
-
-				case ConnectResponseMessage:
-					if !c.relay.option.StrictConnect {
-						if m.Success {
-							c.relay.SetConnectionSuccess(m.ChannelID)
-						} else {
-							c.relay.disconnectChannel(m.ChannelID)
-						}
-					} else if queue, ok := c.relay.messageQueues.Load(m.ChannelID); ok {
-						// Non-blocking send for connect response
-						select {
-						case queue.(chan BaseMessage) <- m:
-						default:
-							c.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Connect response queue full")
-						}
-					}
-
-				case DisconnectMessage:
-					c.relay.disconnectChannel(m.ChannelID)
-
-				case ConnectorResponseMessage:
-					if queue, ok := c.relay.messageQueues.Load(m.ChannelID); ok {
-						// Non-blocking send for connector response
-						select {
-						case queue.(chan BaseMessage) <- m:
-						default:
-							c.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Connector response queue full")
-						}
-					}
-
-				default:
-					c.log.Debug().Str("type", msg.GetType()).Msg("Received unknown message type")
 				}
-			}(msg)
+
+			case ConnectMessage:
+				if c.reverse {
+					msgChan := make(chan BaseMessage, 1000)
+					c.relay.messageQueues.Store(m.ChannelID, msgChan)
+					go func() {
+						if err := c.relay.HandleNetworkConnection(ctx, ws, m); err != nil && !errors.Is(err, context.Canceled) {
+							c.log.Debug().Err(err).Msg("Network connection handler error")
+						}
+					}()
+				}
+
+			case ConnectResponseMessage:
+				if !c.relay.option.StrictConnect {
+					if m.Success {
+						c.relay.SetConnectionSuccess(m.ChannelID)
+					} else {
+						c.relay.disconnectChannel(m.ChannelID)
+					}
+				} else if queue, ok := c.relay.messageQueues.Load(m.ChannelID); ok {
+					// Non-blocking send for connect response
+					select {
+					case queue.(chan BaseMessage) <- m:
+					default:
+						c.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Connect response queue full")
+					}
+				}
+
+			case DisconnectMessage:
+				c.relay.disconnectChannel(m.ChannelID)
+
+			case ConnectorResponseMessage:
+				if queue, ok := c.relay.messageQueues.Load(m.ChannelID); ok {
+					// Non-blocking send for connector response
+					select {
+					case queue.(chan BaseMessage) <- m:
+					default:
+						c.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Connector response queue full")
+					}
+				}
+
+			default:
+				c.log.Debug().Str("type", msg.GetType()).Msg("Received unknown message type")
+			}
 		}
 	}
 }
