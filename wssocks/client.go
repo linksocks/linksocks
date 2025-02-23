@@ -32,6 +32,7 @@ type WSSocksClient struct {
 	IsConnected  bool          // Boolean flag indicating current connection status
 	errors       chan error    // Channel for errors
 
+	instanceID      uuid.UUID
 	relay           *Relay
 	log             zerolog.Logger
 	token           string
@@ -194,6 +195,7 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 		WithConnectTimeout(opt.ConnectTimeout)
 
 	client := &WSSocksClient{
+		instanceID:      uuid.New(),
 		relay:           NewRelay(opt.Logger, relayOpt),
 		log:             opt.Logger,
 		token:           token,
@@ -439,8 +441,9 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 
 	// Send authentication
 	authMsg := AuthMessage{
-		Reverse: c.reverse,
-		Token:   c.token,
+		Reverse:  c.reverse,
+		Token:    c.token,
+		Instance: c.instanceID,
 	}
 
 	c.relay.logMessage(authMsg, "send", wsConn.Label())

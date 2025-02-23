@@ -684,7 +684,7 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 	if isValidReverse {
 		opts, exists := s.tokenOptions[token]
 		if exists && opts.AllowManageConnector {
-			internalToken = uuid.New().String()
+			internalToken = authMsg.Instance.String()
 			// Initialize structures for this internal token
 			s.tokenClients[internalToken] = make([]clientInfo, 0)
 			s.tokenIndexes[internalToken] = 0

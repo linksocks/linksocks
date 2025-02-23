@@ -55,8 +55,9 @@ type BaseMessage interface {
 
 // AuthMessage represents an authentication request
 type AuthMessage struct {
-	Token   string `json:"token"`
-	Reverse bool   `json:"reverse"`
+	Token    string    `json:"token"`
+	Reverse  bool      `json:"reverse"`
+	Instance uuid.UUID `json:"instance"`
 }
 
 func (m AuthMessage) GetType() string {
@@ -233,6 +234,11 @@ func PackMessage(msg BaseMessage) ([]byte, error) {
 		buf = append(buf, byte(len(m.Token)))
 		buf = append(buf, []byte(m.Token)...)
 		buf = append(buf, boolToByte(m.Reverse))
+		instanceID, err := uuidToBytes(m.Instance.String())
+		if err != nil {
+			return nil, fmt.Errorf("invalid Instance: %w", err)
+		}
+		buf = append(buf, instanceID...)
 		return buf, nil
 
 	case AuthResponseMessage:
@@ -380,14 +386,19 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 			return nil, fmt.Errorf("invalid auth message")
 		}
 		tokenLen := int(payload[0])
-		if len(payload) < 1+tokenLen+1 {
+		if len(payload) < 1+tokenLen+1+16 { // +16 for Instance UUID
 			return nil, fmt.Errorf("invalid auth message length")
 		}
 		token := string(payload[1 : 1+tokenLen])
 		reverse := byteToBool(payload[1+tokenLen])
+		instance, err := uuid.Parse(bytesToUUID(payload[1+tokenLen+1 : 1+tokenLen+1+16]))
+		if err != nil {
+			return nil, fmt.Errorf("invalid Instance: %w", err)
+		}
 		return AuthMessage{
-			Token:   token,
-			Reverse: reverse,
+			Token:    token,
+			Reverse:  reverse,
+			Instance: instance,
 		}, nil
 
 	case BinaryTypeAuthResponse:
