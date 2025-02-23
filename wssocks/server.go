@@ -688,8 +688,7 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 		opts, exists := s.tokenOptions[token]
 		if exists && opts.AllowManageConnector {
 			internalToken = authMsg.Instance.String()
-			// Initialize structures for this internal token
-			s.tokenClients[internalToken] = make([]clientInfo, 0)
+
 			s.tokenIndexes[internalToken] = 0
 			s.tokenOptions[internalToken] = opts
 			s.tokens[internalToken] = -1
