@@ -18,7 +18,7 @@ import (
 const (
 	// DefaultBufferSize is the size of reusable buffers
 	// Larger buffers improve throughput but consume more memory
-	DefaultBufferSize     = 256 * 1024 // 256KB buffer size
+	DefaultBufferSize     = 32 * 1024 // 32KB buffer size
 	DefaultChannelTimeout = 12 * time.Hour
 	DefaultConnectTimeout = 10 * time.Second
 )
