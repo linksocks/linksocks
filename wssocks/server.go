@@ -808,56 +808,58 @@ func (s *WSSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clien
 				}
 
 			case ConnectMessage:
-				var isForwardClient bool
-				s.mu.RLock()
-				_, isForwardClient = s.clients[clientID]
-				s.mu.RUnlock()
+				go func(m ConnectMessage) {
+					var isForwardClient bool
+					s.mu.RLock()
+					_, isForwardClient = s.clients[clientID]
+					s.mu.RUnlock()
 
-				if isForwardClient {
-					// Create buffered channel with larger capacity
-					msgChan := make(chan BaseMessage, 1000)
-					s.relay.messageQueues.Store(m.ChannelID, msgChan)
-					go func() {
-						if err := s.relay.HandleNetworkConnection(ctx, ws, m); err != nil && !errors.Is(err, context.Canceled) {
-							s.log.Debug().Err(err).Msg("Network connection handler error")
-						}
-					}()
-				}
+					if isForwardClient {
+						// Create buffered channel with larger capacity
+						msgChan := make(chan BaseMessage, 1000)
+						s.relay.messageQueues.Store(m.ChannelID, msgChan)
+						go func() {
+							if err := s.relay.HandleNetworkConnection(ctx, ws, m); err != nil && !errors.Is(err, context.Canceled) {
+								s.log.Debug().Err(err).Msg("Network connection handler error")
+							}
+						}()
+					}
+				}(m)
 
 			case ConnectResponseMessage:
-				// Non-blocking send for connect response
-				if queue, ok := s.relay.messageQueues.Load(m.ChannelID); ok {
-					if !s.relay.option.StrictConnect {
-						if m.Success {
-							s.relay.SetConnectionSuccess(m.ChannelID)
-						} else {
-							s.disconnectChannel(m.ChannelID, ws, m)
+				go func(m ConnectResponseMessage) {
+					if queue, ok := s.relay.messageQueues.Load(m.ChannelID); ok {
+						if !s.relay.option.StrictConnect {
+							if m.Success {
+								s.relay.SetConnectionSuccess(m.ChannelID)
+							} else {
+								s.disconnectChannel(m.ChannelID, ws, m)
+							}
+							return
 						}
-						continue
-					}
 
-					select {
-					case queue.(chan BaseMessage) <- m:
-					default:
-						s.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Response queue full")
-					}
-				} else {
-					// Forward to connector
-					s.connCache.mu.RLock()
-					if connectorWS, exists := s.connCache.channelIDToConnector[m.ChannelID]; exists {
-						s.relay.logMessage(m, "send", ws.Label())
-						if err := connectorWS.WriteMessage(m); err != nil {
-							s.log.Debug().Err(err).Msg("Failed to forward connect response")
+						select {
+						case queue.(chan BaseMessage) <- m:
+						default:
+							s.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Response queue full")
 						}
+					} else {
+						// Forward to connector
+						s.connCache.mu.RLock()
+						if connectorWS, exists := s.connCache.channelIDToConnector[m.ChannelID]; exists {
+							s.relay.logMessage(m, "send", ws.Label())
+							if err := connectorWS.WriteMessage(m); err != nil {
+								s.log.Debug().Err(err).Msg("Failed to forward connect response")
+							}
+						}
+						s.connCache.mu.RUnlock()
 					}
-					s.connCache.mu.RUnlock()
-				}
+				}(m)
 
 			case DisconnectMessage:
-				s.disconnectChannel(m.ChannelID, ws, m)
+				go s.disconnectChannel(m.ChannelID, ws, m)
 
 			case ConnectorMessage:
-				// Handle connector management messages asynchronously
 				go s.handleConnectorMessage(m, ws, clientID)
 			}
 		}
@@ -945,34 +947,44 @@ func (s *WSSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSCo
 
 			switch m := msg.(type) {
 			case ConnectMessage:
-				reverseWS, err := s.getNextWebSocket(reverseToken)
+				go func(m ConnectMessage) {
+					reverseWS, err := s.getNextWebSocket(reverseToken)
+					if err != nil {
+						s.log.Debug().Err(err).Msg("Refusing connector connect")
+						// Send failure response back to connector
+						response := ConnectResponseMessage{
+							ChannelID: m.ChannelID,
+							Success:   false,
+							Error:     "no available reverse clients",
+						}
+						s.relay.logMessage(response, "send", ws.Label())
+						if err := ws.WriteMessage(response); err != nil {
+							s.log.Debug().Err(err).Msg("Failed to send connect failure response")
+						}
+						return
+					}
 
-				// Store connect_id mapping for connector
-				s.connCache.mu.Lock()
-				s.connCache.channelIDToConnector[m.ChannelID] = ws
-				s.connCache.channelIDToClient[m.ChannelID] = reverseWS
-				if ids, exists := s.connCache.tokenCache[reverseToken]; exists {
-					s.connCache.tokenCache[reverseToken] = append(ids, m.ChannelID)
-				} else {
-					s.connCache.tokenCache[reverseToken] = []uuid.UUID{m.ChannelID}
-				}
-				s.connCache.mu.Unlock()
+					// Store connect_id mapping for connector
+					s.connCache.mu.Lock()
+					s.connCache.channelIDToConnector[m.ChannelID] = ws
+					s.connCache.channelIDToClient[m.ChannelID] = reverseWS
+					if ids, exists := s.connCache.tokenCache[reverseToken]; exists {
+						s.connCache.tokenCache[reverseToken] = append(ids, m.ChannelID)
+					} else {
+						s.connCache.tokenCache[reverseToken] = []uuid.UUID{m.ChannelID}
+					}
+					s.connCache.mu.Unlock()
 
-				if err != nil {
-					s.log.Debug().Err(err).Msg("Failed to get reverse client")
-					continue
-				}
-				s.relay.logMessage(m, "send", ws.Label())
-				if err := reverseWS.WriteMessage(m); err != nil {
-					s.log.Debug().Err(err).Msg("Failed to forward connect message")
-				}
+					s.relay.logMessage(m, "send", ws.Label())
+					if err := reverseWS.WriteMessage(m); err != nil {
+						s.log.Debug().Err(err).Msg("Failed to forward connect message")
+					}
+				}(m)
 
 			case DataMessage:
 				// Route data message based on channel_id
 				s.connCache.mu.RLock()
 				targetWS, exists := s.connCache.channelIDToClient[m.ChannelID]
-				s.connCache.mu.RUnlock()
-
 				if exists {
 					s.relay.logMessage(m, "send", ws.Label())
 					if err := targetWS.WriteMessage(m); err != nil {
@@ -981,19 +993,22 @@ func (s *WSSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSCo
 				} else {
 					s.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Received data for unknown channel")
 				}
+				s.connCache.mu.RUnlock()
 
 			case DisconnectMessage:
-				// Clean up channel mappings and forward message
-				s.connCache.mu.Lock()
-				if targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]; exists {
-					s.relay.logMessage(m, "send", ws.Label())
-					if err := targetWS.WriteMessage(m); err != nil {
-						s.log.Debug().Err(err).Msg("Failed to forward disconnect message")
+				go func(m DisconnectMessage) {
+					// Clean up channel mappings and forward message
+					s.connCache.mu.Lock()
+					if targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]; exists {
+						s.relay.logMessage(m, "send", ws.Label())
+						if err := targetWS.WriteMessage(m); err != nil {
+							s.log.Debug().Err(err).Msg("Failed to forward disconnect message")
+						}
+						delete(s.connCache.channelIDToConnector, m.ChannelID)
+						delete(s.connCache.channelIDToClient, m.ChannelID)
 					}
-					delete(s.connCache.channelIDToConnector, m.ChannelID)
-					delete(s.connCache.channelIDToClient, m.ChannelID)
-				}
-				s.connCache.mu.Unlock()
+					s.connCache.mu.Unlock()
+				}(m)
 			}
 		}
 	}
