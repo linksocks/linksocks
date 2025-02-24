@@ -62,39 +62,45 @@ type WSSocksClient struct {
 
 // ClientOption represents configuration options for WSSocksClient
 type ClientOption struct {
-	WSURL           string
-	Reverse         bool
-	SocksHost       string
-	SocksPort       int
-	SocksUsername   string
-	SocksPassword   string
-	SocksWaitServer bool
-	Reconnect       bool
-	ReconnectDelay  time.Duration
-	Logger          zerolog.Logger
-	BufferSize      int
-	ChannelTimeout  time.Duration
-	ConnectTimeout  time.Duration
-	Threads         int
-	StrictConnect   bool
+	WSURL            string
+	Reverse          bool
+	SocksHost        string
+	SocksPort        int
+	SocksUsername    string
+	SocksPassword    string
+	SocksWaitServer  bool
+	Reconnect        bool
+	ReconnectDelay   time.Duration
+	Logger           zerolog.Logger
+	BufferSize       int
+	ChannelTimeout   time.Duration
+	ConnectTimeout   time.Duration
+	Threads          int
+	StrictConnect    bool
+	UpstreamProxy    string
+	UpstreamUsername string
+	UpstreamPassword string
 }
 
 // DefaultClientOption returns default client options
 func DefaultClientOption() *ClientOption {
 	return &ClientOption{
-		WSURL:           "ws://localhost:8765",
-		Reverse:         false,
-		SocksHost:       "127.0.0.1",
-		SocksPort:       1080,
-		SocksWaitServer: true,
-		Reconnect:       false,
-		ReconnectDelay:  5 * time.Second,
-		Logger:          zerolog.New(os.Stdout).With().Timestamp().Logger(),
-		BufferSize:      DefaultBufferSize,
-		ChannelTimeout:  DefaultChannelTimeout,
-		ConnectTimeout:  DefaultConnectTimeout,
-		Threads:         1,
-		StrictConnect:   false,
+		WSURL:            "ws://localhost:8765",
+		Reverse:          false,
+		SocksHost:        "127.0.0.1",
+		SocksPort:        1080,
+		SocksWaitServer:  true,
+		Reconnect:        false,
+		ReconnectDelay:   5 * time.Second,
+		Logger:           zerolog.New(os.Stdout).With().Timestamp().Logger(),
+		BufferSize:       DefaultBufferSize,
+		ChannelTimeout:   DefaultChannelTimeout,
+		ConnectTimeout:   DefaultConnectTimeout,
+		Threads:          1,
+		StrictConnect:    false,
+		UpstreamProxy:    "",
+		UpstreamUsername: "",
+		UpstreamPassword: "",
 	}
 }
 
@@ -188,6 +194,19 @@ func (o *ClientOption) WithStrictConnect(strict bool) *ClientOption {
 	return o
 }
 
+// WithUpstreamProxy sets the upstream SOCKS5 proxy
+func (o *ClientOption) WithUpstreamProxy(proxy string) *ClientOption {
+	o.UpstreamProxy = proxy
+	return o
+}
+
+// WithUpstreamAuth sets the upstream SOCKS5 proxy authentication
+func (o *ClientOption) WithUpstreamAuth(username, password string) *ClientOption {
+	o.UpstreamUsername = username
+	o.UpstreamPassword = password
+	return o
+}
+
 // NewWSSocksClient creates a new WSSocksClient instance
 func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 	if opt == nil {
@@ -201,7 +220,9 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 		WithBufferSize(opt.BufferSize).
 		WithChannelTimeout(opt.ChannelTimeout).
 		WithConnectTimeout(opt.ConnectTimeout).
-		WithStrictConnect(opt.StrictConnect)
+		WithStrictConnect(opt.StrictConnect).
+		WithUpstreamProxy(opt.UpstreamProxy).
+		WithUpstreamAuth(opt.UpstreamUsername, opt.UpstreamPassword)
 
 	client := &WSSocksClient{
 		instanceID:      uuid.New(),
@@ -424,6 +445,15 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 		c.batchLogger = newBatchLogger(c.log)
 	}
 	c.mu.Unlock()
+
+	if httpProxy, httpsProxy := os.Getenv("http_proxy"), os.Getenv("https_proxy"); httpProxy != "" || httpsProxy != "" {
+		c.batchLogger.log("proxy_env", c.threads, func(count, total int) {
+			c.log.Info().
+				Str("http_proxy", httpProxy).
+				Str("https_proxy", httpsProxy).
+				Msgf("Using proxy from environment to connect to the server (%d/%d)", count, total)
+		})
+	}
 
 	ws, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
 	if err != nil {

@@ -96,33 +96,39 @@ func newConnectorCache() *connectorCache {
 
 // ServerOption represents configuration options for WSSocksServer
 type ServerOption struct {
-	WSHost          string
-	WSPort          int
-	SocksHost       string
-	PortPool        *PortPool
-	SocksWaitClient bool
-	Logger          zerolog.Logger
-	BufferSize      int
-	APIKey          string
-	ChannelTimeout  time.Duration
-	ConnectTimeout  time.Duration
-	StrictConnect   bool
+	WSHost           string
+	WSPort           int
+	SocksHost        string
+	PortPool         *PortPool
+	SocksWaitClient  bool
+	Logger           zerolog.Logger
+	BufferSize       int
+	APIKey           string
+	ChannelTimeout   time.Duration
+	ConnectTimeout   time.Duration
+	StrictConnect    bool
+	UpstreamProxy    string
+	UpstreamUsername string
+	UpstreamPassword string
 }
 
 // DefaultServerOption returns default server options
 func DefaultServerOption() *ServerOption {
 	return &ServerOption{
-		WSHost:          "0.0.0.0",
-		WSPort:          8765,
-		SocksHost:       "127.0.0.1",
-		PortPool:        NewPortPoolFromRange(1024, 10240),
-		SocksWaitClient: true,
-		Logger:          zerolog.New(os.Stdout).With().Timestamp().Logger(),
-		BufferSize:      DefaultBufferSize,
-		APIKey:          "",
-		ChannelTimeout:  DefaultChannelTimeout,
-		ConnectTimeout:  DefaultConnectTimeout,
-		StrictConnect:   false,
+		WSHost:           "0.0.0.0",
+		WSPort:           8765,
+		SocksHost:        "127.0.0.1",
+		PortPool:         NewPortPoolFromRange(1024, 10240),
+		SocksWaitClient:  true,
+		Logger:           zerolog.New(os.Stdout).With().Timestamp().Logger(),
+		BufferSize:       DefaultBufferSize,
+		APIKey:           "",
+		ChannelTimeout:   DefaultChannelTimeout,
+		ConnectTimeout:   DefaultConnectTimeout,
+		StrictConnect:    false,
+		UpstreamProxy:    "",
+		UpstreamUsername: "",
+		UpstreamPassword: "",
 	}
 }
 
@@ -192,6 +198,19 @@ func (o *ServerOption) WithStrictConnect(strict bool) *ServerOption {
 	return o
 }
 
+// WithUpstreamProxy sets the upstream SOCKS5 proxy
+func (o *ServerOption) WithUpstreamProxy(proxy string) *ServerOption {
+	o.UpstreamProxy = proxy
+	return o
+}
+
+// WithUpstreamAuth sets the upstream SOCKS5 proxy authentication
+func (o *ServerOption) WithUpstreamAuth(username, password string) *ServerOption {
+	o.UpstreamUsername = username
+	o.UpstreamPassword = password
+	return o
+}
+
 // NewWSSocksServer creates a new WSSocksServer instance
 func NewWSSocksServer(opt *ServerOption) *WSSocksServer {
 	if opt == nil {
@@ -202,7 +221,9 @@ func NewWSSocksServer(opt *ServerOption) *WSSocksServer {
 		WithBufferSize(opt.BufferSize).
 		WithChannelTimeout(opt.ChannelTimeout).
 		WithConnectTimeout(opt.ConnectTimeout).
-		WithStrictConnect(opt.StrictConnect)
+		WithStrictConnect(opt.StrictConnect).
+		WithUpstreamProxy(opt.UpstreamProxy).
+		WithUpstreamAuth(opt.UpstreamUsername, opt.UpstreamPassword)
 
 	s := &WSSocksServer{
 		relay:           NewRelay(opt.Logger, relayOpt),

@@ -2,6 +2,7 @@ package wssocks
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"time"
 
@@ -23,6 +24,8 @@ func NewCLI() *CLI {
 
 // Execute runs the CLI application
 func (cli *CLI) Execute() error {
+	// Disable cobra's default error handling
+	cli.rootCmd.SilenceErrors = true
 	return cli.rootCmd.Execute()
 }
 
@@ -73,6 +76,8 @@ func (cli *CLI) initCommands() {
 	clientCmd.Flags().BoolP("no-reconnect", "R", false, "Stop when the server disconnects")
 	clientCmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
 	clientCmd.Flags().IntP("threads", "T", 16, "Number of threads for data transfer")
+	clientCmd.Flags().StringP("upstream-proxy", "x", "", "Upstream SOCKS5 proxy (e.g., socks5://user:pass@127.0.0.1:1080)")
+	clientCmd.Flags().BoolP("strict-connect", "C", false, "Wait strictly for connection completion")
 
 	// Update usage to show environment variables
 	clientCmd.Flags().Lookup("token").Usage += " (env: WSSOCKS_TOKEN)"
@@ -97,6 +102,8 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().BoolP("socks-nowait", "i", false, "Start the SOCKS server immediately")
 	serverCmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
 	serverCmd.Flags().StringP("api-key", "k", "", "Enable HTTP API with specified key")
+	serverCmd.Flags().StringP("upstream-proxy", "x", "", "Upstream SOCKS5 proxy (e.g., socks5://user:pass@127.0.0.1:1080)")
+	serverCmd.Flags().BoolP("strict-connect", "C", false, "Wait strictly for connection completion")
 
 	// Update usage to show environment variables
 	serverCmd.Flags().Lookup("token").Usage += " (env: WSSOCKS_TOKEN)"
@@ -105,6 +112,36 @@ func (cli *CLI) initCommands() {
 
 	// Add commands to root
 	cli.rootCmd.AddCommand(clientCmd, serverCmd, versionCmd)
+}
+
+// parseSocksProxy parses a SOCKS5 proxy URL and returns address, username, and password
+func parseSocksProxy(proxyURL string) (address, username, password string, err error) {
+	if proxyURL == "" {
+		return "", "", "", nil
+	}
+
+	u, err := url.Parse(proxyURL)
+	if err != nil {
+		return "", "", "", fmt.Errorf("invalid proxy URL: %w", err)
+	}
+
+	if u.Scheme != "socks5" {
+		return "", "", "", fmt.Errorf("unsupported proxy scheme: %s", u.Scheme)
+	}
+
+	// Get authentication info
+	if u.User != nil {
+		username = u.User.Username()
+		password, _ = u.User.Password()
+	}
+
+	// Rebuild address (without auth info)
+	address = fmt.Sprintf("%s:%s", u.Hostname(), u.Port())
+	if u.Port() == "" {
+		address = fmt.Sprintf("%s:1080", u.Hostname()) // Default SOCKS5 port
+	}
+
+	return address, username, password, nil
 }
 
 func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
@@ -131,6 +168,16 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	debug, _ := cmd.Flags().GetCount("debug")
 	threads, _ := cmd.Flags().GetInt("threads")
 
+	// Get new flags
+	upstreamProxy, _ := cmd.Flags().GetString("upstream-proxy")
+	strictConnect, _ := cmd.Flags().GetBool("strict-connect")
+
+	// Parse proxy URL
+	proxyAddr, proxyUser, proxyPass, err := parseSocksProxy(upstreamProxy)
+	if err != nil {
+		return err
+	}
+
 	// Setup logging
 	logger := cli.initLogging(debug)
 
@@ -140,10 +187,19 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 		WithReverse(reverse).
 		WithSocksHost(socksHost).
 		WithSocksPort(socksPort).
-		WithSocksWaitServer(!socksNoWait). // Note: inverted flag
-		WithReconnect(!noReconnect).       // Note: inverted flag
+		WithSocksWaitServer(!socksNoWait).
+		WithReconnect(!noReconnect).
 		WithLogger(logger).
 		WithThreads(threads)
+
+	// Add new options
+	if proxyAddr != "" {
+		clientOpt.WithUpstreamProxy(proxyAddr).
+			WithUpstreamAuth(proxyUser, proxyPass)
+	}
+	if strictConnect {
+		clientOpt.WithStrictConnect(true)
+	}
 
 	// Add authentication options if provided
 	if socksUsername != "" {
@@ -172,11 +228,16 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	// Wait for either client error or context cancellation
 	select {
 	case <-cmd.Context().Done():
+		logger.Info().Msg("Shutting down client...")
 		client.Close()
+		// Allow time for log messages to be written before exit
+		time.Sleep(100 * time.Millisecond)
 		return cmd.Context().Err()
 	case err := <-client.errors:
-		logger.Fatal().Msgf("Exit due to error: %s", err.Error())
-		return nil
+		logger.Error().Msgf("Exit due to error: %s", err.Error())
+		// Ensure log messages are written before termination
+		time.Sleep(100 * time.Millisecond)
+		return err
 	}
 }
 
@@ -205,6 +266,16 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 	connectorAutonomy, _ := cmd.Flags().GetBool("connector-autonomy")
 	bufferSize, _ := cmd.Flags().GetInt("buffer-size")
 
+	// Get new flags
+	upstreamProxy, _ := cmd.Flags().GetString("upstream-proxy")
+	strictConnect, _ := cmd.Flags().GetBool("strict-connect")
+
+	// Parse proxy URL
+	proxyAddr, proxyUser, proxyPass, err := parseSocksProxy(upstreamProxy)
+	if err != nil {
+		return err
+	}
+
 	// Setup logging
 	logger := cli.initLogging(debug)
 
@@ -215,6 +286,15 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 		WithSocksHost(socksHost).
 		WithLogger(logger).
 		WithBufferSize(bufferSize)
+
+	// Add new options
+	if proxyAddr != "" {
+		serverOpt.WithUpstreamProxy(proxyAddr).
+			WithUpstreamAuth(proxyUser, proxyPass)
+	}
+	if strictConnect {
+		serverOpt.WithStrictConnect(true)
+	}
 
 	// Add API key if provided
 	if apiKey != "" {
@@ -282,9 +362,15 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 	// Wait for either server error or context cancellation
 	select {
 	case <-cmd.Context().Done():
+		logger.Info().Msg("Shutting down server...")
 		server.Close()
+		// Allow time for log messages to be written before exit
+		time.Sleep(100 * time.Millisecond)
 		return cmd.Context().Err()
 	case err := <-server.errors:
+		logger.Error().Err(err).Msg("Server error occurred")
+		// Ensure log messages are written before termination
+		time.Sleep(100 * time.Millisecond)
 		return err
 	}
 }
@@ -301,8 +387,11 @@ func (cli *CLI) initLogging(debug int) zerolog.Logger {
 		zerolog.SetGlobalLevel(zerolog.TraceLevel)
 	}
 
-	// Create console writer
-	output := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
+	// Create synchronized console writer
+	output := zerolog.ConsoleWriter{
+		Out:        zerolog.SyncWriter(os.Stdout),
+		TimeFormat: time.RFC3339,
+	}
 
 	// Return configured logger
 	return zerolog.New(output).With().Timestamp().Logger()

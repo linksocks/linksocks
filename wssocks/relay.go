@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -33,6 +34,11 @@ type RelayOption struct {
 	// StrictConnect controls whether to wait for connect success response
 	// When false, assumes connection success immediately
 	StrictConnect bool
+
+	// Upstream SOCKS5 proxy configuration
+	UpstreamProxy    string // Format: host:port
+	UpstreamUsername string
+	UpstreamPassword string
 }
 
 // Global buffer pool using pointer type
@@ -74,6 +80,19 @@ func (o *RelayOption) WithConnectTimeout(timeout time.Duration) *RelayOption {
 // WithStrictConnect sets the strict connect mode for the relay
 func (o *RelayOption) WithStrictConnect(strict bool) *RelayOption {
 	o.StrictConnect = strict
+	return o
+}
+
+// WithUpstreamProxy sets the upstream SOCKS5 proxy
+func (o *RelayOption) WithUpstreamProxy(proxy string) *RelayOption {
+	o.UpstreamProxy = proxy
+	return o
+}
+
+// WithUpstreamAuth sets the upstream SOCKS5 proxy authentication
+func (o *RelayOption) WithUpstreamAuth(username, password string) *RelayOption {
+	o.UpstreamUsername = username
+	o.UpstreamPassword = password
 	return o
 }
 
@@ -232,7 +251,16 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 	r.log.Debug().Str("address", request.Address).Int("port", request.Port).
 		Str("target", targetAddr).Msg("Attempting TCP connection to")
 
-	conn, err := net.DialTimeout("tcp", targetAddr, r.option.ConnectTimeout)
+	var conn net.Conn
+	var err error
+
+	// Use upstream SOCKS5 proxy if configured
+	if r.option.UpstreamProxy != "" {
+		conn, err = r.dialViaSocks5(targetAddr)
+	} else {
+		conn, err = net.DialTimeout("tcp", targetAddr, r.option.ConnectTimeout)
+	}
+
 	if err != nil {
 		r.log.Debug().
 			Err(err).
@@ -275,6 +303,166 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 
 	// Start relay with child context
 	return r.HandleRemoteTCPForward(childCtx, ws, conn, request.ChannelID)
+}
+
+// dialViaSocks5 establishes a connection through an upstream SOCKS5 proxy
+func (r *Relay) dialViaSocks5(targetAddr string) (net.Conn, error) {
+	// Connect to SOCKS5 proxy
+	proxyConn, err := net.DialTimeout("tcp", r.option.UpstreamProxy, r.option.ConnectTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("connect to proxy error: %w", err)
+	}
+
+	// Negotiate with SOCKS5 proxy
+	if err := r.socks5Handshake(proxyConn); err != nil {
+		proxyConn.Close()
+		return nil, fmt.Errorf("socks5 handshake error: %w", err)
+	}
+
+	// Send connect request
+	if err := r.socks5Connect(proxyConn, targetAddr); err != nil {
+		proxyConn.Close()
+		return nil, fmt.Errorf("socks5 connect error: %w", err)
+	}
+
+	return proxyConn, nil
+}
+
+// socks5Handshake performs SOCKS5 protocol handshake with authentication if needed
+func (r *Relay) socks5Handshake(conn net.Conn) error {
+	// Initial handshake
+	if r.option.UpstreamUsername != "" && r.option.UpstreamPassword != "" {
+		// Auth required
+		if _, err := conn.Write([]byte{0x05, 0x01, 0x02}); err != nil {
+			return err
+		}
+	} else {
+		// No auth
+		if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+			return err
+		}
+	}
+
+	// Read response
+	response := make([]byte, 2)
+	if _, err := io.ReadFull(conn, response); err != nil {
+		return err
+	}
+
+	if response[0] != 0x05 {
+		return fmt.Errorf("invalid socks version: %d", response[0])
+	}
+
+	// Handle authentication if required
+	if response[1] == 0x02 {
+		if err := r.socks5Auth(conn); err != nil {
+			return err
+		}
+	} else if response[1] != 0x00 {
+		return fmt.Errorf("unsupported auth method: %d", response[1])
+	}
+
+	return nil
+}
+
+// socks5Auth performs username/password authentication
+func (r *Relay) socks5Auth(conn net.Conn) error {
+	// Username/Password auth version
+	auth := []byte{0x01}
+
+	// Add username
+	auth = append(auth, byte(len(r.option.UpstreamUsername)))
+	auth = append(auth, []byte(r.option.UpstreamUsername)...)
+
+	// Add password
+	auth = append(auth, byte(len(r.option.UpstreamPassword)))
+	auth = append(auth, []byte(r.option.UpstreamPassword)...)
+
+	if _, err := conn.Write(auth); err != nil {
+		return err
+	}
+
+	// Read auth response
+	response := make([]byte, 2)
+	if _, err := io.ReadFull(conn, response); err != nil {
+		return err
+	}
+
+	if response[0] != 0x01 || response[1] != 0x00 {
+		return fmt.Errorf("authentication failed")
+	}
+
+	return nil
+}
+
+// socks5Connect sends connect request to SOCKS5 proxy
+func (r *Relay) socks5Connect(conn net.Conn, targetAddr string) error {
+	host, portStr, err := net.SplitHostPort(targetAddr)
+	if err != nil {
+		return err
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return err
+	}
+
+	// Prepare connect request
+	request := []byte{0x05, 0x01, 0x00}
+
+	// Add address
+	if ip := net.ParseIP(host); ip != nil {
+		if ip4 := ip.To4(); ip4 != nil {
+			request = append(request, 0x01)
+			request = append(request, ip4...)
+		} else {
+			request = append(request, 0x04)
+			request = append(request, ip...)
+		}
+	} else {
+		request = append(request, 0x03, byte(len(host)))
+		request = append(request, []byte(host)...)
+	}
+
+	// Add port
+	portBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(portBytes, uint16(port))
+	request = append(request, portBytes...)
+
+	// Send request
+	if _, err := conn.Write(request); err != nil {
+		return err
+	}
+
+	// Read response
+	response := make([]byte, 4)
+	if _, err := io.ReadFull(conn, response); err != nil {
+		return err
+	}
+
+	if response[0] != 0x05 {
+		return fmt.Errorf("invalid socks version: %d", response[0])
+	}
+
+	if response[1] != 0x00 {
+		return fmt.Errorf("connection failed: %d", response[1])
+	}
+
+	// Skip the rest of the response (bound address and port)
+	switch response[3] {
+	case 0x01:
+		_, err = io.ReadFull(conn, make([]byte, 4+2)) // IPv4 + Port
+	case 0x03:
+		domainLen := make([]byte, 1)
+		_, err = io.ReadFull(conn, domainLen)
+		if err == nil {
+			_, err = io.ReadFull(conn, make([]byte, int(domainLen[0])+2)) // Domain + Port
+		}
+	case 0x04:
+		_, err = io.ReadFull(conn, make([]byte, 16+2)) // IPv6 + Port
+	}
+
+	return err
 }
 
 // HandleUDPConnection handles UDP network connection
