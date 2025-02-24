@@ -77,7 +77,8 @@ func (cli *CLI) initCommands() {
 	clientCmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
 	clientCmd.Flags().IntP("threads", "T", 16, "Number of threads for data transfer")
 	clientCmd.Flags().StringP("upstream-proxy", "x", "", "Upstream SOCKS5 proxy (e.g., socks5://user:pass@127.0.0.1:1080)")
-	clientCmd.Flags().BoolP("strict-connect", "C", false, "Wait strictly for connection completion")
+	clientCmd.Flags().BoolP("strict-connect", "C", false, "Wait strictly for remote connection completion")
+	clientCmd.Flags().BoolP("no-env-proxy", "E", false, "Ignore proxy settings from environment variables when connecting to the websocket server")
 
 	// Update usage to show environment variables
 	clientCmd.Flags().Lookup("token").Usage += " (env: WSSOCKS_TOKEN)"
@@ -171,6 +172,7 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	// Get new flags
 	upstreamProxy, _ := cmd.Flags().GetString("upstream-proxy")
 	strictConnect, _ := cmd.Flags().GetBool("strict-connect")
+	noEnvProxy, _ := cmd.Flags().GetBool("no-env-proxy")
 
 	// Parse proxy URL
 	proxyAddr, proxyUser, proxyPass, err := parseSocksProxy(upstreamProxy)
@@ -190,7 +192,8 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 		WithSocksWaitServer(!socksNoWait).
 		WithReconnect(!noReconnect).
 		WithLogger(logger).
-		WithThreads(threads)
+		WithThreads(threads).
+		WithNoEnvProxy(noEnvProxy)
 
 	// Add new options
 	if proxyAddr != "" {

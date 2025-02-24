@@ -44,6 +44,7 @@ type WSSocksClient struct {
 	socksPassword   string
 	socksWaitServer bool
 	socksReady      chan struct{}
+	noEnvProxy      bool
 
 	websockets     []*WSConn // Multiple WebSocket connections
 	currentIndex   int       // Current WebSocket index for round-robin
@@ -80,6 +81,7 @@ type ClientOption struct {
 	UpstreamProxy    string
 	UpstreamUsername string
 	UpstreamPassword string
+	NoEnvProxy       bool // Ignore environment proxy settings
 }
 
 // DefaultClientOption returns default client options
@@ -101,6 +103,7 @@ func DefaultClientOption() *ClientOption {
 		UpstreamProxy:    "",
 		UpstreamUsername: "",
 		UpstreamPassword: "",
+		NoEnvProxy:       false,
 	}
 }
 
@@ -207,6 +210,12 @@ func (o *ClientOption) WithUpstreamAuth(username, password string) *ClientOption
 	return o
 }
 
+// WithNoEnvProxy sets whether to ignore environment proxy settings
+func (o *ClientOption) WithNoEnvProxy(noEnvProxy bool) *ClientOption {
+	o.NoEnvProxy = noEnvProxy
+	return o
+}
+
 // NewWSSocksClient creates a new WSSocksClient instance
 func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 	if opt == nil {
@@ -244,6 +253,7 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 		IsConnected:     false,
 		threads:         opt.Threads,
 		websockets:      make([]*WSConn, 0, opt.Threads),
+		noEnvProxy:      opt.NoEnvProxy,
 	}
 
 	return client
@@ -446,16 +456,29 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 	}
 	c.mu.Unlock()
 
-	if httpProxy, httpsProxy := os.Getenv("http_proxy"), os.Getenv("https_proxy"); httpProxy != "" || httpsProxy != "" {
-		c.batchLogger.log("proxy_env", c.threads, func(count, total int) {
-			c.log.Info().
-				Str("http_proxy", httpProxy).
-				Str("https_proxy", httpsProxy).
-				Msgf("Using proxy from environment to connect to the server (%d/%d)", count, total)
-		})
+	if !c.noEnvProxy {
+		if httpProxy, httpsProxy := os.Getenv("http_proxy"), os.Getenv("https_proxy"); httpProxy != "" || httpsProxy != "" {
+			c.batchLogger.log("proxy_env", c.threads, func(count, total int) {
+				c.log.Info().
+					Str("http_proxy", httpProxy).
+					Str("https_proxy", httpsProxy).
+					Msgf("Using proxy from environment to connect to the server (%d/%d)", count, total)
+			})
+		}
 	}
 
-	ws, _, err := websocket.DefaultDialer.Dial(c.wsURL, nil)
+	dialer := websocket.DefaultDialer
+	if c.noEnvProxy {
+		dialer = &websocket.Dialer{
+			Proxy: nil, // Explicitly disable proxy
+			// Copy other fields from DefaultDialer if needed
+			HandshakeTimeout: websocket.DefaultDialer.HandshakeTimeout,
+			ReadBufferSize:   websocket.DefaultDialer.ReadBufferSize,
+			WriteBufferSize:  websocket.DefaultDialer.WriteBufferSize,
+		}
+	}
+
+	ws, _, err := dialer.Dial(c.wsURL, nil)
 	if err != nil {
 		c.batchLogger.log("dial_error", c.threads, func(count, total int) {
 			c.log.Warn().Err(err).Msgf("Failed to dial WebSocket (%d/%d)", count, total)
