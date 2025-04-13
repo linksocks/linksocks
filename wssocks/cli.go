@@ -75,7 +75,7 @@ func (cli *CLI) initCommands() {
 	clientCmd.Flags().BoolP("socks-no-wait", "i", false, "Start the SOCKS server immediately")
 	clientCmd.Flags().BoolP("no-reconnect", "R", false, "Stop when the server disconnects")
 	clientCmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
-	clientCmd.Flags().IntP("threads", "T", 16, "Number of threads for data transfer")
+	clientCmd.Flags().IntP("threads", "T", 1, "Number of threads for data transfer")
 	clientCmd.Flags().StringP("upstream-proxy", "x", "", "Upstream SOCKS5 proxy (e.g., socks5://user:pass@127.0.0.1:1080)")
 	clientCmd.Flags().BoolP("strict-connect", "C", false, "Wait strictly for remote connection completion")
 	clientCmd.Flags().BoolP("no-env-proxy", "E", false, "Ignore proxy settings from environment variables when connecting to the websocket server")
