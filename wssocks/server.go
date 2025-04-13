@@ -81,7 +81,7 @@ type waitingSocket struct {
 type connectorCache struct {
 	channelIDToClient    map[uuid.UUID]*WSConn  // Maps channel_id to reverse client WebSocket connection
 	channelIDToConnector map[uuid.UUID]*WSConn  // Maps channel_id to connector WebSocket connection
-	tokenCache           map[string][]uuid.UUID // Maps token to list of connect_ids and channel_ids
+	tokenCache           map[string][]uuid.UUID // Maps token to list of channel_ids
 	mu                   sync.RWMutex
 }
 
@@ -985,7 +985,7 @@ func (s *WSSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSCo
 						return
 					}
 
-					// Store connect_id mapping for connector
+					// Store channel_id mapping for connector
 					s.connCache.mu.Lock()
 					s.connCache.channelIDToConnector[m.ChannelID] = ws
 					s.connCache.channelIDToClient[m.ChannelID] = reverseWS
