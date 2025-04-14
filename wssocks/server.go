@@ -3,6 +3,7 @@ package wssocks
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -49,6 +50,7 @@ type WSSocksServer struct {
 	tokenOptions    map[string]*ReverseTokenOptions // options per token
 	connectorTokens map[string]string               // Maps connector tokens to their reverse tokens
 	internalTokens  map[string][]string             // Maps original token to list of internal tokens
+	sha256TokenMap  map[string]string               // Maps SHA256 tokens to original tokens
 
 	// Connector management
 	connCache *connectorCache
@@ -247,6 +249,7 @@ func NewWSSocksServer(opt *ServerOption) *WSSocksServer {
 		socketManager:   NewSocketManager(opt.SocksHost, opt.Logger),
 		apiKey:          opt.APIKey,
 		internalTokens:  make(map[string][]string),
+		sha256TokenMap:  make(map[string]string),
 		errors:          make(chan error, 1),
 	}
 
@@ -321,6 +324,11 @@ func (s *WSSocksServer) AddReverseToken(opts *ReverseTokenOptions) (string, int,
 		token = generateRandomToken(16)
 	}
 
+	// Generate SHA256 version of the token
+	hash := sha256.Sum256([]byte(token))
+	sha256Token := hex.EncodeToString(hash[:])
+	s.sha256TokenMap[sha256Token] = token
+
 	// For autonomy tokens, don't allocate a port
 	if opts.AllowManageConnector {
 		s.tokens[token] = -1 // Use -1 to indicate no SOCKS port
@@ -356,6 +364,7 @@ func (s *WSSocksServer) AddReverseToken(opts *ReverseTokenOptions) (string, int,
 	}
 
 	s.log.Info().Int("port", assignedPort).Msg("New reverse proxy token added")
+	s.log.Debug().Str("sha256Token", sha256Token).Msg("SHA256 for the token")
 	return token, assignedPort, nil
 }
 
@@ -373,8 +382,14 @@ func (s *WSSocksServer) AddForwardToken(token string) (string, error) {
 		token = generateRandomToken(16)
 	}
 
+	// Generate SHA256 version of the token
+	hash := sha256.Sum256([]byte(token))
+	sha256Token := hex.EncodeToString(hash[:])
+	s.sha256TokenMap[sha256Token] = token
+
 	s.forwardTokens[token] = struct{}{}
 	s.log.Info().Msg("New forward proxy token added")
+	s.log.Debug().Str("sha256Token", sha256Token).Msg("SHA256 for the token")
 	return token, nil
 }
 
@@ -397,6 +412,11 @@ func (s *WSSocksServer) AddConnectorToken(connectorToken string, reverseToken st
 	if _, exists := s.tokens[reverseToken]; !exists {
 		return "", fmt.Errorf("reverse token does not exist")
 	}
+
+	// Generate SHA256 version of the token
+	hash := sha256.Sum256([]byte(connectorToken))
+	sha256Token := hex.EncodeToString(hash[:])
+	s.sha256TokenMap[sha256Token] = connectorToken
 
 	// Store connector token mapping
 	s.connectorTokens[connectorToken] = reverseToken
@@ -561,15 +581,19 @@ func (s *WSSocksServer) Serve(ctx context.Context) error {
 		s.log.Info().Int("port", s.wsPort).Msg("API endpoints enabled")
 	}
 
-	// Register WebSocket handler
-	mux.HandleFunc("/socket", func(w http.ResponseWriter, r *http.Request) {
+	// Handle WebSocket upgrade for both /socket and /socket/xxx
+	handleWSUpgrade := func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			s.log.Warn().Err(err).Msg("Failed to upgrade connection")
 			return
 		}
-		go s.handleWebSocket(ctx, conn)
-	})
+		go s.handleWebSocket(ctx, conn, r)
+	}
+
+	// Register WebSocket handlers
+	mux.HandleFunc("/socket/", handleWSUpgrade)
+	mux.HandleFunc("/socket", handleWSUpgrade)
 
 	// Update root handler
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -650,13 +674,17 @@ func (s *WSSocksServer) WaitReady(ctx context.Context, timeout time.Duration) er
 }
 
 // handleWebSocket handles WebSocket connection
-func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn) {
+func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn, r *http.Request) {
 	// Wrap the websocket connection
 	wsConn := NewWSConn(ws, "", s.log)
 
 	var clientID uuid.UUID
 	var token string
 	var internalToken string
+	var isValidReverse, isValidForward, isValidConnector bool
+	var reverseToken string
+	var isUrlAuth bool
+	var authMsg AuthMessage
 
 	defer func() {
 		wsConn.Close()
@@ -665,39 +693,73 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 		}
 	}()
 
-	// Handle authentication
-	msg, err := wsConn.ReadMessage()
-	if err != nil {
-		s.log.Debug().Err(err).Msg("Failed to read auth message")
-		authResponse := AuthResponseMessage{Success: false}
-		s.relay.logMessage(authResponse, "send", wsConn.Label())
-		wsConn.WriteMessage(authResponse)
-		return
-	}
+	// Check if using URL-based SHA256 token authentication
+	path := r.URL.Path
+	if len(path) > 8 && path[:8] == "/socket/" {
+		sha256Token := path[8:]
+		s.log.Debug().Str("sha256Token", sha256Token).Msg("Client is using SHA256 token from URL")
+		if len(sha256Token) == 64 { // SHA256 hash is 64 characters
+			s.mu.RLock()
+			originalToken, exists := s.sha256TokenMap[sha256Token]
+			if exists {
+				token = originalToken
+				isValidReverse = s.tokens[token] != 0
+				_, hasForwardToken := s.forwardTokens[token]
+				isValidForward = hasForwardToken
+				tmpToken, isConnectorToken := s.connectorTokens[token]
+				reverseToken = tmpToken
+				isValidConnector = isConnectorToken && s.tokens[reverseToken] != 0
+				isUrlAuth = true
+			}
+			s.mu.RUnlock()
+			if !exists || (!isValidReverse && !isValidForward && !isValidConnector) {
+				authResponse := AuthResponseMessage{Success: false, Error: "invalid token"}
+				s.relay.logMessage(authResponse, "send", wsConn.Label())
+				wsConn.WriteMessage(authResponse)
+				return
+			}
+		} else {
+			authResponse := AuthResponseMessage{Success: false, Error: "invalid token format"}
+			s.relay.logMessage(authResponse, "send", wsConn.Label())
+			wsConn.WriteMessage(authResponse)
+			return
+		}
+	} else {
+		// Traditional authentication for non-/socket/ paths
+		msg, err := wsConn.ReadMessage()
+		if err != nil {
+			s.log.Debug().Err(err).Msg("Failed to read auth message")
+			authResponse := AuthResponseMessage{Success: false, Error: "invalid auth message"}
+			s.relay.logMessage(authResponse, "send", wsConn.Label())
+			wsConn.WriteMessage(authResponse)
+			return
+		}
 
-	s.relay.logMessage(msg, "recv", wsConn.Label())
-	authMsg, ok := msg.(AuthMessage)
-	if !ok {
-		authResponse := AuthResponseMessage{Success: false}
-		s.relay.logMessage(authResponse, "send", wsConn.Label())
-		wsConn.WriteMessage(authResponse)
-		return
-	}
+		s.relay.logMessage(msg, "recv", wsConn.Label())
+		authMsg, ok := msg.(AuthMessage)
+		if !ok {
+			authResponse := AuthResponseMessage{Success: false, Error: "invalid auth message"}
+			s.relay.logMessage(authResponse, "send", wsConn.Label())
+			wsConn.WriteMessage(authResponse)
+			return
+		}
 
-	token = authMsg.Token
-	s.mu.RLock()
-	isValidReverse := authMsg.Reverse && s.tokens[token] != 0
-	_, hasForwardToken := s.forwardTokens[token]
-	isValidForward := !authMsg.Reverse && hasForwardToken
-	reverseToken, isConnectorToken := s.connectorTokens[token]
-	isValidConnector := isConnectorToken && !authMsg.Reverse && s.tokens[reverseToken] != 0
-	s.mu.RUnlock()
+		token = authMsg.Token
+		s.mu.RLock()
+		isValidReverse = authMsg.Reverse && s.tokens[token] != 0
+		_, hasForwardToken := s.forwardTokens[token]
+		isValidForward = !authMsg.Reverse && hasForwardToken
+		tmpToken, isConnectorToken := s.connectorTokens[token]
+		reverseToken = tmpToken
+		isValidConnector = isConnectorToken && !authMsg.Reverse && s.tokens[reverseToken] != 0
+		s.mu.RUnlock()
 
-	if !isValidReverse && !isValidForward && !isValidConnector {
-		authResponse := AuthResponseMessage{Success: false}
-		s.relay.logMessage(authResponse, "send", wsConn.Label())
-		wsConn.WriteMessage(authResponse)
-		return
+		if !isValidReverse && !isValidForward && !isValidConnector {
+			authResponse := AuthResponseMessage{Success: false, Error: "invalid token"}
+			s.relay.logMessage(authResponse, "send", wsConn.Label())
+			wsConn.WriteMessage(authResponse)
+			return
+		}
 	}
 
 	clientID = uuid.New()
@@ -708,13 +770,14 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 	if isValidReverse {
 		opts, exists := s.tokenOptions[token]
 		if exists && opts.AllowManageConnector {
-			internalToken = authMsg.Instance.String()
-
+			if isUrlAuth {
+				internalToken = uuid.New().String()
+			} else {
+				internalToken = authMsg.Instance.String()
+			}
 			s.tokenIndexes[internalToken] = 0
 			s.tokenOptions[internalToken] = opts
 			s.tokens[internalToken] = -1
-
-			// Add to internalTokens mapping
 			s.internalTokens[token] = append(s.internalTokens[token], internalToken)
 		} else {
 			internalToken = token
@@ -730,7 +793,7 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 	s.clients[clientID] = wsConn
 	s.mu.Unlock()
 
-	if authMsg.Reverse {
+	if isValidReverse {
 		// Handle reverse proxy client
 		s.mu.Lock()
 		// Start SOCKS server if not already running
@@ -747,7 +810,7 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 		}
 		s.mu.Unlock()
 		s.log.Debug().Str("client_id", clientID.String()).Msg("Reverse client authenticated")
-	} else if isConnectorToken {
+	} else if isValidConnector {
 		// Handle connector proxy client
 		s.log.Debug().Str("client_id", clientID.String()).Msg("Connector client authenticated")
 	} else {
@@ -755,7 +818,6 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 		s.log.Debug().Str("client_id", clientID.String()).Msg("Forward client authenticated")
 	}
 
-	// Send auth response
 	authResponse := AuthResponseMessage{Success: true}
 	s.relay.logMessage(authResponse, "send", wsConn.Label())
 	if err := wsConn.WriteMessage(authResponse); err != nil {
@@ -769,7 +831,7 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn)
 	defer cancel()
 
 	// Start message dispatcher
-	if isConnectorToken {
+	if isValidConnector {
 		go func() {
 			errChan <- s.connectorMessageDispatcher(ctx, wsConn, reverseToken)
 		}()

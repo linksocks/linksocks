@@ -2,12 +2,15 @@ package wssocks
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -109,7 +112,7 @@ func DefaultClientOption() *ClientOption {
 
 // WithWSURL sets the WebSocket server URL
 func (o *ClientOption) WithWSURL(url string) *ClientOption {
-	o.WSURL = convertWSPath(url)
+	o.WSURL = url
 	return o
 }
 
@@ -222,6 +225,9 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 		opt = DefaultClientOption()
 	}
 
+	// Convert URL with token
+	opt.WSURL = convertWSPath(opt.WSURL, token)
+
 	disconnected := make(chan struct{})
 	close(disconnected)
 
@@ -260,7 +266,7 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 }
 
 // convertWSPath converts HTTP(S) URLs to WS(S) URLs and ensures proper path
-func convertWSPath(wsURL string) string {
+func convertWSPath(wsURL, token string) string {
 	u, err := url.Parse(wsURL)
 	if err != nil {
 		return wsURL
@@ -273,8 +279,13 @@ func convertWSPath(wsURL string) string {
 		u.Scheme = "wss"
 	}
 
+	// If path is empty or root, use token hash as path
 	if u.Path == "" || u.Path == "/" {
-		u.Path = "/socket"
+		// Calculate SHA256 hash of the token
+		hash := sha256.Sum256([]byte(token))
+		// Convert to hex string
+		hashStr := hex.EncodeToString(hash[:])
+		u.Path = "/socket/" + hashStr
 	}
 
 	return u.String()
@@ -497,19 +508,21 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 	c.mu.Unlock()
 
 	// Send authentication
-	authMsg := AuthMessage{
-		Reverse:  c.reverse,
-		Token:    c.token,
-		Instance: c.instanceID,
-	}
+	if !strings.Contains(c.wsURL, "/socket/") {
+		authMsg := AuthMessage{
+			Reverse:  c.reverse,
+			Token:    c.token,
+			Instance: c.instanceID,
+		}
 
-	c.relay.logMessage(authMsg, "send", wsConn.Label())
-	if err := wsConn.WriteMessage(authMsg); err != nil {
-		wsConn.Close()
-		c.batchLogger.log("auth_send_error", c.threads, func(count, total int) {
-			c.log.Warn().Err(err).Msgf("Failed to send auth message (%d/%d)", count, total)
-		})
-		return err
+		c.relay.logMessage(authMsg, "send", wsConn.Label())
+		if err := wsConn.WriteMessage(authMsg); err != nil {
+			wsConn.Close()
+			c.batchLogger.log("auth_send_error", c.threads, func(count, total int) {
+				c.log.Warn().Err(err).Msgf("Failed to send auth message (%d/%d)", count, total)
+			})
+			return err
+		}
 	}
 
 	// Read auth response
