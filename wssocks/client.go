@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -226,7 +225,7 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 	}
 
 	// Convert URL with token
-	opt.WSURL = convertWSPath(opt.WSURL, token)
+	opt.WSURL = convertWSPath(opt.WSURL)
 
 	disconnected := make(chan struct{})
 	close(disconnected)
@@ -266,7 +265,7 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 }
 
 // convertWSPath converts HTTP(S) URLs to WS(S) URLs and ensures proper path
-func convertWSPath(wsURL, token string) string {
+func convertWSPath(wsURL string) string {
 	u, err := url.Parse(wsURL)
 	if err != nil {
 		return wsURL
@@ -279,13 +278,9 @@ func convertWSPath(wsURL, token string) string {
 		u.Scheme = "wss"
 	}
 
-	// If path is empty or root, use token hash as path
+	// Set path to /socket only if it's root path
 	if u.Path == "" || u.Path == "/" {
-		// Calculate SHA256 hash of the token
-		hash := sha256.Sum256([]byte(token))
-		// Convert to hex string
-		hashStr := hex.EncodeToString(hash[:])
-		u.Path = "/socket/" + hashStr
+		u.Path = "/socket"
 	}
 
 	return u.String()
@@ -489,7 +484,25 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 		}
 	}
 
-	ws, _, err := dialer.Dial(c.wsURL, nil)
+	// Parse URL to check path
+	wsURLWithParams := c.wsURL
+	u, err := url.Parse(wsURLWithParams)
+	if err == nil && u.Path == "/socket" {
+		// Only add query parameters for /socket path
+		// Calculate SHA256 hash of the token
+		hash := sha256.Sum256([]byte(c.token))
+		// Convert to hex string
+		hashStr := hex.EncodeToString(hash[:])
+
+		q := u.Query()
+		q.Set("token", hashStr)
+		q.Set("reverse", strconv.FormatBool(c.reverse))
+		q.Set("instance", c.instanceID.String())
+		u.RawQuery = q.Encode()
+		wsURLWithParams = u.String()
+	}
+
+	ws, _, err := dialer.Dial(wsURLWithParams, nil)
 	if err != nil {
 		c.batchLogger.log("dial_error", c.threads, func(count, total int) {
 			c.log.Warn().Err(err).Msgf("Failed to dial WebSocket (%d/%d)", count, total)
@@ -507,8 +520,8 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 	}
 	c.mu.Unlock()
 
-	// Send authentication
-	if !strings.Contains(c.wsURL, "/socket/") {
+	// Send authentication if not using /socket path
+	if u.Path != "/socket" {
 		authMsg := AuthMessage{
 			Reverse:  c.reverse,
 			Token:    c.token,

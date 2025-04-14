@@ -581,7 +581,6 @@ func (s *WSSocksServer) Serve(ctx context.Context) error {
 		s.log.Info().Int("port", s.wsPort).Msg("API endpoints enabled")
 	}
 
-	// Handle WebSocket upgrade for both /socket and /socket/xxx
 	handleWSUpgrade := func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -693,14 +692,13 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn,
 		}
 	}()
 
-	// Check if using URL-based SHA256 token authentication
-	path := r.URL.Path
-	if len(path) > 8 && path[:8] == "/socket/" {
-		sha256Token := path[8:]
-		s.log.Debug().Str("sha256Token", sha256Token).Msg("Client is using SHA256 token from URL")
-		if len(sha256Token) == 64 { // SHA256 hash is 64 characters
+	// Check if using URL query parameters for authentication
+	query := r.URL.Query()
+	if tokenParam := query.Get("token"); tokenParam != "" {
+		s.log.Debug().Str("token_hash", tokenParam).Msg("Client is using token from URL query")
+		if len(tokenParam) == 64 { // SHA256 hash is 64 characters
 			s.mu.RLock()
-			originalToken, exists := s.sha256TokenMap[sha256Token]
+			originalToken, exists := s.sha256TokenMap[tokenParam]
 			if exists {
 				token = originalToken
 				isValidReverse = s.tokens[token] != 0
@@ -709,6 +707,21 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn,
 				tmpToken, isConnectorToken := s.connectorTokens[token]
 				reverseToken = tmpToken
 				isValidConnector = isConnectorToken && s.tokens[reverseToken] != 0
+
+				// Check reverse parameter
+				if reverseStr := query.Get("reverse"); reverseStr != "" {
+					isReverse := reverseStr == "true" || reverseStr == "1"
+					if isReverse && !isValidReverse {
+						isValidReverse = false
+						isValidForward = false
+						isValidConnector = false
+					} else if !isReverse && !isValidForward && !isValidConnector {
+						isValidReverse = false
+						isValidForward = false
+						isValidConnector = false
+					}
+				}
+
 				isUrlAuth = true
 			}
 			s.mu.RUnlock()
@@ -725,7 +738,7 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn,
 			return
 		}
 	} else {
-		// Traditional authentication for non-/socket/ paths
+		// Traditional authentication for requests without query parameters
 		msg, err := wsConn.ReadMessage()
 		if err != nil {
 			s.log.Debug().Err(err).Msg("Failed to read auth message")

@@ -29,7 +29,7 @@ ConnectResponseMessage:
     Version(1) + Type(1) + Success(1) + ChannelID(16) + [ErrorLen(1) + Error(N) if !Success]
 
 DataMessage:
-    Version(1) + Type(1) + Protocol(1) + ChannelID(16) + Compression(1) + DataLen(4) + Data(N) + 
+    Version(1) + Type(1) + Protocol(1) + ChannelID(16) + Compression(1) + DataLen(4) + Data(N) +
     [if UDP: AddrLen(1) + Addr(N) + Port(2) + TargetAddrLen(1) + TargetAddr(N) + TargetPort(2)]
 
 DisconnectMessage:
@@ -39,8 +39,8 @@ ConnectorMessage:
     Version(1) + Type(1) + ChannelID(16) + TokenLen(1) + Token(N) + Operation(1)
 
 ConnectorResponseMessage:
-    Version(1) + Type(1) + ChannelID(16) + Success(1) + 
-    [if !Success: ErrorLen(1) + Error(N)] + 
+    Version(1) + Type(1) + ChannelID(16) + Success(1) +
+    [if !Success: ErrorLen(1) + Error(N)] +
     [if Success && HasToken: TokenLen(1) + Token(N)]
 */
 
@@ -399,7 +399,7 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 
 	version := data[0]
 	if version != ProtocolVersion {
-		return nil, fmt.Errorf("unsupported protocol version: %d", version)
+		return nil, fmt.Errorf("unsupported protocol version: %d, data: %x", version, data)
 	}
 
 	msgType := data[1]
