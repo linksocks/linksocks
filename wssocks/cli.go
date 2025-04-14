@@ -55,6 +55,22 @@ func (cli *CLI) initCommands() {
 		SilenceUsage: true,
 	}
 
+	// Connector command (alias for client)
+	connectorCmd := &cobra.Command{
+		Use:          "connector",
+		Short:        "Alias for client command",
+		RunE:         cli.runClient,
+		SilenceUsage: true,
+	}
+
+	// Provider command (alias for client -r)
+	providerCmd := &cobra.Command{
+		Use:          "provider",
+		Short:        "Alias for client -r command",
+		RunE:         cli.runProvider,
+		SilenceUsage: true,
+	}
+
 	// Server command
 	serverCmd := &cobra.Command{
 		Use:          "server",
@@ -63,30 +79,39 @@ func (cli *CLI) initCommands() {
 		SilenceUsage: true,
 	}
 
-	// Client flags
-	clientCmd.Flags().StringP("token", "t", "", "Authentication token")
-	clientCmd.Flags().StringP("url", "u", "ws://localhost:8765", "WebSocket server address")
-	clientCmd.Flags().BoolP("reverse", "r", false, "Use reverse socks5 proxy")
-	clientCmd.Flags().StringP("connector-token", "c", "", "Specify connector token for reverse proxy")
-	clientCmd.Flags().StringP("socks-host", "s", "127.0.0.1", "SOCKS5 server listen address for forward proxy")
-	clientCmd.Flags().IntP("socks-port", "p", 1080, "SOCKS5 server listen port for forward proxy")
-	clientCmd.Flags().StringP("socks-username", "n", "", "SOCKS5 authentication username")
-	clientCmd.Flags().StringP("socks-password", "w", "", "SOCKS5 authentication password")
-	clientCmd.Flags().BoolP("socks-no-wait", "i", false, "Start the SOCKS server immediately")
-	clientCmd.Flags().BoolP("no-reconnect", "R", false, "Stop when the server disconnects")
-	clientCmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
-	clientCmd.Flags().IntP("threads", "T", 1, "Number of threads for data transfer")
-	clientCmd.Flags().StringP("upstream-proxy", "x", "", "Upstream SOCKS5 proxy (e.g., socks5://user:pass@127.0.0.1:1080)")
-	clientCmd.Flags().BoolP("strict-connect", "C", false, "Wait strictly for remote connection completion")
-	clientCmd.Flags().BoolP("no-env-proxy", "E", false, "Ignore proxy settings from environment variables when connecting to the websocket server")
+	// Define client flags function
+	addClientFlags := func(cmd *cobra.Command) {
+		cmd.Flags().StringP("token", "t", "", "Authentication token")
+		cmd.Flags().StringP("url", "u", "ws://localhost:8765", "WebSocket server address")
+		if cmd.Name() != "provider" {
+			cmd.Flags().BoolP("reverse", "r", false, "Use reverse socks5 proxy")
+		}
+		cmd.Flags().StringP("connector-token", "c", "", "Specify connector token for reverse proxy")
+		cmd.Flags().StringP("socks-host", "s", "127.0.0.1", "SOCKS5 server listen address for forward proxy")
+		cmd.Flags().IntP("socks-port", "p", 1080, "SOCKS5 server listen port for forward proxy")
+		cmd.Flags().StringP("socks-username", "n", "", "SOCKS5 authentication username")
+		cmd.Flags().StringP("socks-password", "w", "", "SOCKS5 authentication password")
+		cmd.Flags().BoolP("socks-no-wait", "i", false, "Start the SOCKS server immediately")
+		cmd.Flags().BoolP("no-reconnect", "R", false, "Stop when the server disconnects")
+		cmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
+		cmd.Flags().IntP("threads", "T", 1, "Number of threads for data transfer")
+		cmd.Flags().StringP("upstream-proxy", "x", "", "Upstream SOCKS5 proxy (e.g., socks5://user:pass@127.0.0.1:1080)")
+		cmd.Flags().BoolP("strict-connect", "C", false, "Wait strictly for remote connection completion")
+		cmd.Flags().BoolP("no-env-proxy", "E", false, "Ignore proxy settings from environment variables when connecting to the websocket server")
 
-	// Update usage to show environment variables
-	clientCmd.Flags().Lookup("token").Usage += " (env: WSSOCKS_TOKEN)"
-	clientCmd.Flags().Lookup("connector-token").Usage += " (env: WSSOCKS_CONNECTOR_TOKEN)"
-	clientCmd.Flags().Lookup("socks-password").Usage += " (env: WSSOCKS_SOCKS_PASSWORD)"
+		// Update usage to show environment variables
+		cmd.Flags().Lookup("token").Usage += " (env: WSSOCKS_TOKEN)"
+		cmd.Flags().Lookup("connector-token").Usage += " (env: WSSOCKS_CONNECTOR_TOKEN)"
+		cmd.Flags().Lookup("socks-password").Usage += " (env: WSSOCKS_SOCKS_PASSWORD)"
 
-	// Mark required flags
-	clientCmd.MarkFlagRequired("token")
+		// Mark required flags
+		cmd.MarkFlagRequired("token")
+	}
+
+	// Add flags to client commands
+	addClientFlags(clientCmd)
+	addClientFlags(connectorCmd)
+	addClientFlags(providerCmd)
 
 	// Server flags
 	serverCmd.Flags().StringP("ws-host", "H", "0.0.0.0", "WebSocket server listen address")
@@ -112,7 +137,7 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().Lookup("socks-password").Usage += " (env: WSSOCKS_SOCKS_PASSWORD)"
 
 	// Add commands to root
-	cli.rootCmd.AddCommand(clientCmd, serverCmd, versionCmd)
+	cli.rootCmd.AddCommand(clientCmd, connectorCmd, providerCmd, serverCmd, versionCmd)
 }
 
 // parseSocksProxy parses a SOCKS5 proxy URL and returns address, username, and password
@@ -398,4 +423,11 @@ func (cli *CLI) initLogging(debug int) zerolog.Logger {
 
 	// Return configured logger
 	return zerolog.New(output).With().Timestamp().Logger()
+}
+
+// Add new runProvider function that forces the reverse flag to true
+func (cli *CLI) runProvider(cmd *cobra.Command, args []string) error {
+	// Force set reverse flag to true
+	cmd.Flags().Set("reverse", "true")
+	return cli.runClient(cmd, args)
 }

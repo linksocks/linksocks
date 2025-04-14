@@ -34,7 +34,7 @@ For python version, please check [zetxtech/pywssocks](https://github.com/zetxtec
 Forward Proxy:
 
 ```bash
-# Server (WebSockets at port 8765, as network connector)
+# Server (WebSockets at port 8765, as network provider)
 wssocks server -t example_token
 
 # Client (SOCKS5 at port 1080)
@@ -47,7 +47,7 @@ Reverse Proxy (with `-r` flag):
 # Server (WebSockets at port 8765, SOCKS at port 1080)
 wssocks server -t example_token -p 1080 -r
 
-# Client (as network connector)
+# Client (as network provider)
 wssocks client -t example_token -u ws://localhost:8765 -r
 ```
 
@@ -57,21 +57,21 @@ Agent Proxy (with `-c` flag for connectors' token):
 # Server (WebSockets at port 8765, SOCKS at port 1080)
 wssocks server -t example_token -c example_connector_token -p 1080 -r
 
-# Client (as network connector)
-wssocks client -t example_token -u ws://localhost:8765 -r
+# Client (as network provider)
+wssocks provider -t example_token -u ws://localhost:8765
 
 # Connector (SOCKS5 at port 1180)
-wssocks client -t example_connector_token -u ws://localhost:8765 -p 1180
+wssocks connector -t example_connector_token -u ws://localhost:8765 -p 1180
 ```
 
 You can also use our public demo server:
 
 ```bash
-# Client (as network connector)
-wssocks client -t wssocks -u wss://ws.zetx.tech -c example_connector_token -r
+# Client (as network provider)
+wssocks provider -t wssocks -u wss://ws.zetx.tech -c example_connector_token
 
-# Client (SOCKS5 at port 1180)
-wssocks client -t example_connector_token -u wss://ws.zetx.tech -p 1180
+# Connector (SOCKS5 at port 1180)
+wssocks connector -t example_connector_token -u wss://ws.zetx.tech -p 1180
 ```
 
 Autonomy Agent Proxy (with `-a` flag):
@@ -80,8 +80,8 @@ Autonomy Agent Proxy (with `-a` flag):
 # Server (WebSocket at port 8765, autonomy mode)
 wssocks server -r -t example_token -a
 
-# Client (as network connector, with connector token)
-wssocks client -r -t example_token -c example_connector_token
+# Client (as network provider, set connector token when start)
+wssocks provider -t example_token -c example_connector_token
 ```
 
 In autonomy mode:
