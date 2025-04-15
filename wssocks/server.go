@@ -823,9 +823,13 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn,
 		}
 		s.mu.Unlock()
 		s.log.Debug().Str("client_id", clientID.String()).Msg("Reverse client authenticated")
+		// Notify connectors about new reverse client
+		s.broadcastPartnersToConnectors()
 	} else if isValidConnector {
 		// Handle connector proxy client
 		s.log.Debug().Str("client_id", clientID.String()).Msg("Connector client authenticated")
+		// Notify reverse clients about new connector
+		s.broadcastPartnersToReverseClients(reverseToken)
 	} else {
 		// Handle forward proxy client
 		s.log.Debug().Str("client_id", clientID.String()).Msg("Forward client authenticated")
@@ -836,6 +840,28 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn,
 	if err := wsConn.WriteMessage(authResponse); err != nil {
 		s.log.Debug().Err(err).Msg("Failed to send auth response")
 		return
+	}
+
+	// Send initial partner status for connector clients
+	if isValidConnector {
+		// Count total reverse clients for this token
+		reverseCount := 0
+		s.mu.RLock()
+		for token := range s.tokens {
+			if clients, ok := s.tokenClients[token]; ok {
+				reverseCount += len(clients)
+			}
+		}
+		s.mu.RUnlock()
+
+		// Send partners message
+		partnersMsg := PartnersMessage{
+			Count: reverseCount,
+		}
+		s.relay.logMessage(partnersMsg, "send", wsConn.Label())
+		if err := wsConn.WriteMessage(partnersMsg); err != nil {
+			s.log.Debug().Err(err).Msg("Failed to send initial partners status")
+		}
 	}
 
 	// Start message handling goroutines
@@ -1147,6 +1173,10 @@ func (s *WSSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 		if len(clients) == 0 {
 			delete(s.tokenClients, token)
 			delete(s.tokenIndexes, token)
+			// If this was a reverse client, notify all connectors
+			if _, isReverse := s.tokens[token]; isReverse {
+				s.broadcastPartnersToConnectors()
+			}
 		} else {
 			s.tokenClients[token] = clients
 		}
@@ -1156,6 +1186,62 @@ func (s *WSSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 	delete(s.clients, clientID)
 
 	s.log.Debug().Str("client_id", clientID.String()).Msg("Client disconnected")
+}
+
+// broadcastPartnersToConnectors sends the current number of reverse clients to all connectors
+func (s *WSSocksServer) broadcastPartnersToConnectors() {
+	// Count total reverse clients
+	reverseCount := 0
+	for token := range s.tokens {
+		if clients, ok := s.tokenClients[token]; ok {
+			reverseCount += len(clients)
+		}
+	}
+
+	// Create partners message
+	partnersMsg := PartnersMessage{
+		Count: reverseCount,
+	}
+
+	// Send to all connector clients
+	for connectorToken := range s.connectorTokens {
+		if clients, ok := s.tokenClients[connectorToken]; ok {
+			for _, client := range clients {
+				s.relay.logMessage(partnersMsg, "send", client.Conn.Label())
+				if err := client.Conn.WriteMessage(partnersMsg); err != nil {
+					s.log.Debug().Err(err).Msg("Failed to send partners update to connector")
+				}
+			}
+		}
+	}
+}
+
+// broadcastPartnersToReverseClients sends the current number of connectors to all reverse clients for a given token
+func (s *WSSocksServer) broadcastPartnersToReverseClients(reverseToken string) {
+	// Count total connectors for this reverse token
+	connectorCount := 0
+	for connectorToken, rt := range s.connectorTokens {
+		if rt == reverseToken {
+			if clients, ok := s.tokenClients[connectorToken]; ok {
+				connectorCount += len(clients)
+			}
+		}
+	}
+
+	// Create partners message
+	partnersMsg := PartnersMessage{
+		Count: connectorCount,
+	}
+
+	// Send to all reverse clients
+	if clients, ok := s.tokenClients[reverseToken]; ok {
+		for _, client := range clients {
+			s.relay.logMessage(partnersMsg, "send", client.Conn.Label())
+			if err := client.Conn.WriteMessage(partnersMsg); err != nil {
+				s.log.Debug().Err(err).Msg("Failed to send partners update to reverse client")
+			}
+		}
+	}
 }
 
 // getNextWebSocket gets next available WebSocket connection using round-robin

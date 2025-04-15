@@ -47,6 +47,7 @@ type WSSocksClient struct {
 	socksWaitServer bool
 	socksReady      chan struct{}
 	noEnvProxy      bool
+	numPartners     int
 
 	websockets     []*WSConn // Multiple WebSocket connections
 	currentIndex   int       // Current WebSocket index for round-robin
@@ -256,6 +257,7 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 		Connected:       make(chan struct{}),
 		Disconnected:    disconnected,
 		IsConnected:     false,
+		numPartners:     0,
 		threads:         opt.Threads,
 		websockets:      make([]*WSConn, 0, opt.Threads),
 		noEnvProxy:      opt.NoEnvProxy,
@@ -729,6 +731,29 @@ func (c *WSSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) error
 					}
 				}
 
+			case LogMessage:
+				// Handle log message by outputting to server logs
+				switch m.Level {
+				case LogLevelTrace:
+					c.log.Trace().Str("client", ws.Label()).Msg(m.Msg)
+				case LogLevelDebug:
+					c.log.Debug().Str("client", ws.Label()).Msg(m.Msg)
+				case LogLevelInfo:
+					c.log.Info().Str("client", ws.Label()).Msg(m.Msg)
+				case LogLevelWarn:
+					c.log.Warn().Str("client", ws.Label()).Msg(m.Msg)
+				case LogLevelError:
+					c.log.Error().Str("client", ws.Label()).Msg(m.Msg)
+				default:
+					c.log.Debug().Str("client", ws.Label()).Str("level", m.Level).Msg(m.Msg)
+				}
+
+			case PartnersMessage:
+				c.mu.Lock()
+				c.numPartners = m.Count
+				c.mu.Unlock()
+				c.log.Debug().Int("partners", m.Count).Msg("Updated partners count")
+
 			default:
 				c.log.Debug().Str("type", msg.GetType()).Msg("Received unknown message type")
 			}
@@ -991,4 +1016,11 @@ func (c *WSSocksClient) setConnectionStatus(connected bool) {
 		}
 		close(c.Disconnected)
 	}
+}
+
+// GetPartnersCount returns the current number of partners
+func (c *WSSocksClient) GetPartnersCount() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.numPartners
 }

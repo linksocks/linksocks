@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -42,6 +43,9 @@ ConnectorResponseMessage:
     Version(1) + Type(1) + ChannelID(16) + Success(1) +
     [if !Success: ErrorLen(1) + Error(N)] +
     [if Success && HasToken: TokenLen(1) + Token(N)]
+
+ServerMessage:
+    Version(1) + Type(1) + DataLen(4) + Data(N)
 */
 
 const (
@@ -57,6 +61,8 @@ const (
 	BinaryTypeDisconnect        = byte(0x06)
 	BinaryTypeConnector         = byte(0x07)
 	BinaryTypeConnectorResponse = byte(0x08)
+	BinaryTypeLog               = byte(0x09)
+	BinaryTypePartners          = byte(0x0A)
 
 	// Protocol types
 	BinaryProtocolTCP = byte(0x01)
@@ -75,6 +81,8 @@ const (
 	TypeDisconnect        = "disconnect"
 	TypeConnector         = "connector"
 	TypeConnectorResponse = "connector_response"
+	TypeLog               = "log"
+	TypePartners          = "partners"
 
 	// Compression flags
 	DataCompressionNone = byte(0x00)
@@ -177,6 +185,34 @@ type ConnectorResponseMessage struct {
 func (m ConnectorResponseMessage) GetType() string {
 	return TypeConnectorResponse
 }
+
+// LogMessage represents a log message from server to client
+type LogMessage struct {
+	Level string `json:"level"`
+	Msg   string `json:"msg"`
+}
+
+func (m LogMessage) GetType() string {
+	return TypeLog
+}
+
+// PartnersMessage represents a partners count update message
+type PartnersMessage struct {
+	Count int `json:"count"`
+}
+
+func (m PartnersMessage) GetType() string {
+	return TypePartners
+}
+
+// LogLevel constants for ServerMessage
+const (
+	LogLevelTrace = "trace"
+	LogLevelDebug = "debug"
+	LogLevelInfo  = "info"
+	LogLevelWarn  = "warn"
+	LogLevelError = "error"
+)
 
 // Helper functions for protocol conversion
 func protocolToBytes(protocol string) byte {
@@ -384,6 +420,28 @@ func PackMessage(msg BaseMessage) ([]byte, error) {
 			buf = append(buf, byte(len(m.ConnectorToken)))
 			buf = append(buf, []byte(m.ConnectorToken)...)
 		}
+		return buf, nil
+
+	case LogMessage:
+		buf = append(buf, BinaryTypeLog)
+		jsonData, err := json.Marshal(m)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal log message: %w", err)
+		}
+		dataLen := uint32(len(jsonData))
+		buf = append(buf, byte(dataLen>>24), byte(dataLen>>16), byte(dataLen>>8), byte(dataLen))
+		buf = append(buf, jsonData...)
+		return buf, nil
+
+	case PartnersMessage:
+		buf = append(buf, BinaryTypePartners)
+		jsonData, err := json.Marshal(m)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal partners message: %w", err)
+		}
+		dataLen := uint32(len(jsonData))
+		buf = append(buf, byte(dataLen>>24), byte(dataLen>>16), byte(dataLen>>8), byte(dataLen))
+		buf = append(buf, jsonData...)
 		return buf, nil
 
 	default:
@@ -623,6 +681,36 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 				return nil, fmt.Errorf("invalid connector response token length")
 			}
 			msg.ConnectorToken = string(payload[18 : 18+tokenLen])
+		}
+		return msg, nil
+
+	case BinaryTypeLog:
+		if len(payload) < 4 { // DataLen(4)
+			return nil, fmt.Errorf("invalid log message")
+		}
+		dataLen := uint32(payload[0])<<24 | uint32(payload[1])<<16 | uint32(payload[2])<<8 | uint32(payload[3])
+		if len(payload) < 4+int(dataLen) {
+			return nil, fmt.Errorf("invalid log message length")
+		}
+		jsonData := payload[4 : 4+dataLen]
+		var msg LogMessage
+		if err := json.Unmarshal(jsonData, &msg); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal log message: %w", err)
+		}
+		return msg, nil
+
+	case BinaryTypePartners:
+		if len(payload) < 4 { // DataLen(4)
+			return nil, fmt.Errorf("invalid partners message")
+		}
+		dataLen := uint32(payload[0])<<24 | uint32(payload[1])<<16 | uint32(payload[2])<<8 | uint32(payload[3])
+		if len(payload) < 4+int(dataLen) {
+			return nil, fmt.Errorf("invalid partners message length")
+		}
+		jsonData := payload[4 : 4+dataLen]
+		var msg PartnersMessage
+		if err := json.Unmarshal(jsonData, &msg); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal partners message: %w", err)
 		}
 		return msg, nil
 
