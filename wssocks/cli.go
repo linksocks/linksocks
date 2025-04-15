@@ -83,9 +83,7 @@ func (cli *CLI) initCommands() {
 	addClientFlags := func(cmd *cobra.Command) {
 		cmd.Flags().StringP("token", "t", "", "Authentication token")
 		cmd.Flags().StringP("url", "u", "ws://localhost:8765", "WebSocket server address")
-		if cmd.Name() != "provider" {
-			cmd.Flags().BoolP("reverse", "r", false, "Use reverse socks5 proxy")
-		}
+		cmd.Flags().BoolP("reverse", "r", false, "Use reverse socks5 proxy")
 		cmd.Flags().StringP("connector-token", "c", "", "Specify connector token for reverse proxy")
 		cmd.Flags().StringP("socks-host", "s", "127.0.0.1", "SOCKS5 server listen address for forward proxy")
 		cmd.Flags().IntP("socks-port", "p", 1080, "SOCKS5 server listen port for forward proxy")
