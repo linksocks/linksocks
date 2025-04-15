@@ -38,7 +38,7 @@ Forward Proxy:
 wssocks server -t example_token
 
 # Client (SOCKS5 at port 1080)
-wssocks client -t example_token -u ws://localhost:8765 -p 1080
+wssocks client -t example_token -u http://localhost:8765 -p 1080
 ```
 
 Reverse Proxy (with `-r` flag):
@@ -48,7 +48,7 @@ Reverse Proxy (with `-r` flag):
 wssocks server -t example_token -p 1080 -r
 
 # Client (as network provider)
-wssocks client -t example_token -u ws://localhost:8765 -r
+wssocks client -t example_token -u http://localhost:8765 -r
 ```
 
 Agent Proxy (with `-c` flag for connectors' token):
@@ -58,20 +58,20 @@ Agent Proxy (with `-c` flag for connectors' token):
 wssocks server -t example_token -c example_connector_token -p 1080 -r
 
 # Client (as network provider)
-wssocks provider -t example_token -u ws://localhost:8765
+wssocks provider -t example_token -u http://localhost:8765
 
 # Connector (SOCKS5 at port 1180)
-wssocks connector -t example_connector_token -u ws://localhost:8765 -p 1180
+wssocks connector -t example_connector_token -u http://localhost:8765 -p 1180
 ```
 
 You can also use our public demo server:
 
 ```bash
 # Client (as network provider)
-wssocks provider -t any_token -u wss://wssocks.zetx.tech -c any_connector_token
+wssocks provider -t any_token -u https://wssocks.zetx.tech -c any_connector_token
 
 # Connector (SOCKS5 at port 1180)
-wssocks connector -t any_connector_token -u wss://wssocks.zetx.tech -p 1180
+wssocks connector -t any_connector_token -u https://wssocks.zetx.tech -p 1180
 ```
 
 Autonomy Agent Proxy (with `-a` flag):
