@@ -31,6 +31,11 @@ func (bl *batchLogger) log(key string, total int, logFn func(count, total int)) 
 	bl.mu.Lock()
 	defer bl.mu.Unlock()
 
+	if total == 1 {
+		logFn(1, total)
+		return
+	}
+
 	if msg, exists := bl.messages[key]; exists {
 		msg.count++
 		if msg.timer != nil {
