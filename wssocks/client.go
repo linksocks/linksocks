@@ -270,7 +270,7 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 // convertWSPath converts HTTP(S) URLs to WS(S) URLs and ensures proper path
 func convertWSPath(wsURL string) string {
 	if !strings.Contains(wsURL, "://") {
-		wsURL = "https://" + wsURL
+		wsURL = "wss://" + wsURL
 	}
 
 	u, err := url.Parse(wsURL)
@@ -281,7 +281,7 @@ func convertWSPath(wsURL string) string {
 	switch u.Scheme {
 	case "http":
 		u.Scheme = "ws"
-	default:
+	case "https":
 		u.Scheme = "wss"
 	}
 
