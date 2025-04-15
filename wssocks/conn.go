@@ -1,6 +1,9 @@
 package wssocks
 
 import (
+	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,7 +19,8 @@ type WSConn struct {
 	pingTime time.Time  // Track when ping was sent
 	pingMu   sync.Mutex // Mutex for ping timing
 
-	label string
+	label    string
+	clientIP string
 }
 
 func (c *WSConn) Label() string {
@@ -25,6 +29,40 @@ func (c *WSConn) Label() string {
 
 func (c *WSConn) setLabel(label string) {
 	c.label = label
+}
+
+// GetClientIP returns the client IP address
+func (c *WSConn) GetClientIP() string {
+	return c.clientIP
+}
+
+// SetClientIPFromRequest extracts and sets the client IP from HTTP request
+func (c *WSConn) SetClientIPFromRequest(r *http.Request) {
+	c.clientIP = getClientIPFromRequest(r)
+}
+
+// getClientIPFromRequest extracts client IP from HTTP request
+func getClientIPFromRequest(r *http.Request) string {
+	// Check CF-Connecting-IP header first
+	if ip := r.Header.Get("CF-Connecting-IP"); ip != "" {
+		return ip
+	}
+
+	// Check X-Forwarded-For header
+	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
+		// X-Forwarded-For can contain multiple IPs, take the first one
+		if idx := strings.Index(ip, ","); idx != -1 {
+			return strings.TrimSpace(ip[:idx])
+		}
+		return strings.TrimSpace(ip)
+	}
+
+	// Get the remote address
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return ip
 }
 
 // NewWSConn creates a new mutex-protected websocket connection

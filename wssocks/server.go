@@ -676,6 +676,7 @@ func (s *WSSocksServer) WaitReady(ctx context.Context, timeout time.Duration) er
 func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn, r *http.Request) {
 	// Wrap the websocket connection
 	wsConn := NewWSConn(ws, "", s.log)
+	wsConn.SetClientIPFromRequest(r) // Extract and set client IP
 
 	var clientID uuid.UUID
 	var token string
@@ -822,17 +823,17 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn,
 			}()
 		}
 		s.mu.Unlock()
-		s.log.Debug().Str("client_id", clientID.String()).Msg("Reverse client authenticated")
+		s.log.Info().Str("client_id", clientID.String()).Str("client_ip", wsConn.GetClientIP()).Msg("Reverse client authenticated")
 		// Notify connectors about new reverse client
 		s.broadcastPartnersToConnectors()
 	} else if isValidConnector {
 		// Handle connector proxy client
-		s.log.Debug().Str("client_id", clientID.String()).Msg("Connector client authenticated")
+		s.log.Info().Str("client_id", clientID.String()).Str("client_ip", wsConn.GetClientIP()).Msg("Connector client authenticated")
 		// Notify reverse clients about new connector
 		s.broadcastPartnersToReverseClients(reverseToken)
 	} else {
 		// Handle forward proxy client
-		s.log.Debug().Str("client_id", clientID.String()).Msg("Forward client authenticated")
+		s.log.Info().Str("client_id", clientID.String()).Str("client_ip", wsConn.GetClientIP()).Msg("Forward client authenticated")
 	}
 
 	authResponse := AuthResponseMessage{Success: true}
@@ -1162,6 +1163,12 @@ func (s *WSSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Get client IP from the connection
+	var clientIP string
+	if ws, exists := s.clients[clientID]; exists {
+		clientIP = ws.GetClientIP()
+	}
+
 	// Clean up connection in tokenClients
 	if token != "" && s.tokenClients[token] != nil {
 		clients := make([]clientInfo, 0)
@@ -1185,7 +1192,7 @@ func (s *WSSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 	// Clean up client connection
 	delete(s.clients, clientID)
 
-	s.log.Debug().Str("client_id", clientID.String()).Msg("Client disconnected")
+	s.log.Info().Str("client_id", clientID.String()).Str("client_ip", clientIP).Msg("Client disconnected")
 }
 
 // broadcastPartnersToConnectors sends the current number of reverse clients to all connectors
