@@ -105,6 +105,14 @@ WSSocks is also available via Docker:
 docker run --rm -it jackzzs/wssocks --help
 ```
 
+## Cloudflare Worker
+
+WSSocks server can be hosted on Cloudflare Worker, see: [zetxtech/wssocks.js](https://github.com/zetxtech/wssocks.js)
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/zetxtech/wssocks.js)
+
+The wssocks.js version is a lite version and does not contain API functionality.
+
 ## API Server
 
 WSSocks server provides an HTTP API when enabled with the `--api-key` flag:
