@@ -68,10 +68,10 @@ You can also use our public demo server:
 
 ```bash
 # Client (as network provider)
-wssocks provider -t wssocks -u wss://ws.zetx.tech -c example_connector_token
+wssocks provider -t any_token -u wss://wssocks.zetx.tech -c any_connector_token
 
 # Connector (SOCKS5 at port 1180)
-wssocks connector -t example_connector_token -u wss://ws.zetx.tech -p 1180
+wssocks connector -t any_connector_token -u wss://wssocks.zetx.tech -p 1180
 ```
 
 Autonomy Agent Proxy (with `-a` flag):
