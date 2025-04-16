@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -483,8 +484,7 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 	dialer := websocket.DefaultDialer
 	if c.noEnvProxy {
 		dialer = &websocket.Dialer{
-			Proxy: nil, // Explicitly disable proxy
-			// Copy other fields from DefaultDialer if needed
+			Proxy:            nil, // Explicitly disable proxy
 			HandshakeTimeout: websocket.DefaultDialer.HandshakeTimeout,
 			ReadBufferSize:   websocket.DefaultDialer.ReadBufferSize,
 			WriteBufferSize:  websocket.DefaultDialer.WriteBufferSize,
@@ -509,11 +509,82 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 		wsURLWithParams = u.String()
 	}
 
-	ws, _, err := dialer.Dial(wsURLWithParams, nil)
-	if err != nil {
-		c.batchLogger.log("dial_error", c.threads, func(count, total int) {
-			c.log.Warn().Err(err).Msgf("Failed to dial WebSocket (%d/%d)", count, total)
-		})
+	// Handle WebSocket connection with redirect support
+	var ws *websocket.Conn
+	var resp *http.Response
+	currentURL := wsURLWithParams
+	redirectsLeft := 5 // Maximum number of redirects to follow
+
+	for redirectsLeft >= 0 {
+		ws, resp, err = dialer.Dial(currentURL, nil)
+		if err == nil {
+			// Successfully connected
+			break
+		}
+
+		// Check if this is a redirect
+		if err == websocket.ErrBadHandshake && resp != nil && (resp.StatusCode >= 301 && resp.StatusCode <= 308) {
+			redirect := resp.Header.Get("Location")
+			if redirect == "" {
+				// No redirect URL provided
+				c.log.Warn().Int("status", resp.StatusCode).Msg("Received redirect status but no Location header")
+				return errors.New("redirect response missing Location header")
+			}
+
+			// Track number of redirects
+			redirectsLeft--
+			if redirectsLeft < 0 {
+				c.log.Warn().Msg("Too many redirects, giving up after 5 redirects")
+				return errors.New("too many redirects (maximum 5)")
+			}
+
+			// Log the redirect
+			c.log.Debug().
+				Str("from", currentURL).
+				Str("to", redirect).
+				Int("status", resp.StatusCode).
+				Int("redirects_left", redirectsLeft).
+				Msg("Following WebSocket redirect")
+
+			// Parse the redirect URL
+			redirectURL, parseErr := url.Parse(redirect)
+			if parseErr != nil {
+				c.log.Warn().Err(parseErr).Msg("Failed to parse redirect URL")
+				return parseErr
+			}
+
+			// Handle relative URLs
+			if !redirectURL.IsAbs() {
+				originalURL, _ := url.Parse(currentURL)
+				redirectURL = originalURL.ResolveReference(redirectURL)
+			}
+
+			// Ensure proper scheme (ws/wss)
+			if redirectURL.Scheme == "http" {
+				redirectURL.Scheme = "ws"
+			} else if redirectURL.Scheme == "https" {
+				redirectURL.Scheme = "wss"
+			}
+
+			// Update URL for next attempt
+			currentURL = redirectURL.String()
+			continue
+		}
+
+		// Not a redirect or another error occurred
+		if err == websocket.ErrBadHandshake {
+			statusMsg := "unknown"
+			if resp != nil {
+				statusMsg = resp.Status
+			}
+			c.batchLogger.log("handshake_error", c.threads, func(count, total int) {
+				c.log.Warn().Err(err).Str("status", statusMsg).Msgf("WebSocket handshake failed (%d/%d)", count, total)
+			})
+		} else {
+			c.batchLogger.log("dial_error", c.threads, func(count, total int) {
+				c.log.Warn().Err(err).Msgf("Failed to dial WebSocket (%d/%d)", count, total)
+			})
+		}
 		return err
 	}
 
