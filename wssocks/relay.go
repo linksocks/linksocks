@@ -19,9 +19,17 @@ import (
 const (
 	// DefaultBufferSize is the size of reusable buffers
 	// Larger buffers improve throughput but consume more memory
-	DefaultBufferSize     = 32 * 1024 // 32KB buffer size
-	DefaultChannelTimeout = 12 * time.Hour
-	DefaultConnectTimeout = 10 * time.Second
+	DefaultBufferSize       = 512 * 1024 // 512KB buffer size
+	DefaultChannelTimeout   = 12 * time.Hour
+	DefaultConnectTimeout   = 10 * time.Second
+	DefaultMinBatchWaitTime = 20 * time.Millisecond
+	DefaultMaxBatchWaitTime = 200 * time.Millisecond
+	// Default threshold in bytes/sec for increasing batch delay
+	DefaultHighSpeedThreshold = 256 * 1024
+	// Default threshold in bytes/sec for reverting to immediate send
+	DefaultLowSpeedThreshold = 128 * 1024
+	// Default threshold in bytes for enabling compression
+	DefaultCompressionThreshold = 512 * 1024
 )
 
 // RelayOption contains configuration options for Relay
@@ -39,23 +47,32 @@ type RelayOption struct {
 	UpstreamProxy    string // Format: host:port
 	UpstreamUsername string
 	UpstreamPassword string
-}
 
-// Global buffer pool using pointer type
-var bufferPool = sync.Pool{
-	New: func() interface{} {
-		b := make([]byte, DefaultBufferSize)
-		return &b
-	},
+	// Adaptive batching configuration
+	EnableDynamicBatching bool
+	MaxBatchWaitTime      time.Duration
+	MinBatchWaitTime      time.Duration
+	// HighSpeedThreshold defines the bytes/sec rate above which batch delay increases
+	HighSpeedThreshold float64
+	// LowSpeedThreshold defines the bytes/sec rate below which batch delay resets to zero
+	LowSpeedThreshold float64
+	// CompressionThreshold defines the data size in bytes above which compression is applied
+	CompressionThreshold int
 }
 
 // NewDefaultRelayOption creates a RelayOption with default values
 func NewDefaultRelayOption() *RelayOption {
 	return &RelayOption{
-		BufferSize:     DefaultBufferSize,
-		ChannelTimeout: DefaultChannelTimeout,
-		ConnectTimeout: DefaultConnectTimeout,
-		StrictConnect:  false,
+		BufferSize:            DefaultBufferSize,
+		ChannelTimeout:        DefaultChannelTimeout,
+		ConnectTimeout:        DefaultConnectTimeout,
+		StrictConnect:         false,
+		EnableDynamicBatching: true,
+		MinBatchWaitTime:      DefaultMinBatchWaitTime,
+		MaxBatchWaitTime:      DefaultMaxBatchWaitTime,
+		HighSpeedThreshold:    float64(DefaultHighSpeedThreshold),
+		LowSpeedThreshold:     float64(DefaultLowSpeedThreshold),
+		CompressionThreshold:  DefaultCompressionThreshold,
 	}
 }
 
@@ -96,6 +113,55 @@ func (o *RelayOption) WithUpstreamAuth(username, password string) *RelayOption {
 	return o
 }
 
+// WithDynamicBatching enables or disables adaptive batching for SOCKS TCP
+func (o *RelayOption) WithDynamicBatching(enabled bool) *RelayOption {
+	o.EnableDynamicBatching = enabled
+	return o
+}
+
+// WithBatchingTimeLimits sets the min/max wait times for SOCKS TCP batching
+func (o *RelayOption) WithBatchingTimeLimits(min, max time.Duration) *RelayOption {
+	if min < 0 {
+		min = 0
+	}
+	if max < min {
+		max = min
+	}
+	o.MinBatchWaitTime = min
+	o.MaxBatchWaitTime = max
+	return o
+}
+
+// WithHighSpeedThreshold sets the threshold for increasing batch delay
+func (o *RelayOption) WithHighSpeedThreshold(threshold float64) *RelayOption {
+	if threshold < 0 {
+		threshold = float64(DefaultHighSpeedThreshold) // Use default if negative
+	}
+	o.HighSpeedThreshold = threshold
+	return o
+}
+
+// WithLowSpeedThreshold sets the threshold for reverting to immediate send
+func (o *RelayOption) WithLowSpeedThreshold(threshold float64) *RelayOption {
+	if threshold < 0 {
+		threshold = float64(DefaultLowSpeedThreshold) // Use default if negative
+	}
+	if threshold > o.HighSpeedThreshold {
+		threshold = o.HighSpeedThreshold // Cannot be higher than high speed threshold
+	}
+	o.LowSpeedThreshold = threshold
+	return o
+}
+
+// WithCompressionThreshold sets the threshold for enabling data compression
+func (o *RelayOption) WithCompressionThreshold(threshold int) *RelayOption {
+	if threshold < 0 {
+		threshold = DefaultCompressionThreshold // Use default if negative
+	}
+	o.CompressionThreshold = threshold
+	return o
+}
+
 // Relay handles stream transport between SOCKS5 and WebSocket
 type Relay struct {
 	log                  zerolog.Logger
@@ -107,6 +173,7 @@ type Relay struct {
 	option               *RelayOption
 	done                 chan struct{}
 	connectionSuccessMap sync.Map
+	bufferPool           sync.Pool // Buffer pool for reusing byte slices
 }
 
 // NewRelay creates a new Relay instance
@@ -119,6 +186,12 @@ func NewRelay(logger zerolog.Logger, option *RelayOption) *Relay {
 		log:    logger,
 		option: option,
 		done:   make(chan struct{}),
+		bufferPool: sync.Pool{
+			New: func() interface{} {
+				b := make([]byte, option.BufferSize)
+				return &b
+			},
+		},
 	}
 
 	go r.channelCleaner()
@@ -863,63 +936,8 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 	// TCP to WebSocket
 	go func() {
 		defer wg.Done()
-
-		// Get a buffer from the pool
-		buffer := *(bufferPool.Get().(*[]byte))
-		// Return the buffer to the pool when done
-		defer bufferPool.Put(&buffer)
-
-		for {
-			n, err := remoteConn.Read(buffer)
-			if err != nil {
-				if err == io.EOF {
-					r.log.Trace().Msg("Remote connection closed")
-					disconnectMsg := DisconnectMessage{
-						ChannelID: channelID,
-					}
-					r.logMessage(disconnectMsg, "send", ws.Label())
-					ws.WriteMessage(disconnectMsg)
-				} else if opErr, ok := err.(*net.OpError); ok {
-					if errors.Is(opErr.Err, net.ErrClosed) {
-						r.log.Trace().Msg("TCP connection closed as instructed by connector")
-					} else {
-						r.log.Debug().Err(err).Msg("Remote TCP read error")
-						errChan <- fmt.Errorf("remote read error: %w", err)
-					}
-				} else {
-					r.log.Debug().Err(err).Msg("Unexpected connection error")
-					errChan <- fmt.Errorf("remote read error: %w", err)
-				}
-				return
-			}
-			if n == 0 {
-				return
-			}
-
-			// Update activity time
-			r.updateActivityTime(channelID)
-
-			// Create a new slice only for the actual data to be sent
-			// This ensures we don't hold onto more memory than needed
-			data := make([]byte, n)
-			copy(data, buffer[:n])
-
-			// Prepare the message for WebSocket transmission
-			msg := DataMessage{
-				Protocol:    "tcp",
-				ChannelID:   channelID,
-				Data:        data,
-				Compression: r.determineCompression(n),
-			}
-
-			// Log and send the message
-			r.logMessage(msg, "send", ws.Label())
-			if err := ws.WriteMessage(msg); err != nil {
-				errChan <- fmt.Errorf("websocket write error: %w", err)
-				return
-			}
-			r.log.Trace().Int("size", n).Msg("Sent TCP data to WebSocket")
-		}
+		sendManager := NewSendManager(ctx, r.log, channelID, ws, r, "tcp", errChan)
+		sendManager.ProcessReads(remoteConn)
 	}()
 
 	// WebSocket to TCP
@@ -987,41 +1005,8 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 	// UDP to WebSocket
 	go func() {
 		defer wg.Done()
-		buffer := make([]byte, r.option.BufferSize)
-		for {
-			n, remoteAddr, err := udpConn.ReadFromUDP(buffer)
-			if err != nil {
-				if opErr, ok := err.(*net.OpError); ok {
-					if errors.Is(opErr.Err, net.ErrClosed) {
-						r.log.Trace().Msg("UDP connection closed as instructed by connector")
-					} else {
-						r.log.Debug().Err(err).Msg("Remote UDP read error")
-						errChan <- fmt.Errorf("udp read error: %w", err)
-					}
-				} else {
-					errChan <- fmt.Errorf("udp read error: %w", err)
-				}
-				return
-			}
-
-			// Update activity time
-			r.updateActivityTime(channelID)
-
-			msg := DataMessage{
-				Protocol:    "udp",
-				ChannelID:   channelID,
-				Data:        buffer[:n],
-				Address:     remoteAddr.IP.String(),
-				Port:        remoteAddr.Port,
-				Compression: r.determineCompression(n),
-			}
-			r.logMessage(msg, "send", ws.Label())
-			if err := ws.WriteMessage(msg); err != nil {
-				errChan <- fmt.Errorf("websocket write error: %w", err)
-				return
-			}
-			r.log.Trace().Int("size", n).Str("addr", remoteAddr.String()).Msg("Sent UDP data to WebSocket")
-		}
+		sendManager := NewSendManager(ctx, r.log, channelID, ws, r, "udp", errChan)
+		sendManager.ProcessUDPReads(udpConn)
 	}()
 
 	// WebSocket to UDP
@@ -1140,48 +1125,10 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 	// SOCKS to WebSocket
 	go func() {
 		defer wg.Done()
-		defer cancel()
+		defer cancel() // Ensure context is cancelled on exit
 
-		// Get a buffer from the pool
-		buffer := *(bufferPool.Get().(*[]byte))
-		// Return the buffer to the pool when done
-		defer bufferPool.Put(&buffer)
-
-		for {
-			n, err := socksConn.Read(buffer)
-			if err != nil {
-				if err != io.EOF {
-					errChan <- fmt.Errorf("socks read error: %w", err)
-				}
-				return
-			}
-			if n == 0 {
-				return
-			}
-
-			// Update last activity timestamp
-			r.updateActivityTime(channelID)
-
-			// Create a new slice only for the actual data to be sent
-			data := make([]byte, n)
-			copy(data, buffer[:n])
-
-			// Prepare the message for WebSocket transmission
-			msg := DataMessage{
-				Protocol:    "tcp",
-				ChannelID:   channelID,
-				Data:        data,
-				Compression: r.determineCompression(n),
-			}
-
-			// Log and send the message
-			r.logMessage(msg, "send", ws.Label())
-			if err := ws.WriteMessage(msg); err != nil {
-				errChan <- fmt.Errorf("websocket write error: %w", err)
-				return
-			}
-			r.log.Trace().Int("size", n).Msg("Sent TCP data to WebSocket")
-		}
+		sendManager := NewSendManager(ctx, r.log, channelID, ws, r, "tcp", errChan)
+		sendManager.ProcessReads(socksConn)
 	}()
 
 	// WebSocket to SOCKS
@@ -1482,8 +1429,7 @@ func (r *Relay) Close() {
 
 // determineCompression decides compression method based on data size
 func (r *Relay) determineCompression(dataSize int) byte {
-	const compressionThreshold = 2048 // 1KB threshold
-	if dataSize >= compressionThreshold {
+	if dataSize >= r.option.CompressionThreshold {
 		return DataCompressionGzip
 	}
 	return DataCompressionNone
