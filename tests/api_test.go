@@ -77,8 +77,9 @@ func TestApiStatus(t *testing.T) {
 	_, err := server.AddForwardToken("")
 	require.NoError(t, err)
 
-	reverseToken, _, err := server.AddReverseToken(nil)
+	result, err := server.AddReverseToken(nil)
 	require.NoError(t, err)
+	reverseToken := result.Token
 
 	_, err = server.AddConnectorToken("", reverseToken)
 	require.NoError(t, err)

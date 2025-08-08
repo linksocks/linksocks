@@ -354,23 +354,29 @@ func TestReverseRemoveToken(t *testing.T) {
 	defer server.Close()
 
 	// Add first token
-	token1, port1, err := server.AddReverseToken(&wssocks.ReverseTokenOptions{
+	result1, err := server.AddReverseToken(&wssocks.ReverseTokenOptions{
 		Port:     socksPort,
 		Token:    "",
 		Username: "",
 		Password: "",
 	})
 	require.NoError(t, err)
+	token1 := result1.Token
+	port1 := result1.Port
 	require.NotZero(t, port1)
 
 	// Try to add second token (should fail due to port being in use)
-	_, port2, err := server.AddReverseToken(&wssocks.ReverseTokenOptions{
+	result2, err := server.AddReverseToken(&wssocks.ReverseTokenOptions{
 		Port:     socksPort,
 		Token:    "",
 		Username: "",
 		Password: "",
 	})
 	require.Error(t, err)
+	var port2 int
+	if result2 != nil {
+		port2 = result2.Port
+	}
 	require.Zero(t, port2)
 
 	// Start first client and test
@@ -386,14 +392,16 @@ func TestReverseRemoveToken(t *testing.T) {
 	server.RemoveToken(token1)
 
 	// Add second token
-	token2, port2, err := server.AddReverseToken(&wssocks.ReverseTokenOptions{
+	result3, err := server.AddReverseToken(&wssocks.ReverseTokenOptions{
 		Port:     socksPort,
 		Token:    "",
 		Username: "",
 		Password: "",
 	})
 	require.NoError(t, err)
-	require.NotZero(t, port2)
+	token3 := result3.Token
+	port3 := result3.Port
+	require.NotZero(t, port3)
 
 	// Wait for client to detect disconnection with timeout
 	select {
@@ -406,11 +414,11 @@ func TestReverseRemoveToken(t *testing.T) {
 	// Start second client and test
 	client2 := reverseClient(t, &ProxyTestClientOption{
 		WSPort:       wsPort,
-		Token:        token2,
+		Token:        token3,
 		LoggerPrefix: "CLT2",
 	})
 	defer client2.Close()
-	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: port2}))
+	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: port3}))
 }
 
 func TestConnector(t *testing.T) {

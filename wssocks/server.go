@@ -272,6 +272,12 @@ type ReverseTokenOptions struct {
 	AllowManageConnector bool // Allows managing connectors via WebSocket messages
 }
 
+// ReverseTokenResult represents the result of adding a reverse token
+type ReverseTokenResult struct {
+	Token string // The token that was created or used
+	Port  int    // The port assigned to the token
+}
+
 // DefaultReverseTokenOptions returns default options for reverse token
 func DefaultReverseTokenOptions() *ReverseTokenOptions {
 	return &ReverseTokenOptions{
@@ -305,14 +311,14 @@ func (s *WSSocksServer) tokenExists(token string) bool {
 }
 
 // AddReverseToken adds a new token for reverse socks and assigns a port
-func (s *WSSocksServer) AddReverseToken(opts *ReverseTokenOptions) (string, int, error) {
+func (s *WSSocksServer) AddReverseToken(opts *ReverseTokenOptions) (*ReverseTokenResult, error) {
 	if opts == nil {
 		opts = DefaultReverseTokenOptions()
 	}
 
 	// If token is provided, check if it already exists
 	if opts.Token != "" && s.tokenExists(opts.Token) {
-		return "", 0, fmt.Errorf("token already exists")
+		return nil, fmt.Errorf("token already exists")
 	}
 
 	s.mu.Lock()
@@ -334,18 +340,24 @@ func (s *WSSocksServer) AddReverseToken(opts *ReverseTokenOptions) (string, int,
 		s.tokens[token] = -1 // Use -1 to indicate no SOCKS port
 		s.tokenOptions[token] = opts
 		s.log.Info().Msg("New autonomy reverse token added")
-		return token, -1, nil
+		return &ReverseTokenResult{
+			Token: token,
+			Port:  -1,
+		}, nil
 	}
 
 	// Check if token already exists
 	if existingPort, exists := s.tokens[token]; exists {
-		return token, existingPort, nil
+		return &ReverseTokenResult{
+			Token: token,
+			Port:  existingPort,
+		}, nil
 	}
 
 	// Get port from pool
 	assignedPort := s.portPool.Get(opts.Port)
 	if assignedPort == 0 {
-		return "", 0, fmt.Errorf("cannot allocate port: %d", opts.Port)
+		return nil, fmt.Errorf("cannot allocate port: %d", opts.Port)
 	}
 
 	// Store token information
@@ -365,7 +377,10 @@ func (s *WSSocksServer) AddReverseToken(opts *ReverseTokenOptions) (string, int,
 
 	s.log.Info().Int("port", assignedPort).Msg("New reverse proxy token added")
 	s.log.Debug().Str("sha256Token", sha256Token).Msg("SHA256 for the token")
-	return token, assignedPort, nil
+	return &ReverseTokenResult{
+		Token: token,
+		Port:  assignedPort,
+	}, nil
 }
 
 // AddForwardToken adds a new token for forward socks proxy

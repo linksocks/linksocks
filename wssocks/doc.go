@@ -18,10 +18,12 @@
 //	}
 //
 //	// Add a reverse proxy token
-//	token, port, err := server.AddReverseToken(wssocks.DefaultReverseTokenOptions())
+//	result, err := server.AddReverseToken(wssocks.DefaultReverseTokenOptions())
 //	if err != nil {
 //		log.Fatal(err)
 //	}
+//	token := result.Token
+//	port := result.Port
 //
 //	// Start the server
 //	if err := server.Serve(context.Background()); err != nil {

@@ -334,7 +334,7 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 	if apiKey == "" {
 		// Add token based on mode
 		if reverse {
-			useToken, port, err := server.AddReverseToken(&ReverseTokenOptions{
+			result, err := server.AddReverseToken(&ReverseTokenOptions{
 				Token:                token,
 				Port:                 socksPort,
 				Username:             socksUsername,
@@ -344,6 +344,8 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("failed to add reverse token: %w", err)
 			}
+			useToken := result.Token
+			port := result.Port
 			if port == 0 {
 				return fmt.Errorf("cannot allocate SOCKS5 port: %s:%d", socksHost, socksPort)
 			}

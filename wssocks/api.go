@@ -142,7 +142,7 @@ func (h *APIHandler) handleToken(w http.ResponseWriter, r *http.Request) {
 				Password:             req.Password,
 				AllowManageConnector: req.AllowManageConnector,
 			}
-			token, port, err := h.server.AddReverseToken(opts)
+			result, err := h.server.AddReverseToken(opts)
 			if err != nil {
 				json.NewEncoder(w).Encode(TokenResponse{
 					Success: false,
@@ -152,8 +152,8 @@ func (h *APIHandler) handleToken(w http.ResponseWriter, r *http.Request) {
 			}
 			json.NewEncoder(w).Encode(TokenResponse{
 				Success: true,
-				Token:   token,
-				Port:    port,
+				Token:   result.Token,
+				Port:    result.Port,
 			})
 
 		case "connector":

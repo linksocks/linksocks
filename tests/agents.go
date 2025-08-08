@@ -216,13 +216,17 @@ func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 	}
 
 	server := wssocks.NewWSSocksServer(serverOpt)
-	token, socksPort, err = server.AddReverseToken(&wssocks.ReverseTokenOptions{
+	result, err := server.AddReverseToken(&wssocks.ReverseTokenOptions{
 		Port:                 socksPort,
 		Token:                token,
 		Username:             socksUser,
 		Password:             socksPassword,
 		AllowManageConnector: connectorAutonomy,
 	})
+	if err == nil {
+		token = result.Token
+		socksPort = result.Port
+	}
 	require.NoError(t, err)
 	require.NotZero(t, socksPort)
 
