@@ -28,6 +28,7 @@ type WSSocksServer struct {
 	mu         sync.RWMutex
 	ready      chan struct{}
 	cancelFunc context.CancelFunc
+	closed     bool // Flag to track if server has been closed
 
 	// WebSocket server configuration
 	wsHost   string
@@ -623,7 +624,7 @@ func (s *WSSocksServer) Serve(ctx context.Context) error {
 	})
 
 	s.wsServer = &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", s.wsHost, s.wsPort),
+		Addr:    net.JoinHostPort(s.wsHost, fmt.Sprintf("%d", s.wsPort)),
 		Handler: mux,
 	}
 
@@ -1380,28 +1381,52 @@ func (s *WSSocksServer) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Close relay
-	s.relay.Close()
+	// Check if already closed
+	if s.closed {
+		return
+	}
+	s.closed = true
+
+	// Close relay if it exists
+	if s.relay != nil {
+		s.relay.Close()
+	}
 
 	// Clean up all waiting sockets
-	s.waitingMu.Lock()
-	for port, waiting := range s.waitingSockets {
-		waiting.cancelTimer.Stop()
-		waiting.listener.Close()
-		delete(s.waitingSockets, port)
+	if s.waitingSockets != nil {
+		s.waitingMu.Lock()
+		for port, waiting := range s.waitingSockets {
+			if waiting != nil {
+				if waiting.cancelTimer != nil {
+					waiting.cancelTimer.Stop()
+				}
+				if waiting.listener != nil {
+					waiting.listener.Close()
+				}
+			}
+			delete(s.waitingSockets, port)
+		}
+		s.waitingMu.Unlock()
 	}
-	s.waitingMu.Unlock()
 
 	// Clean up all SOCKS servers
-	for port, cancel := range s.socksTasks {
-		cancel()
-		delete(s.socksTasks, port)
+	if s.socksTasks != nil {
+		for port, cancel := range s.socksTasks {
+			if cancel != nil {
+				cancel()
+			}
+			delete(s.socksTasks, port)
+		}
 	}
 
 	// Clean up all client connections
-	for clientID, ws := range s.clients {
-		ws.Close()
-		delete(s.clients, clientID)
+	if s.clients != nil {
+		for clientID, ws := range s.clients {
+			if ws != nil {
+				ws.Close()
+			}
+			delete(s.clients, clientID)
+		}
 	}
 
 	// Close WebSocket server if it exists
@@ -1418,7 +1443,11 @@ func (s *WSSocksServer) Close() {
 		s.cancelFunc = nil
 	}
 
-	s.socketManager.Close()
+	// Close socket manager if it exists
+	if s.socketManager != nil {
+		s.socketManager.Close()
+	}
+
 	s.log.Info().Msg("Server stopped")
 }
 

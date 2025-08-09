@@ -35,6 +35,7 @@ type WSSocksClient struct {
 	Disconnected chan struct{} // Channel that is closed when connection is lost
 	IsConnected  bool          // Boolean flag indicating current connection status
 	errors       chan error    // Channel for errors
+	closed       bool          // Flag to track if client has been closed
 
 	instanceID      uuid.UUID
 	relay           *Relay
@@ -870,7 +871,7 @@ func (c *WSSocksClient) runSocksServer(ctx context.Context) error {
 	c.mu.Unlock()
 
 	// Create TCP listener
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", c.socksHost, c.socksPort))
+	listener, err := net.Listen("tcp", net.JoinHostPort(c.socksHost, fmt.Sprintf("%d", c.socksPort)))
 	if err != nil {
 		return fmt.Errorf("failed to start SOCKS server: %w", err)
 	}
@@ -937,8 +938,16 @@ func (c *WSSocksClient) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Close relay
-	c.relay.Close()
+	// Check if already closed
+	if c.closed {
+		return
+	}
+	c.closed = true
+
+	// Close relay if it exists
+	if c.relay != nil {
+		c.relay.Close()
+	}
 
 	// Close SOCKS listener if it exists
 	if c.socksListener != nil {
@@ -949,14 +958,16 @@ func (c *WSSocksClient) Close() {
 	}
 
 	// Close WebSocket connections
-	for _, ws := range c.websockets {
-		if ws != nil {
-			if err := ws.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-				c.log.Warn().Err(err).Msg("Error closing WebSocket connection")
+	if c.websockets != nil {
+		for _, ws := range c.websockets {
+			if ws != nil {
+				if err := ws.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+					c.log.Warn().Err(err).Msg("Error closing WebSocket connection")
+				}
 			}
 		}
+		c.websockets = nil
 	}
-	c.websockets = nil
 
 	// Cancel main worker if it exists
 	if c.cancelFunc != nil {

@@ -320,7 +320,7 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 	}
 
 	// Connect to target
-	targetAddr := fmt.Sprintf("%s:%d", request.Address, request.Port)
+	targetAddr := net.JoinHostPort(request.Address, fmt.Sprintf("%d", request.Port))
 	r.log.Debug().Str("address", request.Address).Int("port", request.Port).
 		Str("target", targetAddr).Msg("Attempting TCP connection to")
 

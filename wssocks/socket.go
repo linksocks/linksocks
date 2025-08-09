@@ -47,7 +47,7 @@ func (sm *SocketManager) GetListener(port int) (net.Listener, error) {
 	}
 
 	// Create new socket
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", sm.host, port))
+	listener, err := net.Listen("tcp", net.JoinHostPort(sm.host, fmt.Sprintf("%d", port)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create listener: %w", err)
 	}

@@ -104,6 +104,15 @@ func TestForwardProxy(t *testing.T) {
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: env.Client.SocksPort}))
 }
 
+func TestForwardProxyV6(t *testing.T) {
+	if !hasIPv6Support() {
+		t.Skip("IPv6 is not supported")
+	}
+	env := forwardProxy(t)
+	defer env.Close()
+	require.NoError(t, testWebConnection(globalHTTPServerV6, &ProxyConfig{Port: env.Client.SocksPort}))
+}
+
 func TestProxyAuth(t *testing.T) {
 	server := reverseServer(t, &ProxyTestServerOption{
 		SocksUser:     "test_user",
@@ -126,6 +135,15 @@ func TestReverseProxy(t *testing.T) {
 	env := reverseProxy(t)
 	defer env.Close()
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: env.Server.SocksPort}))
+}
+
+func TestReverseProxyV6(t *testing.T) {
+	if !hasIPv6Support() {
+		t.Skip("IPv6 is not supported")
+	}
+	env := reverseProxy(t)
+	defer env.Close()
+	require.NoError(t, testWebConnection(globalHTTPServerV6, &ProxyConfig{Port: env.Server.SocksPort}))
 }
 
 func TestUDPForwardProxy(t *testing.T) {
@@ -208,6 +226,24 @@ func TestUDPReverseProxyV6(t *testing.T) {
 	env := reverseProxy(t)
 	defer env.Close()
 	assertUDPConnection(t, globalUDPServerV6, &ProxyConfig{Port: env.Server.SocksPort})
+}
+
+func TestForwardProxyCloseMultipleTimes(t *testing.T) {
+	env := forwardProxy(t)
+	defer env.Close()
+	env.Server.Close()
+	env.Server.Close()
+	env.Client.Close()
+	env.Client.Close()
+}
+
+func TestReverseProxyCloseMultipleTimes(t *testing.T) {
+	env := reverseProxy(t)
+	defer env.Close()
+	env.Server.Close()
+	env.Server.Close()
+	env.Client.Close()
+	env.Client.Close()
 }
 
 func TestForwardReconnect(t *testing.T) {
