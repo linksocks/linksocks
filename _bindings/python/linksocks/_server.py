@@ -270,7 +270,23 @@ class Server(_SnakePassthrough):
         if not self._ctx:
             self._ctx = linksockslib.NewContextWithCancel()
         timeout = _to_duration(timeout) if timeout is not None else 0
-        return await asyncio.to_thread(self._raw.WaitReady, ctx=self._ctx.Context(), timeout=timeout)
+        try:
+            return await asyncio.to_thread(self._raw.WaitReady, ctx=self._ctx.Context(), timeout=timeout)
+        except asyncio.CancelledError:
+            # Ensure the underlying Go server stops when startup wait is cancelled
+            try:
+                try:
+                    self._ctx.Cancel()
+                except Exception:
+                    pass
+                await asyncio.shield(asyncio.to_thread(self._raw.Close))
+                if hasattr(self, '_managed_logger') and self._managed_logger:
+                    try:
+                        self._managed_logger.cleanup()
+                    except Exception:
+                        pass
+            finally:
+                raise
 
     def close(self) -> None:
         """Close the server and clean up resources."""

@@ -153,7 +153,27 @@ class Client(_SnakePassthrough):
         if not self._ctx:
             self._ctx = linksockslib.NewContextWithCancel()
         timeout = _to_duration(timeout) if timeout is not None else 0
-        return await asyncio.to_thread(self._raw.WaitReady, ctx=self._ctx.Context(), timeout=timeout)
+        try:
+            return await asyncio.to_thread(self._raw.WaitReady, ctx=self._ctx.Context(), timeout=timeout)
+        except asyncio.CancelledError:
+            # Ensure the underlying Go client stops retrying/logging when the
+            # awaiting task is cancelled (e.g. Ctrl+C). We cancel the context
+            # we passed into Go and close the client, then re-raise.
+            try:
+                try:
+                    self._ctx.Cancel()
+                except Exception:
+                    pass
+                # Shield cleanup from further cancellation so it can complete
+                await asyncio.shield(asyncio.to_thread(self._raw.Close))
+                # Best-effort logger cleanup
+                if hasattr(self, '_managed_logger') and self._managed_logger:
+                    try:
+                        self._managed_logger.cleanup()
+                    except Exception:
+                        pass
+            finally:
+                raise
     
     def add_connector(self, connector_token: Optional[str]) -> str:
         """Add a connector token for reverse proxy.
