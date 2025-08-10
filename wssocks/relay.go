@@ -959,10 +959,19 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 			select {
 			case <-ctx.Done():
 				return
-			case msg := <-msgChan:
+			case msg, ok := <-msgChan:
+				if !ok {
+					// Channel closed; exit goroutine cleanly
+					return
+				}
 				dataMsg, ok := msg.(DataMessage)
 				if !ok {
-					r.log.Debug().Str("type", msg.GetType()).Msg("Unexpected message type for data")
+					// msg may be non-nil but not DataMessage; avoid nil interface deref
+					if msg != nil {
+						r.log.Debug().Str("type", msg.GetType()).Msg("Unexpected message type for data")
+					} else {
+						r.log.Debug().Msg("Nil message received, skipping")
+					}
 					continue
 				}
 				// Update activity time
@@ -1035,11 +1044,19 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 			select {
 			case <-ctx.Done():
 				return
-			case msg := <-msgChan:
+			case msg, ok := <-msgChan:
+				if !ok {
+					// Channel closed; exit goroutine cleanly
+					return
+				}
 				// Type assert to DataMessage
 				dataMsg, ok := msg.(DataMessage)
 				if !ok {
-					r.log.Debug().Str("type", msg.GetType()).Msg("Unexpected message type for data")
+					if msg != nil {
+						r.log.Debug().Str("type", msg.GetType()).Msg("Unexpected message type for data")
+					} else {
+						r.log.Debug().Msg("Nil message received, skipping")
+					}
 					continue
 				}
 				// Update activity time
@@ -1162,11 +1179,19 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 			select {
 			case <-ctx.Done():
 				return
-			case msg := <-msgChan:
+			case msg, ok := <-msgChan:
+				if !ok {
+					// Channel closed; exit goroutine cleanly
+					return
+				}
 				// Type assert to DataMessage
 				dataMsg, ok := msg.(DataMessage)
 				if !ok {
-					r.log.Debug().Str("type", msg.GetType()).Msg("Unexpected message type for data")
+					if msg != nil {
+						r.log.Debug().Str("type", msg.GetType()).Msg("Unexpected message type for data")
+					} else {
+						r.log.Debug().Msg("Nil message received, skipping")
+					}
 					continue
 				}
 				// Update activity time
@@ -1322,11 +1347,19 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 			select {
 			case <-ctx.Done():
 				return
-			case msg := <-msgChan:
+			case msg, ok := <-msgChan:
+				if !ok {
+					// Channel closed; exit goroutine cleanly
+					return
+				}
 				// Type assert to DataMessage
 				dataMsg, ok := msg.(DataMessage)
 				if !ok {
-					r.log.Debug().Str("type", msg.GetType()).Msg("Unexpected message type for data")
+					if msg != nil {
+						r.log.Debug().Str("type", msg.GetType()).Msg("Unexpected message type for data")
+					} else {
+						r.log.Debug().Msg("Nil message received, skipping")
+					}
 					continue
 				}
 				// Update activity time
