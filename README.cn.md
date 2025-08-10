@@ -39,15 +39,15 @@ WSSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCKS 
 # 服务端（WebSockets 监听 8765 端口，作为网络提供方）
 wssocks server -t example_token
 
-# 客户端（SOCKS5 监听 1080 端口）
-wssocks client -t example_token -u http://localhost:8765 -p 1080
+# 客户端（SOCKS5 监听 9870 端口）
+wssocks client -t example_token -u http://localhost:8765 -p 9870
 ```
 
 反向代理模式（使用 `-r` 参数）：
 
 ```bash
-# 服务端（WebSockets 监听 8765 端口，SOCKS 监听 1080 端口）
-wssocks server -t example_token -p 1080 -r
+# 服务端（WebSockets 监听 8765 端口，SOCKS 监听 9870 端口）
+wssocks server -t example_token -p 9870 -r
 
 # 客户端（作为网络提供方）
 wssocks client -t example_token -u http://localhost:8765 -r
@@ -56,8 +56,8 @@ wssocks client -t example_token -u http://localhost:8765 -r
 代理模式（使用 `-c` 参数指定连接器令牌）：
 
 ```bash
-# 服务端（WebSockets 监听 8765 端口，SOCKS 监听 1080 端口）
-wssocks server -t example_token -c example_connector_token -p 1080 -r
+# 服务端（WebSockets 监听 8765 端口，SOCKS 监听 9870 端口）
+wssocks server -t example_token -c example_connector_token -p 9870 -r
 
 # 客户端（作为网络提供方）
 wssocks provider -t example_token -u http://localhost:8765
@@ -159,7 +159,7 @@ Content-Type: application/json
 {
     "type": "reverse",
     "token": "new_token",  // 可选：若不提供则自动生成
-    "port": 1080,          // 可选：若不提供则自动分配
+    "port": 9870,          // 可选：若不提供则自动分配
     "username": "user",    // 可选：SOCKS 身份验证
     "password": "pass"     // 可选：SOCKS 身份验证
 }

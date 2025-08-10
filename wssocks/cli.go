@@ -86,15 +86,15 @@ func (cli *CLI) initCommands() {
 		cmd.Flags().BoolP("reverse", "r", false, "Use reverse socks5 proxy")
 		cmd.Flags().StringP("connector-token", "c", "", "Specify connector token for reverse proxy")
 		cmd.Flags().StringP("socks-host", "s", "127.0.0.1", "SOCKS5 server listen address for forward proxy")
-		cmd.Flags().IntP("socks-port", "p", 1080, "SOCKS5 server listen port for forward proxy")
+		cmd.Flags().IntP("socks-port", "p", 9870, "SOCKS5 server listen port for forward proxy")
 		cmd.Flags().StringP("socks-username", "n", "", "SOCKS5 authentication username")
 		cmd.Flags().StringP("socks-password", "w", "", "SOCKS5 authentication password")
 		cmd.Flags().BoolP("socks-no-wait", "i", false, "Start the SOCKS server immediately")
 		cmd.Flags().BoolP("no-reconnect", "R", false, "Stop when the server disconnects")
 		cmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
 		cmd.Flags().IntP("threads", "T", 1, "Number of threads for data transfer")
-		cmd.Flags().StringP("upstream-proxy", "x", "", "Upstream SOCKS5 proxy (e.g., socks5://user:pass@127.0.0.1:1080)")
-		cmd.Flags().BoolP("strict-connect", "C", false, "Wait strictly for remote connection completion")
+		cmd.Flags().StringP("upstream-proxy", "x", "", "Upstream SOCKS5 proxy (e.g., socks5://user:pass@127.0.0.1:9870)")
+		cmd.Flags().BoolP("fast-open", "f", false, "Assume connection success and allow data transfer immediately")
 		cmd.Flags().BoolP("no-env-proxy", "E", false, "Ignore proxy settings from environment variables when connecting to the websocket server")
 
 		// Update usage to show environment variables
@@ -120,14 +120,14 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().IntP("buffer-size", "b", DefaultBufferSize, "Set buffer size for data transfer")
 	serverCmd.Flags().BoolP("reverse", "r", false, "Use reverse socks5 proxy")
 	serverCmd.Flags().StringP("socks-host", "s", "127.0.0.1", "SOCKS5 server listen address for reverse proxy")
-	serverCmd.Flags().IntP("socks-port", "p", 1080, "SOCKS5 server listen port for reverse proxy")
+	serverCmd.Flags().IntP("socks-port", "p", 9870, "SOCKS5 server listen port for reverse proxy")
 	serverCmd.Flags().StringP("socks-username", "n", "", "SOCKS5 username for authentication")
 	serverCmd.Flags().StringP("socks-password", "w", "", "SOCKS5 password for authentication")
 	serverCmd.Flags().BoolP("socks-nowait", "i", false, "Start the SOCKS server immediately")
 	serverCmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
 	serverCmd.Flags().StringP("api-key", "k", "", "Enable HTTP API with specified key")
-	serverCmd.Flags().StringP("upstream-proxy", "x", "", "Upstream SOCKS5 proxy (e.g., socks5://user:pass@127.0.0.1:1080)")
-	serverCmd.Flags().BoolP("strict-connect", "C", false, "Wait strictly for connection completion")
+	serverCmd.Flags().StringP("upstream-proxy", "x", "", "Upstream SOCKS5 proxy (e.g., socks5://user:pass@127.0.0.1:9870)")
+	serverCmd.Flags().BoolP("fast-open", "f", false, "Assume connection success and allow data transfer immediately")
 
 	// Update usage to show environment variables
 	serverCmd.Flags().Lookup("token").Usage += " (env: WSSOCKS_TOKEN)"
@@ -162,7 +162,7 @@ func parseSocksProxy(proxyURL string) (address, username, password string, err e
 	// Rebuild address (without auth info)
 	address = fmt.Sprintf("%s:%s", u.Hostname(), u.Port())
 	if u.Port() == "" {
-		address = fmt.Sprintf("%s:1080", u.Hostname()) // Default SOCKS5 port
+		address = fmt.Sprintf("%s:9870", u.Hostname()) // Default SOCKS5 port
 	}
 
 	return address, username, password, nil
@@ -194,7 +194,7 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 
 	// Get new flags
 	upstreamProxy, _ := cmd.Flags().GetString("upstream-proxy")
-	strictConnect, _ := cmd.Flags().GetBool("strict-connect")
+	fastOpen, _ := cmd.Flags().GetBool("fast-open")
 	noEnvProxy, _ := cmd.Flags().GetBool("no-env-proxy")
 
 	// Parse proxy URL
@@ -223,8 +223,8 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 		clientOpt.WithUpstreamProxy(proxyAddr).
 			WithUpstreamAuth(proxyUser, proxyPass)
 	}
-	if strictConnect {
-		clientOpt.WithStrictConnect(true)
+	if fastOpen {
+		clientOpt.WithFastOpen(true)
 	}
 
 	// Add authentication options if provided
@@ -294,7 +294,7 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 
 	// Get new flags
 	upstreamProxy, _ := cmd.Flags().GetString("upstream-proxy")
-	strictConnect, _ := cmd.Flags().GetBool("strict-connect")
+	fastOpen, _ := cmd.Flags().GetBool("fast-open")
 
 	// Parse proxy URL
 	proxyAddr, proxyUser, proxyPass, err := parseSocksProxy(upstreamProxy)
@@ -318,8 +318,8 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 		serverOpt.WithUpstreamProxy(proxyAddr).
 			WithUpstreamAuth(proxyUser, proxyPass)
 	}
-	if strictConnect {
-		serverOpt.WithStrictConnect(true)
+	if fastOpen {
+		serverOpt.WithFastOpen(true)
 	}
 
 	// Add API key if provided

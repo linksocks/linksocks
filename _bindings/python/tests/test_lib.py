@@ -655,25 +655,25 @@ def test_client_thread(caplog, website):
     return asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-# ==================== Strict Connection Mode Tests ====================
+# ==================== Fast Open Mode Tests ====================
 
 
 @contextlib.asynccontextmanager
-async def forward_server_strict(
+async def forward_server_fast_open(
     token: Optional[str] = "<token>",
     ws_port: Optional[int] = None,
     **kw,
 ):
-    """Create a forward server with strict connection mode"""
+    """Create a forward server with fast open mode"""
     import wssockslib
 
     try:
         ws_port = ws_port or get_free_port()
 
-        # Create server with strict mode
+        # Create server with fast open mode
         server_opt = wssockslib.DefaultServerOption()
         server_opt.WithWSPort(ws_port)
-        server_opt.WithStrictConnect(True)
+        server_opt.WithFastOpen(True)
         server = wssockslib.NewWSSocksServer(server_opt)
 
         # Add forward token
@@ -687,19 +687,19 @@ async def forward_server_strict(
 
 
 @contextlib.asynccontextmanager
-async def forward_client_strict(ws_port: int, token: str, **kw):
-    """Create a forward client with strict connection mode"""
+async def forward_client_fast_open(ws_port: int, token: str, **kw):
+    """Create a forward client with fast open mode"""
     import wssockslib
 
     try:
         socks_port = get_free_port()
 
-        # Create client with strict mode
+        # Create client with fast open mode
         client_opt = wssockslib.DefaultClientOption()
         client_opt.WithWSURL(f"ws://localhost:{ws_port}")
         client_opt.WithSocksPort(socks_port)
         client_opt.WithReconnectDelay(1 * wssockslib.Second())
-        client_opt.WithStrictConnect(True)
+        client_opt.WithFastOpen(True)
         client = wssockslib.NewWSSocksClient(token, client_opt)
 
         await asyncio.to_thread(
@@ -711,21 +711,21 @@ async def forward_client_strict(ws_port: int, token: str, **kw):
 
 
 @contextlib.asynccontextmanager
-async def reverse_server_strict(
+async def reverse_server_fast_open(
     token: Optional[str] = "<token>",
     ws_port: Optional[int] = None,
     **kw,
 ):
-    """Create a reverse server with strict connection mode"""
+    """Create a reverse server with fast open mode"""
     import wssockslib
 
     try:
         ws_port = ws_port or get_free_port()
 
-        # Create server with strict mode
+        # Create server with fast open mode
         server_opt = wssockslib.DefaultServerOption()
         server_opt.WithWSPort(ws_port)
-        server_opt.WithStrictConnect(True)
+        server_opt.WithFastOpen(True)
         server = wssockslib.NewWSSocksServer(server_opt)
 
         # Add reverse token
@@ -743,17 +743,17 @@ async def reverse_server_strict(
 
 
 @contextlib.asynccontextmanager
-async def reverse_client_strict(ws_port: int, token: str, **kw):
-    """Create a reverse client with strict connection mode"""
+async def reverse_client_fast_open(ws_port: int, token: str, **kw):
+    """Create a reverse client with fast open mode"""
     import wssockslib
 
     try:
-        # Create client with strict mode
+        # Create client with fast open mode
         client_opt = wssockslib.DefaultClientOption()
         client_opt.WithWSURL(f"ws://localhost:{ws_port}")
         client_opt.WithReconnectDelay(1 * wssockslib.Second())
         client_opt.WithReverse(True)
-        client_opt.WithStrictConnect(True)
+        client_opt.WithFastOpen(True)
         client = wssockslib.NewWSSocksClient(token, client_opt)
 
         await asyncio.to_thread(
@@ -764,12 +764,12 @@ async def reverse_client_strict(ws_port: int, token: str, **kw):
         client.Close()
 
 
-def test_strict_forward(caplog, website):
-    """Test strict forward proxy"""
+def test_fast_open_forward(caplog, website):
+    """Test fast open forward proxy"""
 
     async def _main():
         async with forward_server() as (server, ws_port, token):
-            async with forward_client_strict(ws_port, token) as (client, socks_port):
+            async with forward_client_fast_open(ws_port, token) as (client, socks_port):
                 # Execute multiple connection tests
                 for i in range(3):
                     await async_assert_web_connection(website, socks_port)
@@ -777,11 +777,11 @@ def test_strict_forward(caplog, website):
     return asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-def test_strict_reverse(caplog, website):
-    """Test strict reverse proxy"""
+def test_fast_open_reverse(caplog, website):
+    """Test fast open reverse proxy"""
 
     async def _main():
-        async with reverse_server_strict() as (server, ws_port, token, socks_port):
+        async with reverse_server_fast_open() as (server, ws_port, token, socks_port):
             async with reverse_client(ws_port, token) as client:
                 # Execute multiple connection tests
                 for i in range(3):
@@ -790,12 +790,12 @@ def test_strict_reverse(caplog, website):
     return asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-def test_strict_strict_forward(caplog, website):
-    """Test strict server with strict forward client"""
+def test_fast_open_forward(caplog, website):
+    """Test fast open server with fast open forward client"""
 
     async def _main():
-        async with forward_server_strict() as (server, ws_port, token):
-            async with forward_client_strict(ws_port, token) as (client, socks_port):
+        async with forward_server_fast_open() as (server, ws_port, token):
+            async with forward_client_fast_open(ws_port, token) as (client, socks_port):
                 # Execute multiple connection tests
                 for i in range(3):
                     await async_assert_web_connection(website, socks_port)
@@ -803,12 +803,12 @@ def test_strict_strict_forward(caplog, website):
     return asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-def test_strict_strict_reverse(caplog, website):
-    """Test strict server with strict reverse client"""
+def test_fast_open_reverse(caplog, website):
+    """Test fast open server with fast open reverse client"""
 
     async def _main():
-        async with reverse_server_strict() as (server, ws_port, token, socks_port):
-            async with reverse_client_strict(ws_port, token) as client:
+        async with reverse_server_fast_open() as (server, ws_port, token, socks_port):
+            async with reverse_client_fast_open(ws_port, token) as client:
                 # Execute multiple connection tests
                 for i in range(3):
                     await async_assert_web_connection(website, socks_port)
@@ -816,19 +816,19 @@ def test_strict_strict_reverse(caplog, website):
     return asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-def test_strict_connector(caplog, website):
-    """Test strict connector functionality"""
+def test_fast_open_connector(caplog, website):
+    """Test fast open connector functionality"""
 
     async def _main():
         connector_token = "CONNECTOR"
 
-        # Create strict server with connector
-        async with reverse_server_strict() as (server, ws_port, token, socks_port):
+        # Create fast open server with connector
+        async with reverse_server_fast_open() as (server, ws_port, token, socks_port):
             # Add connector token
             server.AddConnectorToken(connector_token, token)
 
-            async with reverse_client_strict(ws_port, token) as client1:
-                async with forward_client_strict(ws_port, connector_token) as (client2, forward_socks_port):
+            async with reverse_client_fast_open(ws_port, token) as client1:
+                async with forward_client_fast_open(ws_port, connector_token) as (client2, forward_socks_port):
                     # Test both connections
                     await async_assert_web_connection(website, socks_port)
                     await async_assert_web_connection(website, forward_socks_port)
@@ -836,33 +836,33 @@ def test_strict_connector(caplog, website):
     return asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-# ==================== Mixed Strict Mode Tests ====================
+# ==================== Mixed Fast Open Mode Tests ====================
 
 
-def test_mixed_strict_connector_all_strict(caplog, website):
-    """Test mixed strict modes - all strict"""
+def test_mixed_fast_open_connector_all_fast_open(caplog, website):
+    """Test mixed fast open modes - all fast open"""
 
     async def _main():
         connector_token = "CONNECTOR"
 
-        async with reverse_server_strict() as (server, ws_port, token, socks_port):
+        async with reverse_server_fast_open() as (server, ws_port, token, socks_port):
             server.AddConnectorToken(connector_token, token)
 
-            async with reverse_client_strict(ws_port, token) as client1:
-                async with forward_client_strict(ws_port, connector_token) as (client2, forward_socks_port):
+            async with reverse_client_fast_open(ws_port, token) as client1:
+                async with forward_client_fast_open(ws_port, connector_token) as (client2, forward_socks_port):
                     await async_assert_web_connection(website, socks_port)
                     await async_assert_web_connection(website, forward_socks_port)
 
     return asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-def test_mixed_strict_connector_server_strict(caplog, website):
-    """Test mixed strict modes - server strict only"""
+def test_mixed_fast_open_connector_server_fast_open(caplog, website):
+    """Test mixed fast open modes - server fast open only"""
 
     async def _main():
         connector_token = "CONNECTOR"
 
-        async with reverse_server_strict() as (server, ws_port, token, socks_port):
+        async with reverse_server_fast_open() as (server, ws_port, token, socks_port):
             server.AddConnectorToken(connector_token, token)
 
             async with reverse_client(ws_port, token) as client1:
@@ -873,34 +873,34 @@ def test_mixed_strict_connector_server_strict(caplog, website):
     return asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-def test_mixed_strict_connector_connector_strict(caplog, website):
-    """Test mixed strict modes - connector strict only"""
+def test_mixed_fast_open_connector_connector_fast_open(caplog, website):
+    """Test mixed fast open modes - connector fast open only"""
 
     async def _main():
         connector_token = "CONNECTOR"
 
-        async with reverse_server() as (server, ws_port, token, socks_port):
+        async with reverse_server_fast_open() as (server, ws_port, token, socks_port):
             server.AddConnectorToken(connector_token, token)
 
             async with reverse_client(ws_port, token) as client1:
-                async with forward_client_strict(ws_port, connector_token) as (client2, forward_socks_port):
+                async with forward_client_fast_open(ws_port, connector_token) as (client2, forward_socks_port):
                     await async_assert_web_connection(website, socks_port)
                     await async_assert_web_connection(website, forward_socks_port)
 
     return asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-def test_mixed_strict_connector_client_strict(caplog, website):
-    """Test mixed strict modes - client strict only"""
+def test_mixed_fast_open_connector_client_fast_open(caplog, website):
+    """Test mixed fast open modes - client fast open only"""
 
     async def _main():
         connector_token = "CONNECTOR"
 
-        async with reverse_server() as (server, ws_port, token, socks_port):
+        async with reverse_server_fast_open() as (server, ws_port, token, socks_port):
             server.AddConnectorToken(connector_token, token)
 
-            async with reverse_client_strict(ws_port, token) as client1:
-                async with forward_client(ws_port, connector_token) as (client2, forward_socks_port):
+            async with reverse_client_fast_open(ws_port, token) as client1:
+                async with forward_client_fast_open(ws_port, connector_token) as (client2, forward_socks_port):
                     await async_assert_web_connection(website, socks_port)
                     await async_assert_web_connection(website, forward_socks_port)
 

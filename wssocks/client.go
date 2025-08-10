@@ -84,7 +84,7 @@ type ClientOption struct {
 	ChannelTimeout   time.Duration
 	ConnectTimeout   time.Duration
 	Threads          int
-	StrictConnect    bool
+	FastOpen         bool
 	UpstreamProxy    string
 	UpstreamUsername string
 	UpstreamPassword string
@@ -97,7 +97,7 @@ func DefaultClientOption() *ClientOption {
 		WSURL:            "ws://localhost:8765",
 		Reverse:          false,
 		SocksHost:        "127.0.0.1",
-		SocksPort:        1080,
+		SocksPort:        9870,
 		SocksWaitServer:  true,
 		Reconnect:        false,
 		ReconnectDelay:   5 * time.Second,
@@ -106,7 +106,7 @@ func DefaultClientOption() *ClientOption {
 		ChannelTimeout:   DefaultChannelTimeout,
 		ConnectTimeout:   DefaultConnectTimeout,
 		Threads:          1,
-		StrictConnect:    false,
+		FastOpen:         false,
 		UpstreamProxy:    "",
 		UpstreamUsername: "",
 		UpstreamPassword: "",
@@ -198,9 +198,9 @@ func (o *ClientOption) WithThreads(threads int) *ClientOption {
 	return o
 }
 
-// WithStrictConnect controls whether to wait for connect success response
-func (o *ClientOption) WithStrictConnect(strict bool) *ClientOption {
-	o.StrictConnect = strict
+// WithFastOpen controls whether to wait for connect success response
+func (o *ClientOption) WithFastOpen(fastOpen bool) *ClientOption {
+	o.FastOpen = fastOpen
 	return o
 }
 
@@ -257,7 +257,7 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 		WithBufferSize(opt.BufferSize).
 		WithChannelTimeout(opt.ChannelTimeout).
 		WithConnectTimeout(opt.ConnectTimeout).
-		WithStrictConnect(opt.StrictConnect).
+		WithFastOpen(opt.FastOpen).
 		WithUpstreamProxy(opt.UpstreamProxy).
 		WithUpstreamAuth(opt.UpstreamUsername, opt.UpstreamPassword)
 
@@ -802,7 +802,7 @@ func (c *WSSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) error
 				}
 
 			case ConnectResponseMessage:
-				if !c.relay.option.StrictConnect {
+				if c.relay.option.FastOpen {
 					if m.Success {
 						c.relay.SetConnectionSuccess(m.ChannelID)
 					} else {
@@ -818,6 +818,11 @@ func (c *WSSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) error
 				}
 
 			case DisconnectMessage:
+				if m.Error != "" {
+					c.log.Debug().Str("channel_id", m.ChannelID.String()).Str("reason", m.Error).Msg("Disconnected by remote")
+				} else {
+					c.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Disconnected")
+				}
 				c.relay.disconnectChannel(m.ChannelID)
 
 			case ConnectorResponseMessage:

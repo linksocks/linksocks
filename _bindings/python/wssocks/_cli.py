@@ -40,7 +40,7 @@ def version():
 @click.option("--reverse", "-r", is_flag=True, default=False, help="Use reverse SOCKS5 proxy")
 @click.option("--connector-token", "-c", default=None, help="Connector token for reverse proxy (env: WSSOCKS_CONNECTOR_TOKEN)")
 @click.option("--socks-host", "-s", default="127.0.0.1", help="SOCKS5 server listen address")
-@click.option("--socks-port", "-p", default=1080, help="SOCKS5 server listen port")
+@click.option("--socks-port", "-p", default=9870, help="SOCKS5 server listen port")
 @click.option("--socks-username", "-n", help="SOCKS5 authentication username")
 @click.option("--socks-password", "-w", help="SOCKS5 authentication password (env: WSSOCKS_SOCKS_PASSWORD)")
 @click.option("--socks-no-wait", "-i", is_flag=True, default=False, help="Start SOCKS server immediately")
@@ -48,7 +48,7 @@ def version():
 @click.option("--debug", "-d", count=True, help="Debug logging (-d for debug, -dd for trace)")
 @click.option("--threads", "-T", default=1, help="Number of threads for data transfer")
 @click.option("--upstream-proxy", "-x", help="Upstream SOCKS5 proxy (socks5://[user:pass@]host[:port])")
-@click.option("--strict-connect", "-C", is_flag=True, default=False, help="Wait strictly for remote connection")
+@click.option("--fast-open", "-f", is_flag=True, default=False, help="Assume connection success and allow data transfer immediately")
 @click.option("--no-env-proxy", "-E", is_flag=True, default=False, help="Ignore proxy env vars for WebSocket connection")
 def client(
     token: Optional[str],
@@ -64,11 +64,11 @@ def client(
     debug: int,
     threads: int,
     upstream_proxy: Optional[str],
-    strict_connect: bool,
+    fast_open: bool,
     no_env_proxy: bool,
 ):
     """Start SOCKS5 over WebSocket proxy client."""
-    from .client import Client
+    from ._client import Client
 
     async def main():
         # Get values from flags or environment
@@ -116,7 +116,7 @@ def client(
             upstream_username=upstream_username,
             upstream_password=upstream_password,
             threads=threads,
-            strict_connect=strict_connect,
+            fast_open=fast_open,
             no_env_proxy=no_env_proxy,
         )
         
@@ -141,14 +141,14 @@ def client(
 @click.option("--buffer-size", "-b", default=4096, help="Buffer size for data transfer")
 @click.option("--reverse", "-r", is_flag=True, default=False, help="Use reverse SOCKS5 proxy")
 @click.option("--socks-host", "-s", default="127.0.0.1", help="SOCKS5 server listen address for reverse proxy")
-@click.option("--socks-port", "-p", default=1080, help="SOCKS5 server listen port for reverse proxy")
+@click.option("--socks-port", "-p", default=9870, help="SOCKS5 server listen port for reverse proxy")
 @click.option("--socks-username", "-n", help="SOCKS5 username for authentication")
 @click.option("--socks-password", "-w", help="SOCKS5 password for authentication (env: WSSOCKS_SOCKS_PASSWORD)")
 @click.option("--socks-nowait", "-i", is_flag=True, default=False, help="Start SOCKS server immediately")
 @click.option("--debug", "-d", count=True, help="Debug logging (-d for debug, -dd for trace)")
 @click.option("--api-key", "-k", help="Enable HTTP API with specified key")
 @click.option("--upstream-proxy", "-x", help="Upstream SOCKS5 proxy (socks5://[user:pass@]host[:port])")
-@click.option("--strict-connect", "-C", is_flag=True, default=False, help="Wait strictly for connection completion")
+@click.option("--fast-open", "-f", is_flag=True, default=False, help="Assume connection success and allow data transfer immediately")
 def server(
     ws_host: str,
     ws_port: int,
@@ -165,10 +165,10 @@ def server(
     debug: int,
     api_key: Optional[str],
     upstream_proxy: Optional[str],
-    strict_connect: bool,
+    fast_open: bool,
 ):
     """Start SOCKS5 over WebSocket proxy server."""
-    from .server import Server
+    from ._server import Server
 
     async def main():
         # Get values from flags or environment
@@ -206,7 +206,7 @@ def server(
             upstream_password=upstream_password,
             buffer_size=buffer_size,
             api_key=api_key,
-            strict_connect=strict_connect,
+            fast_open=fast_open,
         )
 
         # Configure tokens if no API key

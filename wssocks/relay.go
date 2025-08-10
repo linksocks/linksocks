@@ -39,9 +39,9 @@ type RelayOption struct {
 	BufferSize     int
 	ChannelTimeout time.Duration
 	ConnectTimeout time.Duration
-	// StrictConnect controls whether to wait for connect success response
+	// FastOpen controls whether to wait for connect success response
 	// When false, assumes connection success immediately
-	StrictConnect bool
+	FastOpen bool
 
 	// Upstream SOCKS5 proxy configuration
 	UpstreamProxy    string // Format: host:port
@@ -66,7 +66,7 @@ func NewDefaultRelayOption() *RelayOption {
 		BufferSize:            DefaultBufferSize,
 		ChannelTimeout:        DefaultChannelTimeout,
 		ConnectTimeout:        DefaultConnectTimeout,
-		StrictConnect:         false,
+		FastOpen:              false,
 		EnableDynamicBatching: true,
 		MinBatchWaitTime:      DefaultMinBatchWaitTime,
 		MaxBatchWaitTime:      DefaultMaxBatchWaitTime,
@@ -94,9 +94,9 @@ func (o *RelayOption) WithConnectTimeout(timeout time.Duration) *RelayOption {
 	return o
 }
 
-// WithStrictConnect sets the strict connect mode for the relay
-func (o *RelayOption) WithStrictConnect(strict bool) *RelayOption {
-	o.StrictConnect = strict
+// WithFastOpen sets the fast open mode for the relay
+func (o *RelayOption) WithFastOpen(fastOpen bool) *RelayOption {
+	o.FastOpen = fastOpen
 	return o
 }
 
@@ -300,6 +300,8 @@ func (r *Relay) RefuseSocksRequest(conn net.Conn, reason byte) error {
 		return fmt.Errorf("write refusal response error: %w", err)
 	}
 
+	// Close the connection after sending refusal response to stop the SOCKS request
+	_ = conn.Close()
 	return nil
 }
 
@@ -752,12 +754,14 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 			// Return connection failure response to SOCKS client (0x04 = Host unreachable)
 			resp := []byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 			socksConn.Write(resp)
+			// Ensure the SOCKS connection is closed on failure
+			_ = socksConn.Close()
 			return fmt.Errorf("write connect request error: %w", err)
 		}
 
 		var response ConnectResponseMessage
-		if r.option.StrictConnect {
-			// Wait for response with timeout in strict mode
+		if !r.option.FastOpen {
+			// Wait for response with timeout in normal mode
 			select {
 			case msg := <-channelQueue:
 				var ok bool
@@ -767,6 +771,8 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 					if _, err := socksConn.Write(resp); err != nil {
 						return fmt.Errorf("write failure response error: %w", err)
 					}
+					// Close SOCKS connection because connect failed/invalid
+					_ = socksConn.Close()
 					return fmt.Errorf("unexpected message type for connect response")
 				}
 			case <-time.After(r.option.ConnectTimeout + 5*time.Second):
@@ -776,6 +782,8 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 					return fmt.Errorf("write failure response error: %w", err)
 				}
 				r.log.Debug().Str("addr", targetAddr).Int("port", int(targetPort)).Msg("Remote connection response timeout")
+				// Close SOCKS connection after timeout
+				_ = socksConn.Close()
 				return nil
 			}
 			if !response.Success {
@@ -785,11 +793,13 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 					return fmt.Errorf("write failure response error: %w", err)
 				}
 				r.log.Debug().Str("error", response.Error).Msg("Remote connection failed")
+				// Close SOCKS connection when connect fails
+				_ = socksConn.Close()
 				return nil
 			}
 			r.log.Trace().Str("addr", targetAddr).Int("port", int(targetPort)).Msg("Remote successfully connected")
 		} else {
-			r.log.Trace().Str("addr", targetAddr).Int("port", int(targetPort)).Msg("Assume successful connection in non-strict mode")
+			r.log.Trace().Str("addr", targetAddr).Int("port", int(targetPort)).Msg("Assume successful connection in fast-open mode")
 
 			go func() {
 				timer := time.NewTimer(r.option.ConnectTimeout + 5*time.Second)
@@ -857,7 +867,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 			return fmt.Errorf("write UDP request error: %w", err)
 		}
 
-		if r.option.StrictConnect {
+		if !r.option.FastOpen {
 			// Wait for response with timeout
 			var response ConnectResponseMessage
 			select {
@@ -979,6 +989,13 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 	case <-ctx.Done():
 		return ctx.Err()
 	case err := <-errChan:
+		// On TCP side error/EOF, send a DisconnectMessage with reason
+		disconnectMsg := DisconnectMessage{ChannelID: channelID}
+		if err != nil {
+			disconnectMsg.Error = err.Error()
+		}
+		r.logMessage(disconnectMsg, "send", ws.Label())
+		_ = ws.WriteMessage(disconnectMsg)
 		return err
 	case <-done:
 		return nil
@@ -1101,13 +1118,18 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 		r.lastActivity.Delete(channelID)
 	}()
 
+	// Always close the SOCKS TCP connection when the forwarding lifecycle ends
+	defer func() { _ = socksConn.Close() }()
+
 	// Send disconnect message
+	var disconnectErr string
 	defer func() {
 		disconnectMsg := DisconnectMessage{
 			ChannelID: channelID,
+			Error:     disconnectErr,
 		}
 		r.logMessage(disconnectMsg, "send", ws.Label())
-		ws.WriteMessage(disconnectMsg)
+		_ = ws.WriteMessage(disconnectMsg)
 	}()
 
 	// Create message queue for this channel if it doesn't exist
@@ -1171,6 +1193,9 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 	case <-ctx.Done():
 		return ctx.Err()
 	case err := <-errChan:
+		if err != nil {
+			disconnectErr = err.Error()
+		}
 		return err
 	case <-done:
 		return nil

@@ -297,10 +297,10 @@ def test_client_threads(website):
     asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-# ==================== Strict Connection ====================
+# ==================== Fast Open ====================
 
 
-def test_strict_forward(website):
+def test_fast_open_forward(website):
     from wssocks import Server, Client
 
     async def _main():
@@ -308,68 +308,68 @@ def test_strict_forward(website):
         socks_port = get_free_port()
         async with Server(ws_port=ws_port) as srv:
             token = await srv.async_add_forward_token()
-            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, strict_connect=True) as cli:
+            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, fast_open=True) as cli:
                 for _ in range(3):
                     await async_assert_web_connection(website, socks_port)
 
     asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-def test_strict_reverse(website):
+def test_fast_open_reverse(website):
     from wssocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
-        async with Server(ws_port=ws_port, strict_connect=True) as srv:
+        async with Server(ws_port=ws_port, fast_open=True) as srv:
             res = srv.add_reverse_token()
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True) as cli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, fast_open=True) as cli:
                 for _ in range(3):
                     await async_assert_web_connection(website, res.port)
 
     asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-def test_strict_strict_forward(website):
+def test_fast_open_forward(website):
     from wssocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
         socks_port = get_free_port()
-        async with Server(ws_port=ws_port, strict_connect=True) as srv:
+        async with Server(ws_port=ws_port, fast_open=True) as srv:
             token = await srv.async_add_forward_token()
-            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, strict_connect=True) as cli:
+            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, fast_open=True) as cli:
                 for _ in range(3):
                     await async_assert_web_connection(website, socks_port)
 
     asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-def test_strict_strict_reverse(website):
+def test_fast_open_reverse(website):
     from wssocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
-        async with Server(ws_port=ws_port, strict_connect=True) as srv:
+        async with Server(ws_port=ws_port, fast_open=True) as srv:
             res = srv.add_reverse_token()
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, strict_connect=True) as cli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, fast_open=True) as cli:
                 for _ in range(3):
                     await async_assert_web_connection(website, res.port)
 
     asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-def test_strict_connector(website):
+def test_fast_open_connector(website):
     from wssocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
-        async with Server(ws_port=ws_port, strict_connect=True) as srv:
+        async with Server(ws_port=ws_port, fast_open=True) as srv:
             res = srv.add_reverse_token()
             connector = "CONNECTOR"
             srv.add_connector_token(connector, res.token)
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, strict_connect=True) as rcli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, fast_open=True) as rcli:
                 async with Client(
-                    connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), strict_connect=True
+                    connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), fast_open=True
                 ) as fcli:
                     await async_assert_web_connection(website, res.port)
                     await async_assert_web_connection(website, fcli.socks_port)
@@ -377,21 +377,21 @@ def test_strict_connector(website):
     asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-# ==================== Mixed Strict ====================
+# ==================== Mixed Fast Open ====================
 
 
-def test_mixed_strict_connector_all_strict(website):
+def test_mixed_fast_open_connector_all_fast_open(website):
     from wssocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
-        async with Server(ws_port=ws_port, strict_connect=True) as srv:
+        async with Server(ws_port=ws_port, fast_open=True) as srv:
             res = srv.add_reverse_token()
             connector = "CONNECTOR"
             srv.add_connector_token(connector, res.token)
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, strict_connect=True) as rcli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, fast_open=True) as rcli:
                 async with Client(
-                    connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), strict_connect=True
+                    connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), fast_open=True
                 ) as fcli:
                     await async_assert_web_connection(website, res.port)
                     await async_assert_web_connection(website, fcli.socks_port)
@@ -399,18 +399,18 @@ def test_mixed_strict_connector_all_strict(website):
     asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-def test_mixed_strict_connector_server_strict(website):
+def test_mixed_fast_open_connector_server_fast_open(website):
     from wssocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
-        async with Server(ws_port=ws_port, strict_connect=True) as srv:
+        async with Server(ws_port=ws_port, fast_open=True) as srv:
             res = srv.add_reverse_token()
             connector = "CONNECTOR"
             srv.add_connector_token(connector, res.token)
             async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True) as rcli:
                 async with Client(
-                    connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), strict_connect=True
+                    connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), fast_open=True
                 ) as fcli:
                     await async_assert_web_connection(website, res.port)
                     await async_assert_web_connection(website, fcli.socks_port)
@@ -418,7 +418,7 @@ def test_mixed_strict_connector_server_strict(website):
     asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-def test_mixed_strict_connector_connector_strict(website):
+def test_mixed_fast_open_connector_connector_fast_open(website):
     from wssocks import Server, Client
 
     async def _main():
@@ -430,7 +430,7 @@ def test_mixed_strict_connector_connector_strict(website):
             with Client(res.token, ws_url=_ws_url(ws_port), reverse=True) as rcli:
                 await rcli.async_wait_ready(timeout=start_time_limit)
                 with Client(
-                    connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), strict_connect=True
+                    connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), fast_open=True
                 ) as fcli:
                     await fcli.async_wait_ready(timeout=start_time_limit)
                     await async_assert_web_connection(website, res.port)
@@ -439,7 +439,7 @@ def test_mixed_strict_connector_connector_strict(website):
     asyncio.run(asyncio.wait_for(_main(), 30))
 
 
-def test_mixed_strict_connector_client_strict(website):
+def test_mixed_fast_open_connector_client_fast_open(website):
     from wssocks import Server, Client
 
     async def _main():
@@ -448,7 +448,7 @@ def test_mixed_strict_connector_client_strict(website):
             res = srv.add_reverse_token()
             connector = "CONNECTOR"
             srv.add_connector_token(connector, res.token)
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, strict_connect=True) as rcli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, fast_open=True) as rcli:
                 async with Client(connector, ws_url=_ws_url(ws_port), socks_port=get_free_port()) as fcli:
                     await async_assert_web_connection(website, res.port)
                     await async_assert_web_connection(website, fcli.socks_port)

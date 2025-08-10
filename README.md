@@ -39,15 +39,15 @@ Forward Proxy:
 # Server (WebSockets at port 8765, as network provider)
 wssocks server -t example_token
 
-# Client (SOCKS5 at port 1080)
-wssocks client -t example_token -u http://localhost:8765 -p 1080
+# Client (SOCKS5 at port 9870)
+wssocks client -t example_token -u http://localhost:8765 -p 9870
 ```
 
 Reverse Proxy (with `-r` flag):
 
 ```bash
-# Server (WebSockets at port 8765, SOCKS at port 1080)
-wssocks server -t example_token -p 1080 -r
+# Server (WebSockets at port 8765, SOCKS at port 9870)
+wssocks server -t example_token -p 9870 -r
 
 # Client (as network provider)
 wssocks client -t example_token -u http://localhost:8765 -r
@@ -56,8 +56,8 @@ wssocks client -t example_token -u http://localhost:8765 -r
 Agent Proxy (with `-c` flag for connectors' token):
 
 ```bash
-# Server (WebSockets at port 8765, SOCKS at port 1080)
-wssocks server -t example_token -c example_connector_token -p 1080 -r
+# Server (WebSockets at port 8765, SOCKS at port 9870)
+wssocks server -t example_token -c example_connector_token -p 9870 -r
 
 # Client (as network provider)
 wssocks provider -t example_token -u http://localhost:8765
@@ -159,7 +159,7 @@ Content-Type: application/json
 {
     "type": "reverse",
     "token": "new_token",  // Optional: auto-generated if not provided
-    "port": 1080,          // Optional: auto-allocated if not provided
+    "port": 9870,          // Optional: auto-allocated if not provided
     "username": "user",    // Optional: SOCKS authentication
     "password": "pass"     // Optional: SOCKS authentication
 }

@@ -63,6 +63,10 @@ python-test-crash:
 	@echo "Running Python wrapper crash tests..."
 	cd $(PYTHON_OUTPUT_DIR) && python3 -m pytest tests/test_crash.py -v --tb=short -n auto
 
+python-test:
+	@echo "Running Python wrapper crash tests..."
+	cd $(PYTHON_OUTPUT_DIR) && python3 -m pytest tests -v --tb=short -n auto
+
 python-install: python-bindings
 	@echo "Installing Python bindings..."
 	cd $(PYTHON_OUTPUT_DIR) && python3 -m pip install -e .

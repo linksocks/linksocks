@@ -157,6 +157,7 @@ func (m DataMessage) GetType() string {
 // DisconnectMessage represents a connection termination message
 type DisconnectMessage struct {
 	ChannelID uuid.UUID `json:"channel_id"`
+	Error     string    `json:"error,omitempty"`
 }
 
 func (m DisconnectMessage) GetType() string {
@@ -391,6 +392,10 @@ func PackMessage(msg BaseMessage) ([]byte, error) {
 			return nil, fmt.Errorf("invalid ChannelID: %w", err)
 		}
 		buf = append(buf, channelID...)
+		if m.Error != "" {
+			buf = append(buf, byte(len(m.Error)))
+			buf = append(buf, []byte(m.Error)...)
+		}
 		return buf, nil
 
 	case ConnectorMessage:
@@ -622,9 +627,17 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid ChannelID: %w", err)
 		}
-		return DisconnectMessage{
-			ChannelID: channelID,
-		}, nil
+		msg := DisconnectMessage{ChannelID: channelID}
+		if len(payload) > 16 {
+			errLen := int(payload[16])
+			if len(payload) < 17+errLen {
+				return nil, fmt.Errorf("invalid disconnect message error length")
+			}
+			if errLen > 0 {
+				msg.Error = string(payload[17 : 17+errLen])
+			}
+		}
+		return msg, nil
 
 	case BinaryTypeConnector:
 		if len(payload) < 16 { // ChannelID(16)

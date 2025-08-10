@@ -10,6 +10,8 @@ import json
 import logging
 import asyncio
 from dataclasses import dataclass
+import threading
+import time
 from datetime import timedelta
 from typing import Any, Callable, Dict, Iterable, Optional, Tuple, Union, List
 
@@ -96,8 +98,63 @@ _logger_registry: Dict[str, logging.Logger] = {}
 
 # Event-driven log monitoring system
 _log_listeners: List[Callable[[List], None]] = []
-_listener_thread = None
-_listener_active = False
+_listener_thread: Optional[threading.Thread] = None
+_listener_active: bool = False
+
+
+def _start_log_listener() -> None:
+    """Start background thread to drain Go log buffer and forward to Python loggers."""
+    global _listener_thread, _listener_active
+    if _listener_active and _listener_thread and _listener_thread.is_alive():
+        return
+    _listener_active = True
+
+    def _run() -> None:
+        # Drain loop: wait for entries with timeout to allow graceful shutdown
+        while _listener_active:
+            try:
+                entries = wssockslib.WaitForLogEntries(2000)  # wait up to 2s
+            except Exception:
+                # Backoff on unexpected errors to avoid busy loop
+                time.sleep(0.2)
+                continue
+
+            if not entries:
+                continue
+
+            # Iterate returned entries; handle both attr and dict styles
+            for entry in entries:
+                try:
+                    logger_id = getattr(entry, "LoggerID", None)
+                    if logger_id is None and isinstance(entry, dict):
+                        logger_id = entry.get("LoggerID")
+
+                    message = getattr(entry, "Message", None)
+                    if message is None and isinstance(entry, dict):
+                        message = entry.get("Message")
+
+                    if not message:
+                        continue
+
+                    py_logger = _logger_registry.get(str(logger_id)) or _logger
+                    _emit_go_log(py_logger, str(message))
+                except Exception:
+                    # Never let logging path crash the listener
+                    continue
+
+    _listener_thread = threading.Thread(target=_run, name="wssocks-go-log-listener", daemon=True)
+    _listener_thread.start()
+
+
+def _stop_log_listener() -> None:
+    """Stop the background log listener thread."""
+    global _listener_active
+    _listener_active = False
+    try:
+        # Unblock WaitForLogEntries callers
+        wssockslib.CancelLogWaiters()
+    except Exception:
+        pass
 
 
 class BufferZerologLogger:
@@ -106,11 +163,23 @@ class BufferZerologLogger:
     def __init__(self, py_logger: logging.Logger, logger_id: str):
         self.py_logger = py_logger
         self.logger_id = logger_id
-        # Create Go logger with callback function
-        def log_callback(line: str) -> None:
-            _emit_go_log(py_logger, line)
-        
-        self.go_logger = wssockslib.NewLogger(log_callback)
+        # Ensure background listener is running
+        _start_log_listener()
+
+        # Prefer Go logger with explicit ID so we can map entries back
+        try:
+            # Newer binding that tags entries with our provided ID
+            self.go_logger = wssockslib.NewLoggerWithID(self.logger_id)
+        except Exception:
+            # Fallback to older API; if present, still try callback path
+            try:
+                def log_callback(line: str) -> None:
+                    _emit_go_log(py_logger, line)
+
+                self.go_logger = wssockslib.NewLogger(log_callback)
+            except Exception:
+                # As a last resort, create a default Go logger
+                self.go_logger = wssockslib.NewLoggerWithID(self.logger_id)  # may still raise; surface to caller
         _logger_registry[logger_id] = py_logger
     
     def cleanup(self):

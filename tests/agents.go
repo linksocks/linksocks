@@ -34,7 +34,7 @@ type ProxyTestServerOption struct {
 	LoggerPrefix      string
 	LogLevel          zerolog.Level
 	Reconnect         bool
-	StrictConnect     bool
+	FastOpen          bool
 }
 
 // ProxyTestClient encapsulates the client-side test environment
@@ -45,15 +45,15 @@ type ProxyTestClient struct {
 }
 
 type ProxyTestClientOption struct {
-	WSPort        int           // WebSocket server port
-	Token         string        // Client token
-	SocksPort     int           // Custom SOCKS port
-	Threads       int           // Number of client threads
-	LoggerPrefix  string        // Logger prefix for the client
-	LogLevel      zerolog.Level // Log level for the client logger
-	Reverse       bool          // Whether to use reverse mode
-	StrictConnect bool          // Whether to enable strict connection mode
-	Reconnect     bool          // Whether to enable auto-reconnection
+	WSPort       int           // WebSocket server port
+	Token        string        // Client token
+	SocksPort    int           // Custom SOCKS port
+	Threads      int           // Number of client threads
+	LoggerPrefix string        // Logger prefix for the client
+	LogLevel     zerolog.Level // Log level for the client logger
+	Reverse      bool          // Whether to use reverse mode
+	FastOpen     bool          // Whether to enable fast-open mode
+	Reconnect    bool          // Whether to enable auto-reconnection
 }
 
 // ProxyTestEnv encapsulates both server and client test environments
@@ -107,8 +107,8 @@ func forwardServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 			serverOpt.WithPortPool(opt.PortPool)
 		}
 
-		// Set StrictConnect
-		serverOpt.WithStrictConnect(opt.StrictConnect)
+		// Set FastOpen
+		serverOpt.WithFastOpen(opt.FastOpen)
 	}
 	server := wssocks.NewWSSocksServer(serverOpt)
 	token, err = server.AddForwardToken(token)
@@ -152,7 +152,7 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		WithWSURL(fmt.Sprintf("ws://localhost:%d", opt.WSPort)).
 		WithSocksPort(socksPort).
 		WithReconnectDelay(1 * time.Second).
-		WithStrictConnect(opt.StrictConnect).
+		WithFastOpen(opt.FastOpen).
 		WithLogger(logger)
 
 	if opt.Reconnect {
@@ -229,8 +229,8 @@ func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 			socksPort = opt.SocksPort
 		}
 
-		// Set StrictConnect
-		serverOpt.WithStrictConnect(opt.StrictConnect)
+		// Set FastOpen
+		serverOpt.WithFastOpen(opt.FastOpen)
 	}
 
 	server := wssocks.NewWSSocksServer(serverOpt)
@@ -286,7 +286,7 @@ func reverseClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		WithWSURL(fmt.Sprintf("ws://localhost:%d", opt.WSPort)).
 		WithReconnectDelay(1 * time.Second).
 		WithReverse(true).
-		WithStrictConnect(opt.StrictConnect).
+		WithFastOpen(opt.FastOpen).
 		WithLogger(logger)
 
 	if opt.Reconnect {

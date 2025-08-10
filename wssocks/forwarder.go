@@ -201,13 +201,13 @@ func (s *DynamicForwarder) ProcessReads(conn io.Reader) {
 
 		n, err := conn.Read(buffer)
 		if err != nil {
-			if err != io.EOF {
-				select {
-				case s.errChan <- err:
-				default:
-					s.log.Error().Err(err).Msg("Failed to send error to channel")
-				}
-			} else {
+			// Always propagate the read error (including io.EOF) so caller can decide how to signal
+			select {
+			case s.errChan <- err:
+			default:
+				s.log.Error().Err(err).Msg("Failed to send error to channel")
+			}
+			if err == io.EOF {
 				s.log.Trace().Str("channel_id", s.channelID.String()).Msg("Connection closed (EOF)")
 			}
 			return // Exit goroutine on any read error/EOF
@@ -269,12 +269,11 @@ func (s *DynamicForwarder) processReadsImmediate(conn io.Reader, buffer []byte) 
 
 		n, err := conn.Read(buffer)
 		if err != nil {
-			if err != io.EOF {
-				select {
-				case s.errChan <- err:
-				default:
-					s.log.Error().Err(err).Msg("Failed to send error to channel")
-				}
+			// Always propagate the read error (including io.EOF)
+			select {
+			case s.errChan <- err:
+			default:
+				s.log.Error().Err(err).Msg("Failed to send error to channel")
 			}
 			return
 		}

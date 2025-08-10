@@ -109,7 +109,7 @@ type ServerOption struct {
 	APIKey           string
 	ChannelTimeout   time.Duration
 	ConnectTimeout   time.Duration
-	StrictConnect    bool
+	FastOpen         bool
 	UpstreamProxy    string
 	UpstreamUsername string
 	UpstreamPassword string
@@ -128,7 +128,7 @@ func DefaultServerOption() *ServerOption {
 		APIKey:           "",
 		ChannelTimeout:   DefaultChannelTimeout,
 		ConnectTimeout:   DefaultConnectTimeout,
-		StrictConnect:    false,
+		FastOpen:         false,
 		UpstreamProxy:    "",
 		UpstreamUsername: "",
 		UpstreamPassword: "",
@@ -195,9 +195,9 @@ func (o *ServerOption) WithConnectTimeout(timeout time.Duration) *ServerOption {
 	return o
 }
 
-// WithStrictConnect controls whether to wait for connect success response
-func (o *ServerOption) WithStrictConnect(strict bool) *ServerOption {
-	o.StrictConnect = strict
+// WithFastOpen controls whether to wait for connect success response
+func (o *ServerOption) WithFastOpen(fastOpen bool) *ServerOption {
+	o.FastOpen = fastOpen
 	return o
 }
 
@@ -224,7 +224,7 @@ func NewWSSocksServer(opt *ServerOption) *WSSocksServer {
 		WithBufferSize(opt.BufferSize).
 		WithChannelTimeout(opt.ChannelTimeout).
 		WithConnectTimeout(opt.ConnectTimeout).
-		WithStrictConnect(opt.StrictConnect).
+		WithFastOpen(opt.FastOpen).
 		WithUpstreamProxy(opt.UpstreamProxy).
 		WithUpstreamAuth(opt.UpstreamUsername, opt.UpstreamPassword)
 
@@ -995,7 +995,7 @@ func (s *WSSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clien
 			case ConnectResponseMessage:
 				go func(m ConnectResponseMessage) {
 					if queue, ok := s.relay.messageQueues.Load(m.ChannelID); ok {
-						if !s.relay.option.StrictConnect {
+						if s.relay.option.FastOpen {
 							if m.Success {
 								s.relay.SetConnectionSuccess(m.ChannelID)
 							} else {

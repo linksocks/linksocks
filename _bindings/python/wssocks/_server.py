@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 # Underlying Go bindings module (generated)
 import wssockslib  # type: ignore
@@ -50,7 +50,7 @@ class Server(_SnakePassthrough):
         api_key: Optional[str] = None,
         channel_timeout: Optional[DurationLike] = None,
         connect_timeout: Optional[DurationLike] = None,
-        strict_connect: Optional[bool] = None,
+        fast_open: Optional[bool] = None,
         upstream_proxy: Optional[str] = None,
         upstream_username: Optional[str] = None,
         upstream_password: Optional[str] = None,
@@ -68,7 +68,7 @@ class Server(_SnakePassthrough):
             api_key: API key for HTTP management interface
             channel_timeout: Timeout for WebSocket channels
             connect_timeout: Timeout for outbound connections
-            strict_connect: Whether to wait strictly for connection completion
+            fast_open: Assume connection success and allow data transfer immediately
             upstream_proxy: Upstream proxy address for chaining
             upstream_username: Username for upstream proxy authentication
             upstream_password: Password for upstream proxy authentication
@@ -97,8 +97,8 @@ class Server(_SnakePassthrough):
             opt.WithChannelTimeout(_to_duration(channel_timeout))
         if connect_timeout is not None:
             opt.WithConnectTimeout(_to_duration(connect_timeout))
-        if strict_connect is not None:
-            opt.WithStrictConnect(bool(strict_connect))
+        if fast_open is not None:
+            opt.WithFastOpen(bool(fast_open))
         if upstream_proxy is not None:
             opt.WithUpstreamProxy(upstream_proxy)
         if upstream_username or upstream_password:

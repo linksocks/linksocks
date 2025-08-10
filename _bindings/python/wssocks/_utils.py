@@ -22,9 +22,9 @@ def parse_socks_proxy(proxy_url: str) -> Tuple[str, Optional[str], Optional[str]
     Args:
         proxy_url: URL string in format socks5://[user:pass@]host[:port]
                   Examples:
-                  - "socks5://127.0.0.1:1080"
-                  - "socks5://user:pass@proxy.example.com:1080"
-                  - "socks5://proxy.example.com" (uses default port 1080)
+                  - "socks5://127.0.0.1:9870"
+                  - "socks5://user:pass@proxy.example.com:9870"
+                  - "socks5://proxy.example.com" (uses default port 9870)
         
     Returns:
         A tuple containing:
@@ -36,14 +36,14 @@ def parse_socks_proxy(proxy_url: str) -> Tuple[str, Optional[str], Optional[str]
         ValueError: If the URL is invalid, malformed, or uses an unsupported scheme
         
     Examples:
-        >>> parse_socks_proxy("socks5://127.0.0.1:1080")
-        ("127.0.0.1:1080", None, None)
+        >>> parse_socks_proxy("socks5://127.0.0.1:9870")
+        ("127.0.0.1:9870", None, None)
         
-        >>> parse_socks_proxy("socks5://user:pass@proxy.example.com:1080")
-        ("proxy.example.com:1080", "user", "pass")
+        >>> parse_socks_proxy("socks5://user:pass@proxy.example.com:9870")
+        ("proxy.example.com:9870", "user", "pass")
         
         >>> parse_socks_proxy("socks5://proxy.example.com")
-        ("proxy.example.com:1080", None, None)
+        ("proxy.example.com:9870", None, None)
     """
     if not proxy_url:
         return "", None, None
@@ -70,7 +70,7 @@ def parse_socks_proxy(proxy_url: str) -> Tuple[str, Optional[str], Optional[str]
     if not host:
         raise ValueError("Proxy URL must specify a hostname")
         
-    port = parsed_url.port or 1080  # Default SOCKS5 port
+    port = parsed_url.port or 9870  # Default SOCKS5 port
     address = f"{host}:{port}"
 
     return address, username, password

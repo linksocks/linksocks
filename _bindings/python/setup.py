@@ -147,10 +147,10 @@ setup(
     ],
     keywords="socks proxy websocket network tunneling firewall bypass load-balancing go bindings",
     
-    # Entry points (if any command-line tools are provided)
+    # Entry points
     entry_points={
         "console_scripts": [
-            "wssocks=wssocks.cli:cli",
+            "wssocks=wssocks._cli:cli",
         ],
     },
     
