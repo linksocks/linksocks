@@ -970,16 +970,20 @@ func (s *WSSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clien
 				}
 
 			case ConnectMessage:
-				go func(m ConnectMessage) {
-					var isForwardClient bool
-					s.mu.RLock()
-					_, isForwardClient = s.clients[clientID]
-					s.mu.RUnlock()
+				var isForwardClient bool
+				s.mu.RLock()
+				_, isForwardClient = s.clients[clientID]
+				s.mu.RUnlock()
 
+				if isForwardClient {
+					// Create buffered channel with larger capacity SYNCHRONOUSLY
+					// This prevents race condition where DataMessage arrives before queue creation
+					msgChan := make(chan BaseMessage, 1000)
+					s.relay.messageQueues.Store(m.ChannelID, msgChan)
+				}
+
+				go func(m ConnectMessage) {
 					if isForwardClient {
-						// Create buffered channel with larger capacity
-						msgChan := make(chan BaseMessage, 1000)
-						s.relay.messageQueues.Store(m.ChannelID, msgChan)
 						go func() {
 							if err := s.relay.HandleNetworkConnection(ctx, ws, m); err != nil && !errors.Is(err, context.Canceled) {
 								s.log.Debug().Err(err).Msg("Network connection handler error")
@@ -1199,11 +1203,11 @@ func (s *WSSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Get client IP from the connection
+	var shouldBroadcast bool
 	var clientIP string
+
+	s.mu.Lock()
+	// Get client IP from the connection
 	if ws, exists := s.clients[clientID]; exists {
 		clientIP = ws.GetClientIP()
 	}
@@ -1219,9 +1223,9 @@ func (s *WSSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 		if len(clients) == 0 {
 			delete(s.tokenClients, token)
 			delete(s.tokenIndexes, token)
-			// If this was a reverse client, notify all connectors
+			// Check if this was a reverse client - we'll broadcast after releasing the lock
 			if _, isReverse := s.tokens[token]; isReverse {
-				s.broadcastPartnersToConnectors()
+				shouldBroadcast = true
 			}
 		} else {
 			s.tokenClients[token] = clients
@@ -1230,12 +1234,21 @@ func (s *WSSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 
 	// Clean up client connection
 	delete(s.clients, clientID)
+	s.mu.Unlock()
+
+	// Broadcast outside the lock to avoid deadlock
+	if shouldBroadcast {
+		s.broadcastPartnersToConnectors()
+	}
 
 	s.log.Info().Str("client_id", clientID.String()).Str("client_ip", clientIP).Msg("Client disconnected")
 }
 
 // broadcastPartnersToConnectors sends the current number of reverse clients to all connectors
 func (s *WSSocksServer) broadcastPartnersToConnectors() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// Count total reverse clients
 	reverseCount := 0
 	for token := range s.tokens {
@@ -1264,6 +1277,9 @@ func (s *WSSocksServer) broadcastPartnersToConnectors() {
 
 // broadcastPartnersToReverseClients sends the current number of connectors to all reverse clients for a given token
 func (s *WSSocksServer) broadcastPartnersToReverseClients(reverseToken string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// Count total connectors for this reverse token
 	connectorCount := 0
 	for connectorToken, rt := range s.connectorTokens {
