@@ -46,7 +46,7 @@ jobs:
           
           $CHANGELOG
           
-          **Full Changelog**: https://github.com/zetxtech/wssocks/compare/$PREV_TAG...${{ steps.tag_info.outputs.tag_name }}
+          **Full Changelog**: https://github.com/zetxtech/linksocks/compare/$PREV_TAG...${{ steps.tag_info.outputs.tag_name }}
           EOF
           
           # Output for use in release

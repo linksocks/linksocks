@@ -1,5 +1,5 @@
 """
-Base classes and utilities for wssocks.
+Base classes and utilities for linksocks.
 
 This module contains shared functionality used by Server and Client classes.
 """
@@ -16,7 +16,7 @@ from datetime import timedelta
 from typing import Any, Callable, Dict, Iterable, Optional, Tuple, Union, List
 
 # Underlying Go bindings module (generated)
-import wssockslib  # type: ignore
+import linksockslib  # type: ignore
 
 _logger = logging.getLogger(__name__)
 
@@ -52,12 +52,12 @@ def _to_duration(value: Optional[DurationLike]) -> Any:
         return 0
     if isinstance(value, timedelta):
         seconds = value.total_seconds()
-        return seconds * wssockslib.Second()
+        return seconds * linksockslib.Second()
     if isinstance(value, (int, float)):
-        return value * wssockslib.Second()
+        return value * linksockslib.Second()
     if isinstance(value, str):
         try:
-            return wssockslib.ParseDuration(value)
+            return linksockslib.ParseDuration(value)
         except Exception as exc:
             raise ValueError(f"Invalid duration string: {value}") from exc
     raise TypeError(f"Unsupported duration type: {type(value)!r}")
@@ -113,7 +113,7 @@ def _start_log_listener() -> None:
         # Drain loop: wait for entries with timeout to allow graceful shutdown
         while _listener_active:
             try:
-                entries = wssockslib.WaitForLogEntries(2000)  # wait up to 2s
+                entries = linksockslib.WaitForLogEntries(2000)  # wait up to 2s
             except Exception:
                 # Backoff on unexpected errors to avoid busy loop
                 time.sleep(0.2)
@@ -142,7 +142,7 @@ def _start_log_listener() -> None:
                     # Never let logging path crash the listener
                     continue
 
-    _listener_thread = threading.Thread(target=_run, name="wssocks-go-log-listener", daemon=True)
+    _listener_thread = threading.Thread(target=_run, name="linksocks-go-log-listener", daemon=True)
     _listener_thread.start()
 
 
@@ -152,7 +152,7 @@ def _stop_log_listener() -> None:
     _listener_active = False
     try:
         # Unblock WaitForLogEntries callers
-        wssockslib.CancelLogWaiters()
+        linksockslib.CancelLogWaiters()
     except Exception:
         pass
 
@@ -169,17 +169,17 @@ class BufferZerologLogger:
         # Prefer Go logger with explicit ID so we can map entries back
         try:
             # Newer binding that tags entries with our provided ID
-            self.go_logger = wssockslib.NewLoggerWithID(self.logger_id)
+            self.go_logger = linksockslib.NewLoggerWithID(self.logger_id)
         except Exception:
             # Fallback to older API; if present, still try callback path
             try:
                 def log_callback(line: str) -> None:
                     _emit_go_log(py_logger, line)
 
-                self.go_logger = wssockslib.NewLogger(log_callback)
+                self.go_logger = linksockslib.NewLogger(log_callback)
             except Exception:
                 # As a last resort, create a default Go logger
-                self.go_logger = wssockslib.NewLoggerWithID(self.logger_id)  # may still raise; surface to caller
+                self.go_logger = linksockslib.NewLoggerWithID(self.logger_id)  # may still raise; surface to caller
         _logger_registry[logger_id] = py_logger
     
     def cleanup(self):
@@ -224,7 +224,7 @@ class _SnakePassthrough:
 
 
 def set_log_level(level: Union[int, str]) -> None:
-    """Set the global log level for wssocks."""
+    """Set the global log level for linksocks."""
     if isinstance(level, str):
         level = getattr(logging, level.upper())
     _logger.setLevel(level)

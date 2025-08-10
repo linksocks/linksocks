@@ -14,7 +14,7 @@ RUN go mod download
 COPY . .
 
 # Build the binary
-RUN CGO_ENABLED=0 go build -o wssocks ./cmd/wssocks
+RUN CGO_ENABLED=0 go build -o linksocks ./cmd/linksocks
 
 # Final stage
 FROM alpine:3.19
@@ -22,12 +22,12 @@ FROM alpine:3.19
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /build/wssocks /app/
+COPY --from=builder /build/linksocks /app/
 
 # Create non-root user
-RUN adduser -D -H -h /app wssocks && \
-    chown -R wssocks:wssocks /app
+RUN adduser -D -H -h /app linksocks && \
+    chown -R linksocks:linksocks /app
 
-USER wssocks
+USER linksocks
 
-ENTRYPOINT ["/app/wssocks"] 
+ENTRYPOINT ["/app/linksocks"] 

@@ -1,7 +1,7 @@
 """
-Utility functions for wssocks CLI.
+Utility functions for linksocks CLI.
 
-This module provides common utility functions used across the wssocks
+This module provides common utility functions used across the linksocks
 command-line interface, including SOCKS proxy URL parsing and environment
 variable handling.
 """
@@ -94,11 +94,11 @@ def get_env_or_flag(flag_value: Optional[str], env_var: str) -> Optional[str]:
         the environment variable, or None if neither is set
         
     Examples:
-        >>> os.environ['WSSOCKS_TOKEN'] = 'env-token'
-        >>> get_env_or_flag(None, 'WSSOCKS_TOKEN')
+        >>> os.environ['LINKSOCKS_TOKEN'] = 'env-token'
+        >>> get_env_or_flag(None, 'LINKSOCKS_TOKEN')
         'env-token'
         
-        >>> get_env_or_flag('flag-token', 'WSSOCKS_TOKEN')
+        >>> get_env_or_flag('flag-token', 'LINKSOCKS_TOKEN')
         'flag-token'
         
         >>> get_env_or_flag(None, 'NONEXISTENT_VAR')
@@ -113,7 +113,7 @@ def get_env_or_flag(flag_value: Optional[str], env_var: str) -> Optional[str]:
     return os.getenv(env_var)
 
 
-def validate_required_token(token: Optional[str], env_var: str = "WSSOCKS_TOKEN") -> str:
+def validate_required_token(token: Optional[str], env_var: str = "LINKSOCKS_TOKEN") -> str:
     """
     Validate that a required authentication token is provided.
     
@@ -123,7 +123,7 @@ def validate_required_token(token: Optional[str], env_var: str = "WSSOCKS_TOKEN"
     
     Args:
         token: The token value from command-line flag (may be None)
-        env_var: The environment variable name to check (default: "WSSOCKS_TOKEN")
+        env_var: The environment variable name to check (default: "LINKSOCKS_TOKEN")
         
     Returns:
         The validated token string
@@ -135,8 +135,8 @@ def validate_required_token(token: Optional[str], env_var: str = "WSSOCKS_TOKEN"
         >>> validate_required_token("my-token")
         "my-token"
         
-        >>> validate_required_token(None)  # Will check WSSOCKS_TOKEN env var
-        ValueError: Token is required. Provide via --token or WSSOCKS_TOKEN environment variable.
+        >>> validate_required_token(None)  # Will check LINKSOCKS_TOKEN env var
+        ValueError: Token is required. Provide via --token or LINKSOCKS_TOKEN environment variable.
     """
     actual_token = get_env_or_flag(token, env_var)
     if not actual_token:

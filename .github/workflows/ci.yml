@@ -43,7 +43,7 @@ jobs:
         run: go mod download
 
       - name: Run tests
-        run: go test -v -race -coverprofile="coverage.txt" -covermode=atomic -coverpkg="./wssocks" "./wssocks" "./tests"
+        run: go test -v -race -coverprofile="coverage.txt" -covermode=atomic -coverpkg="./linksocks" "./linksocks" "./tests"
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

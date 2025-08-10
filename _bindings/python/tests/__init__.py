@@ -1,1 +1,1 @@
-# Test package for _bindings/python/wssocks
+# Test package for _bindings/python/linksocks

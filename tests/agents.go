@@ -7,14 +7,14 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
-	"github.com/zetxtech/wssocks/wssocks"
+	"github.com/zetxtech/linksocks/linksocks"
 
 	"github.com/stretchr/testify/require"
 )
 
 // ProxyTestServer encapsulates the server-side test environment
 type ProxyTestServer struct {
-	Server         *wssocks.WSSocksServer
+	Server         *linksocks.LinkSocksServer
 	WSPort         int
 	SocksPort      int
 	Token          string
@@ -30,7 +30,7 @@ type ProxyTestServerOption struct {
 	Token             string
 	ConnectorToken    string
 	ConnectorAutonomy bool
-	PortPool          *wssocks.PortPool
+	PortPool          *linksocks.PortPool
 	LoggerPrefix      string
 	LogLevel          zerolog.Level
 	Reconnect         bool
@@ -39,7 +39,7 @@ type ProxyTestServerOption struct {
 
 // ProxyTestClient encapsulates the client-side test environment
 type ProxyTestClient struct {
-	Client    *wssocks.WSSocksClient
+	Client    *linksocks.LinkSocksClient
 	SocksPort int
 	Close     func()
 }
@@ -72,10 +72,10 @@ func forwardServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 
 	token := ""
 
-	var serverOpt *wssocks.ServerOption
+	var serverOpt *linksocks.ServerOption
 	if opt == nil {
 		logger := createPrefixedLogger("SRV0")
-		serverOpt = wssocks.DefaultServerOption().
+		serverOpt = linksocks.DefaultServerOption().
 			WithWSPort(wsPort).
 			WithLogger(logger)
 	} else {
@@ -94,7 +94,7 @@ func forwardServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 		} else {
 			logger = createPrefixedLogger(prefix)
 		}
-		serverOpt = wssocks.DefaultServerOption().WithLogger(logger)
+		serverOpt = linksocks.DefaultServerOption().WithLogger(logger)
 
 		// Set WSPort
 		if opt.WSPort != 0 {
@@ -110,7 +110,7 @@ func forwardServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 		// Set FastOpen
 		serverOpt.WithFastOpen(opt.FastOpen)
 	}
-	server := wssocks.NewWSSocksServer(serverOpt)
+	server := linksocks.NewLinkSocksServer(serverOpt)
 	token, err = server.AddForwardToken(token)
 	require.NoError(t, err)
 	require.NotEmpty(t, token)
@@ -148,7 +148,7 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 	} else {
 		logger = createPrefixedLogger(opt.LoggerPrefix)
 	}
-	clientOpt := wssocks.DefaultClientOption().
+	clientOpt := linksocks.DefaultClientOption().
 		WithWSURL(fmt.Sprintf("ws://localhost:%d", opt.WSPort)).
 		WithSocksPort(socksPort).
 		WithReconnectDelay(1 * time.Second).
@@ -163,7 +163,7 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		clientOpt.WithThreads(opt.Threads)
 	}
 
-	client := wssocks.NewWSSocksClient(opt.Token, clientOpt)
+	client := linksocks.NewLinkSocksClient(opt.Token, clientOpt)
 	require.NoError(t, client.WaitReady(context.Background(), 5*time.Second))
 
 	return &ProxyTestClient{
@@ -187,10 +187,10 @@ func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 	socksPort, err := getFreePort()
 	require.NoError(t, err)
 
-	var serverOpt *wssocks.ServerOption
+	var serverOpt *linksocks.ServerOption
 	if opt == nil {
 		logger := createPrefixedLogger("SRV0")
-		serverOpt = wssocks.DefaultServerOption().
+		serverOpt = linksocks.DefaultServerOption().
 			WithWSPort(wsPort).
 			WithLogger(logger)
 	} else {
@@ -211,7 +211,7 @@ func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 		} else {
 			logger = createPrefixedLogger(prefix)
 		}
-		serverOpt = wssocks.DefaultServerOption().WithLogger(logger)
+		serverOpt = linksocks.DefaultServerOption().WithLogger(logger)
 
 		// Set WSPort
 		if opt.WSPort != 0 {
@@ -233,8 +233,8 @@ func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 		serverOpt.WithFastOpen(opt.FastOpen)
 	}
 
-	server := wssocks.NewWSSocksServer(serverOpt)
-	result, err := server.AddReverseToken(&wssocks.ReverseTokenOptions{
+	server := linksocks.NewLinkSocksServer(serverOpt)
+	result, err := server.AddReverseToken(&linksocks.ReverseTokenOptions{
 		Port:                 socksPort,
 		Token:                token,
 		Username:             socksUser,
@@ -282,7 +282,7 @@ func reverseClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 	} else {
 		logger = createPrefixedLogger(opt.LoggerPrefix)
 	}
-	clientOpt := wssocks.DefaultClientOption().
+	clientOpt := linksocks.DefaultClientOption().
 		WithWSURL(fmt.Sprintf("ws://localhost:%d", opt.WSPort)).
 		WithReconnectDelay(1 * time.Second).
 		WithReverse(true).
@@ -297,7 +297,7 @@ func reverseClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		clientOpt.WithThreads(opt.Threads)
 	}
 
-	client := wssocks.NewWSSocksClient(opt.Token, clientOpt)
+	client := linksocks.NewLinkSocksClient(opt.Token, clientOpt)
 	require.NoError(t, client.WaitReady(context.Background(), 5*time.Second))
 
 	return &ProxyTestClient{

@@ -23,13 +23,13 @@ def _ws_url(port: int) -> str:
 
 
 def test_import_wrapper():
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     assert Server is not None and Client is not None
 
 
 def test_forward_basic(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -43,7 +43,7 @@ def test_forward_basic(website):
 
 
 def test_reverse_basic(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -59,7 +59,7 @@ def test_reverse_basic(website):
 
 
 def test_forward_remove_token(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -76,7 +76,7 @@ def test_forward_remove_token(website):
 
 
 def test_reverse_remove_token(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -96,7 +96,7 @@ def test_reverse_remove_token(website):
 
 @pytest.mark.skipif(not has_ipv6_support(), reason="IPv6 is not supported on this system")
 def test_forward_ipv6(website_v6):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -111,7 +111,7 @@ def test_forward_ipv6(website_v6):
 
 @pytest.mark.skipif(not has_ipv6_support(), reason="IPv6 is not supported on this system")
 def test_reverse_ipv6(website_v6):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -127,7 +127,7 @@ def test_reverse_ipv6(website_v6):
 
 
 def test_udp_forward_proxy(udp_server):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -141,7 +141,7 @@ def test_udp_forward_proxy(udp_server):
 
 
 def test_udp_reverse_proxy(udp_server):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -155,7 +155,7 @@ def test_udp_reverse_proxy(udp_server):
 
 @pytest.mark.skipif(not has_ipv6_support(), reason="IPv6 is not supported on this system")
 def test_udp_forward_proxy_v6(udp_server_v6):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -170,7 +170,7 @@ def test_udp_forward_proxy_v6(udp_server_v6):
 
 @pytest.mark.skipif(not has_ipv6_support(), reason="IPv6 is not supported on this system")
 def test_udp_reverse_proxy_v6(udp_server_v6):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -186,7 +186,7 @@ def test_udp_reverse_proxy_v6(udp_server_v6):
 
 
 def test_forward_reconnect(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -216,7 +216,7 @@ def test_forward_reconnect(website):
 
 
 def test_reverse_reconnect(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -239,7 +239,7 @@ def test_reverse_reconnect(website):
 
 
 def test_connector(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -258,7 +258,7 @@ def test_connector(website):
 
 
 def test_connector_autonomy(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -283,7 +283,7 @@ def test_connector_autonomy(website):
 
 
 def test_client_threads(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -301,7 +301,7 @@ def test_client_threads(website):
 
 
 def test_fast_open_forward(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -316,7 +316,7 @@ def test_fast_open_forward(website):
 
 
 def test_fast_open_reverse(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -330,7 +330,7 @@ def test_fast_open_reverse(website):
 
 
 def test_fast_open_forward(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -345,7 +345,7 @@ def test_fast_open_forward(website):
 
 
 def test_fast_open_reverse(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -359,7 +359,7 @@ def test_fast_open_reverse(website):
 
 
 def test_fast_open_connector(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -381,7 +381,7 @@ def test_fast_open_connector(website):
 
 
 def test_mixed_fast_open_connector_all_fast_open(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -400,7 +400,7 @@ def test_mixed_fast_open_connector_all_fast_open(website):
 
 
 def test_mixed_fast_open_connector_server_fast_open(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -419,7 +419,7 @@ def test_mixed_fast_open_connector_server_fast_open(website):
 
 
 def test_mixed_fast_open_connector_connector_fast_open(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -440,7 +440,7 @@ def test_mixed_fast_open_connector_connector_fast_open(website):
 
 
 def test_mixed_fast_open_connector_client_fast_open(website):
-    from wssocks import Server, Client
+    from linksocks import Server, Client
 
     async def _main():
         ws_port = get_free_port()
@@ -460,7 +460,7 @@ def test_mixed_fast_open_connector_client_fast_open(website):
 
 def test_tcp_stress_forward(website):
     """TCP stress test with high volume traffic, timing and content verification"""
-    from wssocks import Server, Client
+    from linksocks import Server, Client
     
     async def _main():
         ws_port = get_free_port()
@@ -500,7 +500,7 @@ def test_tcp_stress_forward(website):
 
 def test_udp_stress_forward(udp_server):
     """UDP stress test with high volume traffic, timing and content verification"""
-    from wssocks import Server, Client
+    from linksocks import Server, Client
     
     async def _main():
         ws_port = get_free_port()
@@ -542,7 +542,7 @@ def test_udp_stress_forward(udp_server):
 
 def test_tcp_stress_reverse(website):
     """TCP stress test for reverse proxy with high volume traffic"""
-    from wssocks import Server, Client
+    from linksocks import Server, Client
     
     async def _main():
         ws_port = get_free_port()
@@ -580,7 +580,7 @@ def test_tcp_stress_reverse(website):
 
 def test_udp_stress_reverse(udp_server):
     """UDP stress test for reverse proxy with high volume traffic"""
-    from wssocks import Server, Client
+    from linksocks import Server, Client
     
     async def _main():
         ws_port = get_free_port()
@@ -620,7 +620,7 @@ def test_udp_stress_reverse(udp_server):
 
 def test_multi_client_tcp_stress(website):
     """Multiple clients TCP stress test with concurrent connections"""
-    from wssocks import Server, Client
+    from linksocks import Server, Client
     
     async def _main():
         ws_port = get_free_port()
@@ -672,7 +672,7 @@ def test_multi_client_tcp_stress(website):
 
 def test_multi_client_udp_stress(udp_server):
     """Multiple clients UDP stress test with concurrent connections"""
-    from wssocks import Server, Client
+    from linksocks import Server, Client
     
     async def _main():
         ws_port = get_free_port()
@@ -725,7 +725,7 @@ def test_multi_client_udp_stress(udp_server):
 
 def test_multi_client_mixed_stress(website, udp_server):
     """Mixed multiple clients stress test with both TCP and UDP traffic"""
-    from wssocks import Server, Client
+    from linksocks import Server, Client
     
     async def _main():
         ws_port = get_free_port()

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
-	"github.com/zetxtech/wssocks/wssocks"
+	"github.com/zetxtech/linksocks/linksocks"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -384,16 +384,16 @@ func TestReverseRemoveToken(t *testing.T) {
 
 	// Create server with specific ports pool
 	logger := createPrefixedLogger("SRV0")
-	serverOpt := wssocks.DefaultServerOption().
+	serverOpt := linksocks.DefaultServerOption().
 		WithWSPort(wsPort).
 		WithLogger(logger).
-		WithPortPool(wssocks.NewPortPool([]int{socksPort}))
-	server := wssocks.NewWSSocksServer(serverOpt)
+		WithPortPool(linksocks.NewPortPool([]int{socksPort}))
+	server := linksocks.NewLinkSocksServer(serverOpt)
 	require.NoError(t, server.WaitReady(context.Background(), 5*time.Second))
 	defer server.Close()
 
 	// Add first token
-	result1, err := server.AddReverseToken(&wssocks.ReverseTokenOptions{
+	result1, err := server.AddReverseToken(&linksocks.ReverseTokenOptions{
 		Port:     socksPort,
 		Token:    "",
 		Username: "",
@@ -405,7 +405,7 @@ func TestReverseRemoveToken(t *testing.T) {
 	require.NotZero(t, port1)
 
 	// Try to add second token (should fail due to port being in use)
-	result2, err := server.AddReverseToken(&wssocks.ReverseTokenOptions{
+	result2, err := server.AddReverseToken(&linksocks.ReverseTokenOptions{
 		Port:     socksPort,
 		Token:    "",
 		Username: "",
@@ -431,7 +431,7 @@ func TestReverseRemoveToken(t *testing.T) {
 	server.RemoveToken(token1)
 
 	// Add second token
-	result3, err := server.AddReverseToken(&wssocks.ReverseTokenOptions{
+	result3, err := server.AddReverseToken(&linksocks.ReverseTokenOptions{
 		Port:     socksPort,
 		Token:    "",
 		Username: "",

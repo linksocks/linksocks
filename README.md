@@ -1,8 +1,8 @@
-[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/zetxtech/wssocks/ci.yml?logo=github&label=Tests)](https://github.com/zetxtech/wssocks/actions) [![Codecov](https://img.shields.io/codecov/c/github/zetxtech/wssocks?logo=codecov&logoColor=white)](https://app.codecov.io/gh/zetxtech/wssocks/tree/main) [![Docker Pulls](https://img.shields.io/docker/pulls/jackzzs/wssocks?logo=docker&logoColor=white)](https://hub.docker.com/r/jackzzs/wssocks)
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/zetxtech/linksocks/ci.yml?logo=github&label=Tests)](https://github.com/zetxtech/linksocks/actions) [![Codecov](https://img.shields.io/codecov/c/github/zetxtech/linksocks?logo=codecov&logoColor=white)](https://app.codecov.io/gh/zetxtech/linksocks/tree/main) [![Docker Pulls](https://img.shields.io/docker/pulls/jackzzs/linksocks?logo=docker&logoColor=white)](https://hub.docker.com/r/jackzzs/linksocks)
 
-# WSSocks
+# LinkSocks
 
-WSSocks is a SOCKS proxy implementation over WebSocket protocol.
+LinkSocks is a SOCKS proxy implementation over WebSocket protocol.
 
 [中文文档 / Chinese README](README.cn.md)
 
@@ -10,9 +10,9 @@ WSSocks is a SOCKS proxy implementation over WebSocket protocol.
 
 This tool allows you to securely expose SOCKS proxy services under Web Application Firewall (WAF) protection (forward socks), or enable clients to connect and serve as SOCKS proxy servers when they don't have public network access (reverse socks).
 
-![Main Diagram](https://github.com/zetxtech/wssocks/raw/main/images/abstract.svg)
+![Main Diagram](https://github.com/zetxtech/linksocks/raw/main/images/abstract.svg)
 
-For python version, please check [zetxtech/pywssocks](https://github.com/zetxtech/pywssocks). But note that the Python version typically has lower performance compared to this implementation.
+For python version, please check [zetxtech/pylinksocks](https://github.com/zetxtech/pylinksocks). But note that the Python version typically has lower performance compared to this implementation.
 
 ## Features
 
@@ -37,53 +37,53 @@ Forward Proxy:
 
 ```bash
 # Server (WebSockets at port 8765, as network provider)
-wssocks server -t example_token
+linksocks server -t example_token
 
 # Client (SOCKS5 at port 9870)
-wssocks client -t example_token -u http://localhost:8765 -p 9870
+linksocks client -t example_token -u http://localhost:8765 -p 9870
 ```
 
 Reverse Proxy (with `-r` flag):
 
 ```bash
 # Server (WebSockets at port 8765, SOCKS at port 9870)
-wssocks server -t example_token -p 9870 -r
+linksocks server -t example_token -p 9870 -r
 
 # Client (as network provider)
-wssocks client -t example_token -u http://localhost:8765 -r
+linksocks client -t example_token -u http://localhost:8765 -r
 ```
 
 Agent Proxy (with `-c` flag for connectors' token):
 
 ```bash
 # Server (WebSockets at port 8765, SOCKS at port 9870)
-wssocks server -t example_token -c example_connector_token -p 9870 -r
+linksocks server -t example_token -c example_connector_token -p 9870 -r
 
 # Client (as network provider)
-wssocks provider -t example_token -u http://localhost:8765
+linksocks provider -t example_token -u http://localhost:8765
 
 # Connector (SOCKS5 at port 1180)
-wssocks connector -t example_connector_token -u http://localhost:8765 -p 1180
+linksocks connector -t example_connector_token -u http://localhost:8765 -p 1180
 ```
 
 You can also use our public demo server:
 
 ```bash
 # Client (as network provider)
-wssocks provider -t any_token -u https://wssocks.zetx.tech -c any_connector_token
+linksocks provider -t any_token -u https://linksocks.zetx.tech -c any_connector_token
 
 # Connector (SOCKS5 at port 1180)
-wssocks connector -t any_connector_token -u https://wssocks.zetx.tech -p 1180
+linksocks connector -t any_connector_token -u https://linksocks.zetx.tech -p 1180
 ```
 
 Autonomy Agent Proxy (with `-a` flag):
 
 ```bash
 # Server (WebSocket at port 8765, autonomy mode)
-wssocks server -r -t example_token -a
+linksocks server -r -t example_token -a
 
 # Client (as network provider, set connector token when start)
-wssocks provider -t example_token -c example_connector_token
+linksocks provider -t example_token -c example_connector_token
 ```
 
 In autonomy mode:
@@ -93,35 +93,35 @@ In autonomy mode:
 
 ## Installation
 
-WSSocks can be installed by:
+LinkSocks can be installed by:
 
 ```bash
-go install github.com/zetxtech/wssocks/cmd/wssocks@latest
+go install github.com/zetxtech/linksocks/cmd/linksocks@latest
 ```
 
-You can also download pre-built binaries for your architecture from the [releases page](https://github.com/zetxtech/wssocks/releases).
+You can also download pre-built binaries for your architecture from the [releases page](https://github.com/zetxtech/linksocks/releases).
 
-WSSocks is also available via Docker:
+LinkSocks is also available via Docker:
 
 ```bash
-docker run --rm -it jackzzs/wssocks --help
+docker run --rm -it jackzzs/linksocks --help
 ```
 
 ## Cloudflare Worker
 
-WSSocks server can be hosted on Cloudflare Worker, see: [zetxtech/wssocks.js](https://github.com/zetxtech/wssocks.js)
+LinkSocks server can be hosted on Cloudflare Worker, see: [zetxtech/linksocks.js](https://github.com/zetxtech/linksocks.js)
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/zetxtech/wssocks.js)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/zetxtech/linksocks.js)
 
-The wssocks.js version is a lite version and does not contain API functionality.
+The linksocks.js version is a lite version and does not contain API functionality.
 
 ## API Server
 
-WSSocks server provides an HTTP API when enabled with the `--api-key` flag:
+LinkSocks server provides an HTTP API when enabled with the `--api-key` flag:
 
 ```bash
 # Start server with API enabled
-wssocks server --api-key your_api_key
+linksocks server --api-key your_api_key
 ```
 
 ### API Endpoints
@@ -189,4 +189,4 @@ Removes the specified token.
 
 ## License
 
-WSSocks is open source under the MIT license.
+LinkSocks is open source under the MIT license.

@@ -1,7 +1,7 @@
 """
-Command-line interface for wssocks.
+Command-line interface for linksocks.
 
-This module provides all CLI commands for the wssocks SOCKS5 over WebSocket proxy tool.
+This module provides all CLI commands for the linksocks SOCKS5 over WebSocket proxy tool.
 """
 
 import asyncio
@@ -25,24 +25,24 @@ def cli():
 def version():
     """Print version and platform information."""
     try:
-        from wssocks import __version__
+        from linksocks import __version__
         version_str = __version__
     except ImportError:
         version_str = "unknown"
     
     platform_str = platform.platform()
-    click.echo(f"wssocks version {version_str} {platform_str}")
+    click.echo(f"linksocks version {version_str} {platform_str}")
 
 
 @click.command()
-@click.option("--token", "-t", help="Authentication token (env: WSSOCKS_TOKEN)")
+@click.option("--token", "-t", help="Authentication token (env: LINKSOCKS_TOKEN)")
 @click.option("--url", "-u", default="ws://localhost:8765", help="WebSocket server address")
 @click.option("--reverse", "-r", is_flag=True, default=False, help="Use reverse SOCKS5 proxy")
-@click.option("--connector-token", "-c", default=None, help="Connector token for reverse proxy (env: WSSOCKS_CONNECTOR_TOKEN)")
+@click.option("--connector-token", "-c", default=None, help="Connector token for reverse proxy (env: LINKSOCKS_CONNECTOR_TOKEN)")
 @click.option("--socks-host", "-s", default="127.0.0.1", help="SOCKS5 server listen address")
 @click.option("--socks-port", "-p", default=9870, help="SOCKS5 server listen port")
 @click.option("--socks-username", "-n", help="SOCKS5 authentication username")
-@click.option("--socks-password", "-w", help="SOCKS5 authentication password (env: WSSOCKS_SOCKS_PASSWORD)")
+@click.option("--socks-password", "-w", help="SOCKS5 authentication password (env: LINKSOCKS_SOCKS_PASSWORD)")
 @click.option("--socks-no-wait", "-i", is_flag=True, default=False, help="Start SOCKS server immediately")
 @click.option("--no-reconnect", "-R", is_flag=True, default=False, help="Stop when server disconnects")
 @click.option("--debug", "-d", count=True, help="Debug logging (-d for debug, -dd for trace)")
@@ -72,9 +72,9 @@ def client(
 
     async def main():
         # Get values from flags or environment
-        actual_token = get_env_or_flag(token, "WSSOCKS_TOKEN")
-        actual_connector_token = get_env_or_flag(connector_token, "WSSOCKS_CONNECTOR_TOKEN")
-        actual_socks_password = get_env_or_flag(socks_password, "WSSOCKS_SOCKS_PASSWORD")
+        actual_token = get_env_or_flag(token, "LINKSOCKS_TOKEN")
+        actual_connector_token = get_env_or_flag(connector_token, "LINKSOCKS_CONNECTOR_TOKEN")
+        actual_socks_password = get_env_or_flag(socks_password, "LINKSOCKS_SOCKS_PASSWORD")
         
         # Validate required token
         try:
@@ -135,15 +135,15 @@ def client(
 @click.command()
 @click.option("--ws-host", "-H", default="0.0.0.0", help="WebSocket server listen address")
 @click.option("--ws-port", "-P", default=8765, help="WebSocket server listen port")
-@click.option("--token", "-t", default=None, help="Auth token, auto-generated if not provided (env: WSSOCKS_TOKEN)")
-@click.option("--connector-token", "-c", default=None, help="Connector token for reverse proxy (env: WSSOCKS_CONNECTOR_TOKEN)")
+@click.option("--token", "-t", default=None, help="Auth token, auto-generated if not provided (env: LINKSOCKS_TOKEN)")
+@click.option("--connector-token", "-c", default=None, help="Connector token for reverse proxy (env: LINKSOCKS_CONNECTOR_TOKEN)")
 @click.option("--connector-autonomy", "-a", is_flag=True, default=False, help="Allow clients to manage connector tokens")
 @click.option("--buffer-size", "-b", default=4096, help="Buffer size for data transfer")
 @click.option("--reverse", "-r", is_flag=True, default=False, help="Use reverse SOCKS5 proxy")
 @click.option("--socks-host", "-s", default="127.0.0.1", help="SOCKS5 server listen address for reverse proxy")
 @click.option("--socks-port", "-p", default=9870, help="SOCKS5 server listen port for reverse proxy")
 @click.option("--socks-username", "-n", help="SOCKS5 username for authentication")
-@click.option("--socks-password", "-w", help="SOCKS5 password for authentication (env: WSSOCKS_SOCKS_PASSWORD)")
+@click.option("--socks-password", "-w", help="SOCKS5 password for authentication (env: LINKSOCKS_SOCKS_PASSWORD)")
 @click.option("--socks-nowait", "-i", is_flag=True, default=False, help="Start SOCKS server immediately")
 @click.option("--debug", "-d", count=True, help="Debug logging (-d for debug, -dd for trace)")
 @click.option("--api-key", "-k", help="Enable HTTP API with specified key")
@@ -172,9 +172,9 @@ def server(
 
     async def main():
         # Get values from flags or environment
-        actual_token = get_env_or_flag(token, "WSSOCKS_TOKEN")
-        actual_connector_token = get_env_or_flag(connector_token, "WSSOCKS_CONNECTOR_TOKEN")
-        actual_socks_password = get_env_or_flag(socks_password, "WSSOCKS_SOCKS_PASSWORD")
+        actual_token = get_env_or_flag(token, "LINKSOCKS_TOKEN")
+        actual_connector_token = get_env_or_flag(connector_token, "LINKSOCKS_CONNECTOR_TOKEN")
+        actual_socks_password = get_env_or_flag(socks_password, "LINKSOCKS_SOCKS_PASSWORD")
         
         # Setup logging
         if debug == 0:

@@ -9,21 +9,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zetxtech/wssocks/wssocks"
+	"github.com/zetxtech/linksocks/linksocks"
 
 	"github.com/stretchr/testify/require"
 )
 
-func setupTestServer(t *testing.T) (*wssocks.WSSocksServer, string, int) {
+func setupTestServer(t *testing.T) (*linksocks.LinkSocksServer, string, int) {
 	wsPort, err := getFreePort()
 	require.NoError(t, err)
 
 	logger := createPrefixedLogger("SRV0")
-	serverOpt := wssocks.DefaultServerOption().
+	serverOpt := linksocks.DefaultServerOption().
 		WithWSPort(wsPort).
 		WithLogger(logger).
 		WithAPI("TOKEN")
-	server := wssocks.NewWSSocksServer(serverOpt)
+	server := linksocks.NewLinkSocksServer(serverOpt)
 	require.NoError(t, server.WaitReady(context.Background(), 5*time.Second))
 
 	baseURL := fmt.Sprintf("http://localhost:%d", wsPort)
@@ -47,14 +47,14 @@ func TestApiCreateForwardToken(t *testing.T) {
 	server, baseURL, wsPort := setupTestServer(t)
 	defer server.Close()
 
-	resp, err := apiRequest(t, "POST", baseURL+"/api/token", "TOKEN", wssocks.TokenRequest{
+	resp, err := apiRequest(t, "POST", baseURL+"/api/token", "TOKEN", linksocks.TokenRequest{
 		Type: "forward",
 	})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	var tokenResp wssocks.TokenResponse
+	var tokenResp linksocks.TokenResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&tokenResp))
 	require.True(t, tokenResp.Success)
 	require.NotEmpty(t, tokenResp.Token)
@@ -89,7 +89,7 @@ func TestApiStatus(t *testing.T) {
 	defer resp.Body.Close()
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	var statusResp wssocks.StatusResponse
+	var statusResp linksocks.StatusResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&statusResp))
 	require.Len(t, statusResp.Tokens, 2)
 }

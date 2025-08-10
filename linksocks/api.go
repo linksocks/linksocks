@@ -1,4 +1,4 @@
-package wssocks
+package linksocks
 
 import (
 	"encoding/json"
@@ -6,14 +6,14 @@ import (
 	"strings"
 )
 
-// APIHandler handles HTTP API requests for WSSocksServer
+// APIHandler handles HTTP API requests for LinkSocksServer
 type APIHandler struct {
-	server *WSSocksServer
+	server *LinkSocksServer
 	apiKey string
 }
 
 // NewAPIHandler creates a new API handler for the given server
-func NewAPIHandler(server *WSSocksServer, apiKey string) *APIHandler {
+func NewAPIHandler(server *LinkSocksServer, apiKey string) *APIHandler {
 	return &APIHandler{
 		server: server,
 		apiKey: apiKey,

@@ -1,8 +1,8 @@
 """
-Logging configuration module for wssocks CLI.
+Logging configuration module for linksocks CLI.
 
 This module provides custom logging handlers and configuration utilities
-for the wssocks command-line interface, including Rich-based formatting
+for the linksocks command-line interface, including Rich-based formatting
 and loguru integration.
 """
 

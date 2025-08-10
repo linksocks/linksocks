@@ -58,9 +58,9 @@ jobs:
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: 0
         run: |
-          go build -o "wssocks-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}" cmd/wssocks/main.go
+          go build -o "linksocks-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}" cmd/linksocks/main.go
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v1
         with:
-          files: wssocks-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}
+          files: linksocks-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.extension }}

@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/wssocks
+      url: https://pypi.org/p/linksocks
     permissions:
       id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
 
@@ -41,7 +41,7 @@ jobs:
 
       - name: Set version environment variable
         run: |
-          echo "WSSOCKS_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          echo "LINKSOCKS_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
 
       - name: Build source distribution
         run: |

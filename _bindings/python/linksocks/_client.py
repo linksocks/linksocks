@@ -12,7 +12,7 @@ import logging
 from typing import Optional
 
 # Underlying Go bindings module (generated)
-import wssockslib  # type: ignore
+import linksockslib  # type: ignore
 
 from ._base import (
     _SnakePassthrough,
@@ -84,7 +84,7 @@ class Client(_SnakePassthrough):
             upstream_password: Password for upstream proxy authentication
             no_env_proxy: Whether to ignore proxy environment variables
         """
-        opt = wssockslib.DefaultClientOption()
+        opt = linksockslib.DefaultClientOption()
         if logger is None:
             logger = _logger
         # Use buffer-based logger system
@@ -125,7 +125,7 @@ class Client(_SnakePassthrough):
         if no_env_proxy is not None:
             opt.WithNoEnvProxy(bool(no_env_proxy))
 
-        self._raw = wssockslib.NewWSSocksClient(token, opt)
+        self._raw = linksockslib.NewLinkSocksClient(token, opt)
         self._ctx = None
 
     @property
@@ -140,7 +140,7 @@ class Client(_SnakePassthrough):
             timeout: Maximum time to wait, no timeout if None
         """
         if not self._ctx:
-            self._ctx = wssockslib.NewContextWithCancel()
+            self._ctx = linksockslib.NewContextWithCancel()
         timeout = _to_duration(timeout) if timeout is not None else 0
         return self._raw.WaitReady(ctx=self._ctx.Context(), timeout=timeout)
 
@@ -151,7 +151,7 @@ class Client(_SnakePassthrough):
             timeout: Maximum time to wait, no timeout if None
         """
         if not self._ctx:
-            self._ctx = wssockslib.NewContextWithCancel()
+            self._ctx = linksockslib.NewContextWithCancel()
         timeout = _to_duration(timeout) if timeout is not None else 0
         return await asyncio.to_thread(self._raw.WaitReady, ctx=self._ctx.Context(), timeout=timeout)
     

@@ -1,4 +1,4 @@
-package wssocks
+package linksocks
 
 import (
 	"fmt"
@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// CLI represents the command-line interface for WSSocks
+// CLI represents the command-line interface for LinkSocks
 type CLI struct {
 	rootCmd *cobra.Command
 }
@@ -33,7 +33,7 @@ func (cli *CLI) Execute() error {
 func (cli *CLI) initCommands() {
 	// Root command
 	cli.rootCmd = &cobra.Command{
-		Use:          "wssocks",
+		Use:          "linksocks",
 		Short:        "SOCKS5 over WebSocket proxy tool",
 		SilenceUsage: true,
 	}
@@ -43,7 +43,7 @@ func (cli *CLI) initCommands() {
 		Use:   "version",
 		Short: "Print the version number",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("wssocks version %s %s\n", Version, Platform)
+			fmt.Printf("linksocks version %s %s\n", Version, Platform)
 		},
 	}
 
@@ -98,9 +98,9 @@ func (cli *CLI) initCommands() {
 		cmd.Flags().BoolP("no-env-proxy", "E", false, "Ignore proxy settings from environment variables when connecting to the websocket server")
 
 		// Update usage to show environment variables
-		cmd.Flags().Lookup("token").Usage += " (env: WSSOCKS_TOKEN)"
-		cmd.Flags().Lookup("connector-token").Usage += " (env: WSSOCKS_CONNECTOR_TOKEN)"
-		cmd.Flags().Lookup("socks-password").Usage += " (env: WSSOCKS_SOCKS_PASSWORD)"
+		cmd.Flags().Lookup("token").Usage += " (env: LINKSOCKS_TOKEN)"
+		cmd.Flags().Lookup("connector-token").Usage += " (env: LINKSOCKS_CONNECTOR_TOKEN)"
+		cmd.Flags().Lookup("socks-password").Usage += " (env: LINKSOCKS_SOCKS_PASSWORD)"
 
 		// Mark required flags
 		cmd.MarkFlagRequired("token")
@@ -130,9 +130,9 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().BoolP("fast-open", "f", false, "Assume connection success and allow data transfer immediately")
 
 	// Update usage to show environment variables
-	serverCmd.Flags().Lookup("token").Usage += " (env: WSSOCKS_TOKEN)"
-	serverCmd.Flags().Lookup("connector-token").Usage += " (env: WSSOCKS_CONNECTOR_TOKEN)"
-	serverCmd.Flags().Lookup("socks-password").Usage += " (env: WSSOCKS_SOCKS_PASSWORD)"
+	serverCmd.Flags().Lookup("token").Usage += " (env: LINKSOCKS_TOKEN)"
+	serverCmd.Flags().Lookup("connector-token").Usage += " (env: LINKSOCKS_CONNECTOR_TOKEN)"
+	serverCmd.Flags().Lookup("socks-password").Usage += " (env: LINKSOCKS_SOCKS_PASSWORD)"
 
 	// Add commands to root
 	cli.rootCmd.AddCommand(clientCmd, connectorCmd, providerCmd, serverCmd, versionCmd)
@@ -171,15 +171,15 @@ func parseSocksProxy(proxyURL string) (address, username, password string, err e
 func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	// Get flags and environment variables
 	token, _ := cmd.Flags().GetString("token")
-	if envToken := os.Getenv("WSSOCKS_TOKEN"); envToken != "" && token == "" {
+	if envToken := os.Getenv("LINKSOCKS_TOKEN"); envToken != "" && token == "" {
 		token = envToken
 	}
 	connectorToken, _ := cmd.Flags().GetString("connector-token")
-	if envConnectorToken := os.Getenv("WSSOCKS_CONNECTOR_TOKEN"); envConnectorToken != "" && connectorToken == "" {
+	if envConnectorToken := os.Getenv("LINKSOCKS_CONNECTOR_TOKEN"); envConnectorToken != "" && connectorToken == "" {
 		connectorToken = envConnectorToken
 	}
 	socksPassword, _ := cmd.Flags().GetString("socks-password")
-	if envSocksPassword := os.Getenv("WSSOCKS_SOCKS_PASSWORD"); envSocksPassword != "" && socksPassword == "" {
+	if envSocksPassword := os.Getenv("LINKSOCKS_SOCKS_PASSWORD"); envSocksPassword != "" && socksPassword == "" {
 		socksPassword = envSocksPassword
 	}
 	url, _ := cmd.Flags().GetString("url")
@@ -235,7 +235,7 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 		clientOpt.WithSocksPassword(socksPassword)
 	}
 
-	client := NewWSSocksClient(token, clientOpt)
+	client := NewLinkSocksClient(token, clientOpt)
 	defer client.Close()
 
 	if err := client.WaitReady(cmd.Context(), 0); err != nil {
@@ -270,15 +270,15 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 	// Get flags and environment variables
 	token, _ := cmd.Flags().GetString("token")
-	if envToken := os.Getenv("WSSOCKS_TOKEN"); envToken != "" && token == "" {
+	if envToken := os.Getenv("LINKSOCKS_TOKEN"); envToken != "" && token == "" {
 		token = envToken
 	}
 	connectorToken, _ := cmd.Flags().GetString("connector-token")
-	if envConnectorToken := os.Getenv("WSSOCKS_CONNECTOR_TOKEN"); envConnectorToken != "" && connectorToken == "" {
+	if envConnectorToken := os.Getenv("LINKSOCKS_CONNECTOR_TOKEN"); envConnectorToken != "" && connectorToken == "" {
 		connectorToken = envConnectorToken
 	}
 	socksPassword, _ := cmd.Flags().GetString("socks-password")
-	if envSocksPassword := os.Getenv("WSSOCKS_SOCKS_PASSWORD"); envSocksPassword != "" && socksPassword == "" {
+	if envSocksPassword := os.Getenv("LINKSOCKS_SOCKS_PASSWORD"); envSocksPassword != "" && socksPassword == "" {
 		socksPassword = envSocksPassword
 	}
 	wsHost, _ := cmd.Flags().GetString("ws-host")
@@ -328,7 +328,7 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create server instance
-	server := NewWSSocksServer(serverOpt)
+	server := NewLinkSocksServer(serverOpt)
 
 	// Skip token operations if API key is provided
 	if apiKey == "" {

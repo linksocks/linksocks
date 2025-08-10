@@ -1,4 +1,4 @@
-"""wssocks: SOCKS5 over WebSocket proxy library."""
+"""linksocks: SOCKS5 over WebSocket proxy library."""
 
 __version__ = "1.0.0"
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Setup script for wssocks Python bindings.
+Setup script for linksocks Python bindings.
 
-WSSocks is a SOCKS proxy implementation over WebSocket protocol.
+LinkSocks is a SOCKS proxy implementation over WebSocket protocol.
 This package provides Python bindings for the Go implementation.
 """
 
@@ -62,18 +62,18 @@ extras_require = {
     ],
 }
 
-# Ensure the wssocks package directory exists
-wssocks_bindings_dir = here / "wssockslib"
-if not wssocks_bindings_dir.exists():
+# Ensure the linksocks package directory exists
+linksocks_bindings_dir = here / "linksockslib"
+if not linksocks_bindings_dir.exists():
     raise RuntimeError(
-        f"wssocks bindings package directory not found at {wssocks_bindings_dir}. "
+        f"linksocks bindings package directory not found at {linksocks_bindings_dir}. "
         "Please run 'make python-bindings' first to generate the Python bindings."
     )
 
 # Check for required files
 required_files = [
-    wssocks_bindings_dir / "__init__.py",
-    wssocks_bindings_dir / "wssocks.py",
+    linksocks_bindings_dir / "__init__.py",
+    linksocks_bindings_dir / "linksocks.py",
 ]
 
 missing_files = [f for f in required_files if not f.exists()]
@@ -83,38 +83,38 @@ if missing_files:
         "Please run 'make python-bindings' first to generate the Python bindings."
     )
 
-# Find all Python files in the wssocks package
+# Find all Python files in the linksocks package
 package_data = {}
-wssocks_files = []
+linksocks_files = []
 
-# Include all necessary files from the wssocks directory
+# Include all necessary files from the linksocks directory
 for ext in ["*.py", "*.so", "*.h", "*.c", "*.go"]:
-    wssocks_files.extend([
-        str(p.relative_to(wssocks_bindings_dir))
-        for p in wssocks_bindings_dir.glob(ext)
+    linksocks_files.extend([
+        str(p.relative_to(linksocks_bindings_dir))
+        for p in linksocks_bindings_dir.glob(ext)
         if p.is_file()
     ])
 
-if wssocks_files:
-    package_data["wssocks"] = wssocks_files
+if linksocks_files:
+    package_data["linksocks"] = linksocks_files
 
 class BinaryDistribution(setuptools.Distribution):
     def has_ext_modules(_):
         return True
 
 setup(
-    name="wssocks",
+    name="linksocks",
     version="1.6.5",
-    description="Python bindings for WSSocks - SOCKS proxy over WebSocket",
+    description="Python bindings for LinkSocks - SOCKS proxy over WebSocket",
     long_description=get_long_description(),
     long_description_content_type="text/markdown",
     author="ZetxTech",
     author_email="contact@zetxtech.com",
-    url="https://github.com/zetxtech/wssocks",
+    url="https://github.com/zetxtech/linksocks",
     license="Apache License 2.0",
     
     # Package configuration
-    packages=find_packages(include=["wssockslib", "wssockslib.*", "wssocks"]),
+    packages=find_packages(include=["linksockslib", "linksockslib.*", "linksocks"]),
     package_data=package_data,
     include_package_data=True,
     
@@ -150,7 +150,7 @@ setup(
     # Entry points
     entry_points={
         "console_scripts": [
-            "wssocks=wssocks._cli:cli",
+            "linksocks=linksocks._cli:cli",
         ],
     },
     
@@ -160,10 +160,10 @@ setup(
     
     # Project URLs
     project_urls={
-        "Bug Reports": "https://github.com/zetxtech/wssocks/issues",
-        "Source": "https://github.com/zetxtech/wssocks",
-        "Documentation": "https://github.com/zetxtech/wssocks#readme",
-        "Changelog": "https://github.com/zetxtech/wssocks/releases",
+        "Bug Reports": "https://github.com/zetxtech/linksocks/issues",
+        "Source": "https://github.com/zetxtech/linksocks",
+        "Documentation": "https://github.com/zetxtech/linksocks#readme",
+        "Changelog": "https://github.com/zetxtech/linksocks/releases",
     },
     
     # Binary distribution

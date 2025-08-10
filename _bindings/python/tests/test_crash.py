@@ -1,5 +1,5 @@
 """
-Crash stress tests for wssocks C extension bindings.
+Crash stress tests for linksocks C extension bindings.
 
 This module tests various edge cases and invalid inputs that could potentially
 cause the C extension to crash rather than raise proper Python exceptions.
@@ -106,7 +106,7 @@ class TestServerCrash:
     
     def test_server_init_invalid_ws_port(self):
         """Test Server.__init__ with invalid ws_port parameter"""
-        from wssocks import Server
+        from linksocks import Server
         
         invalid_ints = InvalidInputs.get_invalid_ints()
         
@@ -125,7 +125,7 @@ class TestServerCrash:
     
     def test_server_init_invalid_buffer_size_0(self):
         """Test Server.__init__ with buffer_size='not_an_int'"""
-        from wssocks import Server
+        from linksocks import Server
         try:
             server = Server(ws_port=get_free_port(), buffer_size="not_an_int")
             server.close()
@@ -134,7 +134,7 @@ class TestServerCrash:
     
     def test_server_init_invalid_buffer_size_1(self):
         """Test Server.__init__ with buffer_size=[]"""
-        from wssocks import Server
+        from linksocks import Server
         try:
             server = Server(ws_port=get_free_port(), buffer_size=[])
             server.close()
@@ -143,7 +143,7 @@ class TestServerCrash:
     
     def test_server_init_invalid_buffer_size_2(self):
         """Test Server.__init__ with buffer_size={}"""
-        from wssocks import Server
+        from linksocks import Server
         try:
             server = Server(ws_port=get_free_port(), buffer_size={})
             server.close()
@@ -152,7 +152,7 @@ class TestServerCrash:
     
     def test_server_init_invalid_buffer_size_3(self):
         """Test Server.__init__ with buffer_size=None"""
-        from wssocks import Server
+        from linksocks import Server
         try:
             server = Server(ws_port=get_free_port(), buffer_size=None)
             server.close()
@@ -161,7 +161,7 @@ class TestServerCrash:
     
     def test_server_init_invalid_buffer_size_4(self):
         """Test Server.__init__ with buffer_size=-1"""
-        from wssocks import Server
+        from linksocks import Server
         try:
             server = Server(ws_port=get_free_port(), buffer_size=-1)
             server.close()
@@ -170,7 +170,7 @@ class TestServerCrash:
     
     def test_server_init_invalid_buffer_size_5(self):
         """Test Server.__init__ with buffer_size=0"""
-        from wssocks import Server
+        from linksocks import Server
         try:
             server = Server(ws_port=get_free_port(), buffer_size=0)
             server.close()
@@ -179,7 +179,7 @@ class TestServerCrash:
     
     def test_server_init_invalid_buffer_size_6(self):
         """Test Server.__init__ with buffer_size=2**31"""
-        from wssocks import Server
+        from linksocks import Server
         try:
             server = Server(ws_port=get_free_port(), buffer_size=2**31)
             server.close()
@@ -188,7 +188,7 @@ class TestServerCrash:
     
     def test_server_init_invalid_buffer_size_7(self):
         """Test Server.__init__ with buffer_size=float('inf')"""
-        from wssocks import Server
+        from linksocks import Server
         try:
             server = Server(ws_port=get_free_port(), buffer_size=float('inf'))
             server.close()
@@ -197,7 +197,7 @@ class TestServerCrash:
     
     def test_server_init_invalid_buffer_size_8(self):
         """Test Server.__init__ with buffer_size=float('nan')"""
-        from wssocks import Server
+        from linksocks import Server
         try:
             server = Server(ws_port=get_free_port(), buffer_size=float('nan'))
             server.close()
@@ -206,7 +206,7 @@ class TestServerCrash:
     
     def test_server_init_invalid_ws_host(self):
         """Test Server.__init__ with invalid ws_host parameter"""
-        from wssocks import Server
+        from linksocks import Server
         
         invalid_strings = InvalidInputs.get_invalid_strings()
         
@@ -225,7 +225,7 @@ class TestServerCrash:
     
     def test_server_init_invalid_api_key(self):
         """Test Server.__init__ with invalid api_key parameter"""
-        from wssocks import Server
+        from linksocks import Server
         
         invalid_strings = InvalidInputs.get_invalid_strings()
         
@@ -244,7 +244,7 @@ class TestServerCrash:
     
     def test_add_forward_token_invalid_params(self):
         """Test Server.add_forward_token with invalid parameters"""
-        from wssocks import Server
+        from linksocks import Server
         
         try:
             server = Server(ws_port=get_free_port())
@@ -271,7 +271,7 @@ class TestServerCrash:
     
     def test_add_reverse_token_invalid_params(self):
         """Test Server.add_reverse_token with invalid parameters"""
-        from wssocks import Server
+        from linksocks import Server
         
         try:
             server = Server(ws_port=get_free_port())
@@ -317,7 +317,7 @@ class TestServerCrash:
     
     def test_add_connector_token_invalid_params(self):
         """Test Server.add_connector_token with invalid parameters"""
-        from wssocks import Server
+        from linksocks import Server
         
         try:
             server = Server(ws_port=get_free_port())
@@ -345,7 +345,7 @@ class TestServerCrash:
     
     def test_remove_token_invalid_params(self):
         """Test Server.remove_token with invalid parameters"""
-        from wssocks import Server
+        from linksocks import Server
         
         try:
             server = Server(ws_port=get_free_port())
@@ -372,7 +372,7 @@ class TestServerCrash:
     
     def test_wait_ready_invalid_params(self):
         """Test Server.wait_ready with invalid parameters"""
-        from wssocks import Server
+        from linksocks import Server
         
         try:
             server = Server(ws_port=get_free_port())
@@ -402,7 +402,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_token(self):
         """Test Client.__init__ with invalid token parameter"""
-        from wssocks import Client
+        from linksocks import Client
         
         invalid_strings = InvalidInputs.get_invalid_strings()
         
@@ -423,7 +423,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_ws_url(self):
         """Test Client.__init__ with invalid ws_url parameter"""
-        from wssocks import Client
+        from linksocks import Client
         
         invalid_strings = InvalidInputs.get_invalid_strings()
         valid_token = "test_token"
@@ -443,7 +443,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_socks_port(self):
         """Test Client.__init__ with invalid socks_port parameter"""
-        from wssocks import Client
+        from linksocks import Client
         
         invalid_ints = InvalidInputs.get_invalid_ints()
         valid_token = "test_token"
@@ -463,7 +463,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_buffer_size_0(self):
         """Test Client.__init__ with buffer_size='not_an_int'"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", buffer_size="not_an_int")
             client.close()
@@ -472,7 +472,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_buffer_size_1(self):
         """Test Client.__init__ with buffer_size=[]"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", buffer_size=[])
             client.close()
@@ -481,7 +481,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_buffer_size_2(self):
         """Test Client.__init__ with buffer_size={}"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", buffer_size={})
             client.close()
@@ -490,7 +490,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_buffer_size_3(self):
         """Test Client.__init__ with buffer_size=None"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", buffer_size=None)
             client.close()
@@ -499,7 +499,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_buffer_size_4(self):
         """Test Client.__init__ with buffer_size=3.14"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", buffer_size=3.14)
             client.close()
@@ -508,7 +508,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_buffer_size_5(self):
         """Test Client.__init__ with buffer_size=-1"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", buffer_size=-1)
             client.close()
@@ -517,7 +517,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_buffer_size_6(self):
         """Test Client.__init__ with buffer_size=0"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", buffer_size=0)
             client.close()
@@ -526,7 +526,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_buffer_size_7(self):
         """Test Client.__init__ with buffer_size=2**31"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", buffer_size=2**31)
             client.close()
@@ -535,7 +535,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_buffer_size_8(self):
         """Test Client.__init__ with buffer_size=float('inf')"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", buffer_size=float('inf'))
             client.close()
@@ -544,7 +544,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_buffer_size_9(self):
         """Test Client.__init__ with buffer_size=float('nan')"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", buffer_size=float('nan'))
             client.close()
@@ -553,7 +553,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_threads_0(self):
         """Test Client.__init__ with threads=None"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", threads=None)
             client.close()
@@ -562,7 +562,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_threads_1(self):
         """Test Client.__init__ with threads='not_an_int'"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", threads="not_an_int")
             client.close()
@@ -571,7 +571,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_threads_2(self):
         """Test Client.__init__ with threads=[]"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", threads=[])
             client.close()
@@ -580,7 +580,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_threads_3(self):
         """Test Client.__init__ with threads={}"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", threads={})
             client.close()
@@ -589,7 +589,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_threads_4(self):
         """Test Client.__init__ with threads=3.14"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", threads=3.14)
             client.close()
@@ -598,7 +598,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_threads_5(self):
         """Test Client.__init__ with threads=-1"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", threads=-1)
             client.close()
@@ -607,7 +607,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_threads_6(self):
         """Test Client.__init__ with threads=0"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", threads=0)
             client.close()
@@ -616,7 +616,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_threads_7(self):
         """Test Client.__init__ with threads=2**31 (large int)"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", threads=2**31)
             client.close()
@@ -625,7 +625,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_threads_8(self):
         """Test Client.__init__ with threads=-2**31 (very negative)"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", threads=-2**31)
             client.close()
@@ -634,7 +634,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_threads_9(self):
         """Test Client.__init__ with threads=float('inf')"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", threads=float('inf'))
             client.close()
@@ -643,7 +643,7 @@ class TestClientCrash:
     
     def test_client_init_invalid_threads_10(self):
         """Test Client.__init__ with threads=float('nan')"""
-        from wssocks import Client
+        from linksocks import Client
         try:
             client = Client("test_token", threads=float('nan'))
             client.close()
@@ -652,7 +652,7 @@ class TestClientCrash:
     
     def test_wait_ready_invalid_params(self):
         """Test Client.wait_ready with invalid parameters"""
-        from wssocks import Client
+        from linksocks import Client
         
         try:
             client = Client("test_token")
@@ -677,7 +677,7 @@ class TestClientCrash:
     
     def test_add_connector_invalid_params(self):
         """Test Client.add_connector with invalid parameters"""
-        from wssocks import Client
+        from linksocks import Client
         
         try:
             client = Client("test_token")
@@ -704,7 +704,7 @@ class TestClientCrash:
     
     def test_property_access_edge_cases(self):
         """Test property access that might cause crashes"""
-        from wssocks import Client
+        from linksocks import Client
         
         try:
             client = Client("test_token")
@@ -735,7 +735,7 @@ class TestAsyncMethodsCrash:
     
     def test_server_async_methods_invalid_params(self):
         """Test Server async methods with invalid parameters"""
-        from wssocks import Server
+        from linksocks import Server
         
         async def _test_async():
             try:
@@ -771,7 +771,7 @@ class TestAsyncMethodsCrash:
     
     def test_client_async_methods_invalid_params(self):
         """Test Client async methods with invalid parameters"""
-        from wssocks import Client
+        from linksocks import Client
         
         async def _test_async():
             try:
@@ -811,7 +811,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_double_close(self):
         """Test calling close() multiple times"""
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         
         # Test Server double close
         try:
@@ -833,7 +833,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_use_after_close(self):
         """Test using objects after close() - should not crash"""
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         
         # Test Server use after close
         try:
@@ -880,7 +880,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_context_manager_edge_cases(self):
         """Test context manager edge cases"""
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         
         # Test Server context manager with exceptions
         try:
@@ -906,7 +906,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_async_context_manager_edge_cases(self):
         """Test async context manager edge cases"""
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         
         async def _test_async():
             # Test Server async context manager with exceptions
@@ -937,7 +937,7 @@ class TestEdgeCasesAndCleanup:
         """Test race condition in logger registry during rapid create/destroy"""
         import threading
         import time
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         
         def create_destroy_server():
             for i in range(50):
@@ -973,7 +973,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_log_buffer_overflow_attack(self):
         """Test log buffer overflow by flooding with massive log entries"""
-        from wssocks import Server
+        from linksocks import Server
         import threading
         import time
         
@@ -999,8 +999,8 @@ class TestEdgeCasesAndCleanup:
     
     def test_log_channel_slice_corruption(self):
         """Test corruption of log notification channels slice"""
-        from wssocks import Server
-        import wssocks
+        from linksocks import Server
+        import linksocks
         import threading
         
         def corrupt_channels():
@@ -1033,7 +1033,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_buffer_writer_race_condition(self):
         """Test race condition in bufferWriter.Write method"""
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         import threading
         
         def stress_buffer_writer():
@@ -1066,7 +1066,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_event_driven_logging_corruption(self):
         """Test corruption in event-driven logging system"""
-        from wssocks import Server
+        from linksocks import Server
         import threading
         import gc
         
@@ -1091,7 +1091,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_context_cancel_during_operations(self):
         """Test canceling context during active operations"""
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         import threading
         
         def test_server_context_cancel():
@@ -1140,7 +1140,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_managed_logger_corruption(self):
         """Test corruption of managed logger during operations"""
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         
         try:
             server = Server(ws_port=get_free_port())
@@ -1178,7 +1178,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_circular_reference_in_go_objects(self):
         """Test circular references between Go and Python objects"""
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         
         # Create circular reference with server
         try:
@@ -1218,7 +1218,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_invalid_go_object_access(self):
         """Test accessing Go objects after they've been freed"""
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         
         # Test server Go object access after close
         try:
@@ -1244,17 +1244,17 @@ class TestEdgeCasesAndCleanup:
     
     def test_logger_registry_corruption(self):
         """Test corruption of global logger registry"""
-        from wssocks import Server
-        import wssocks
+        from linksocks import Server
+        import linksocks
         
         try:
             # Corrupt the global logger registry
-            if hasattr(wssocks, '_logger_registry'):
-                original_registry = wssocks._logger_registry.copy()
+            if hasattr(linksocks, '_logger_registry'):
+                original_registry = linksocks._logger_registry.copy()
                 # Inject invalid entries
-                wssocks._logger_registry['invalid'] = None
-                wssocks._logger_registry[123] = "not_a_logger"
-                wssocks._logger_registry[None] = object()
+                linksocks._logger_registry['invalid'] = None
+                linksocks._logger_registry[123] = "not_a_logger"
+                linksocks._logger_registry[None] = object()
             
             # Try to create server with corrupted registry
             server = Server(ws_port=get_free_port())
@@ -1262,30 +1262,30 @@ class TestEdgeCasesAndCleanup:
             server.close()
             
             # Restore registry
-            if hasattr(wssocks, '_logger_registry'):
-                wssocks._logger_registry.clear()
-                wssocks._logger_registry.update(original_registry)
+            if hasattr(linksocks, '_logger_registry'):
+                linksocks._logger_registry.clear()
+                linksocks._logger_registry.update(original_registry)
         except Exception:
             pass
     
     def test_event_listener_corruption(self):
         """Test corruption of event listener system"""
-        from wssocks import Server
-        import wssocks
+        from linksocks import Server
+        import linksocks
         
         try:
             # Corrupt the log listeners list
-            if hasattr(wssocks, '_log_listeners'):
-                original_listeners = wssocks._log_listeners.copy()
+            if hasattr(linksocks, '_log_listeners'):
+                original_listeners = linksocks._log_listeners.copy()
                 # Inject invalid listeners
-                wssocks._log_listeners.append(None)
-                wssocks._log_listeners.append("not_callable")
-                wssocks._log_listeners.append(123)
+                linksocks._log_listeners.append(None)
+                linksocks._log_listeners.append("not_callable")
+                linksocks._log_listeners.append(123)
                 
                 # Add a listener that raises exceptions
                 def bad_listener(entries):
                     raise RuntimeError("Bad listener")
-                wssocks._log_listeners.append(bad_listener)
+                linksocks._log_listeners.append(bad_listener)
             
             # Try to create server with corrupted listeners
             server = Server(ws_port=get_free_port())
@@ -1293,15 +1293,15 @@ class TestEdgeCasesAndCleanup:
             server.close()
             
             # Restore listeners
-            if hasattr(wssocks, '_log_listeners'):
-                wssocks._log_listeners.clear()
-                wssocks._log_listeners.extend(original_listeners)
+            if hasattr(linksocks, '_log_listeners'):
+                linksocks._log_listeners.clear()
+                linksocks._log_listeners.extend(original_listeners)
         except Exception:
             pass
     
     def test_go_duration_overflow(self):
         """Test Go duration calculations with extreme values"""
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         
         # Test with values that might cause integer overflow in Go
         extreme_values = [
@@ -1340,7 +1340,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_go_string_boundary_corruption(self):
         """Test string boundary corruption between Go and Python"""
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         
         # Test with strings that might cause buffer overruns
         dangerous_strings = [
@@ -1369,7 +1369,7 @@ class TestEdgeCasesAndCleanup:
     def test_async_context_corruption(self):
         """Test corruption of async context during operations"""
         import asyncio
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         
         async def corrupt_async_context():
             # Test server async context corruption
@@ -1402,7 +1402,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_go_panic_recovery(self):
         """Test scenarios that might cause Go panics"""
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         
         # Test with extreme port numbers that might cause panics
         extreme_ports = [-1, 0, 65536, 100000, 2**16, 2**31-1]
@@ -1436,7 +1436,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_memory_corruption_via_options(self):
         """Test memory corruption through option structures"""
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         
         # Create server with many options to stress option parsing
         try:
@@ -1475,7 +1475,7 @@ class TestEdgeCasesAndCleanup:
     def test_concurrent_context_operations(self):
         """Test concurrent context operations that might cause races"""
         import threading
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         
         def stress_server_context():
             server = None
@@ -1528,7 +1528,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_slice_bounds_corruption(self):
         """Test Go slice bounds corruption in channel management"""
-        from wssocks import Server
+        from linksocks import Server
         import threading
         import time
         
@@ -1557,7 +1557,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_go_panic_via_nil_pointer(self):
         """Test Go panic via nil pointer dereference"""
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         
         # Test server with corrupted internal state
         try:
@@ -1581,7 +1581,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_double_free_corruption(self):
         """Test double-free corruption in Go objects"""
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         import gc
         
         # Force double-free scenario
@@ -1619,7 +1619,7 @@ class TestEdgeCasesAndCleanup:
     
     def test_format_string_attack(self):
         """Test format string vulnerabilities in logging"""
-        from wssocks import Server, Client
+        from linksocks import Server, Client
         
         # Format string attack payloads
         format_attacks = [

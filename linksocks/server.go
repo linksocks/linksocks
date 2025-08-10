@@ -1,4 +1,4 @@
-package wssocks
+package linksocks
 
 import (
 	"context"
@@ -18,8 +18,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// WSSocksServer represents a SOCKS5 over WebSocket protocol server
-type WSSocksServer struct {
+// LinkSocksServer represents a SOCKS5 over WebSocket protocol server
+type LinkSocksServer struct {
 	// Core components
 	relay *Relay
 	log   zerolog.Logger
@@ -97,7 +97,7 @@ func newConnectorCache() *connectorCache {
 	}
 }
 
-// ServerOption represents configuration options for WSSocksServer
+// ServerOption represents configuration options for LinkSocksServer
 type ServerOption struct {
 	WSHost           string
 	WSPort           int
@@ -214,8 +214,8 @@ func (o *ServerOption) WithUpstreamAuth(username, password string) *ServerOption
 	return o
 }
 
-// NewWSSocksServer creates a new WSSocksServer instance
-func NewWSSocksServer(opt *ServerOption) *WSSocksServer {
+// NewLinkSocksServer creates a new LinkSocksServer instance
+func NewLinkSocksServer(opt *ServerOption) *LinkSocksServer {
 	if opt == nil {
 		opt = DefaultServerOption()
 	}
@@ -228,7 +228,7 @@ func NewWSSocksServer(opt *ServerOption) *WSSocksServer {
 		WithUpstreamProxy(opt.UpstreamProxy).
 		WithUpstreamAuth(opt.UpstreamUsername, opt.UpstreamPassword)
 
-	s := &WSSocksServer{
+	s := &LinkSocksServer{
 		relay:           NewRelay(opt.Logger, relayOpt),
 		log:             opt.Logger,
 		wsHost:          opt.WSHost,
@@ -289,7 +289,7 @@ func DefaultReverseTokenOptions() *ReverseTokenOptions {
 }
 
 // tokenExists checks if a token already exists in any form (forward, reverse, or connector)
-func (s *WSSocksServer) tokenExists(token string) bool {
+func (s *LinkSocksServer) tokenExists(token string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -312,7 +312,7 @@ func (s *WSSocksServer) tokenExists(token string) bool {
 }
 
 // AddReverseToken adds a new token for reverse socks and assigns a port
-func (s *WSSocksServer) AddReverseToken(opts *ReverseTokenOptions) (*ReverseTokenResult, error) {
+func (s *LinkSocksServer) AddReverseToken(opts *ReverseTokenOptions) (*ReverseTokenResult, error) {
 	if opts == nil {
 		opts = DefaultReverseTokenOptions()
 	}
@@ -385,7 +385,7 @@ func (s *WSSocksServer) AddReverseToken(opts *ReverseTokenOptions) (*ReverseToke
 }
 
 // AddForwardToken adds a new token for forward socks proxy
-func (s *WSSocksServer) AddForwardToken(token string) (string, error) {
+func (s *LinkSocksServer) AddForwardToken(token string) (string, error) {
 	// Check if token already exists
 	if token != "" && s.tokenExists(token) {
 		return "", fmt.Errorf("token already exists")
@@ -410,7 +410,7 @@ func (s *WSSocksServer) AddForwardToken(token string) (string, error) {
 }
 
 // AddConnectorToken adds a new connector token that forwards requests to a reverse token
-func (s *WSSocksServer) AddConnectorToken(connectorToken string, reverseToken string) (string, error) {
+func (s *LinkSocksServer) AddConnectorToken(connectorToken string, reverseToken string) (string, error) {
 	// Check if connector token already exists
 	if connectorToken != "" && s.tokenExists(connectorToken) {
 		return "", fmt.Errorf("connector token already exists")
@@ -443,7 +443,7 @@ func (s *WSSocksServer) AddConnectorToken(connectorToken string, reverseToken st
 }
 
 // RemoveToken removes a token and disconnects all its clients
-func (s *WSSocksServer) RemoveToken(token string) bool {
+func (s *LinkSocksServer) RemoveToken(token string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -555,7 +555,7 @@ func (s *WSSocksServer) RemoveToken(token string) bool {
 }
 
 // handlePendingToken handles starting SOCKS server for a token
-func (s *WSSocksServer) handlePendingToken(ctx context.Context, token string) error {
+func (s *LinkSocksServer) handlePendingToken(ctx context.Context, token string) error {
 	if s.socksWaitClient {
 		return nil // Don't start SOCKS server if waiting for client
 	}
@@ -581,7 +581,7 @@ func (s *WSSocksServer) handlePendingToken(ctx context.Context, token string) er
 }
 
 // Serve starts the WebSocket server and waits for clients
-func (s *WSSocksServer) Serve(ctx context.Context) error {
+func (s *LinkSocksServer) Serve(ctx context.Context) error {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return true // Allow all origins
@@ -614,9 +614,9 @@ func (s *WSSocksServer) Serve(ctx context.Context) error {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
 			if s.apiKey != "" {
-				fmt.Fprintf(w, "WSSocks %s is running. API endpoints available at /api/*\n", Version)
+				fmt.Fprintf(w, "LinkSocks %s is running. API endpoints available at /api/*\n", Version)
 			} else {
-				fmt.Fprintf(w, "WSSocks %s is running but API is not enabled.\n", Version)
+				fmt.Fprintf(w, "LinkSocks %s is running but API is not enabled.\n", Version)
 			}
 			return
 		}
@@ -660,7 +660,7 @@ func (s *WSSocksServer) Serve(ctx context.Context) error {
 				s.log.Info().
 					Str("listen", s.wsServer.Addr).
 					Str("url", fmt.Sprintf("http://localhost:%d", s.wsPort)).
-					Msg("WSSocks server started")
+					Msg("LinkSocks server started")
 				close(s.ready)
 				return
 			}
@@ -675,7 +675,7 @@ func (s *WSSocksServer) Serve(ctx context.Context) error {
 }
 
 // WaitReady waits for the server to be ready with optional timeout
-func (s *WSSocksServer) WaitReady(ctx context.Context, timeout time.Duration) error {
+func (s *LinkSocksServer) WaitReady(ctx context.Context, timeout time.Duration) error {
 	ctx, cancel := context.WithCancel(ctx)
 
 	s.mu.Lock()
@@ -712,7 +712,7 @@ func (s *WSSocksServer) WaitReady(ctx context.Context, timeout time.Duration) er
 }
 
 // handleWebSocket handles WebSocket connection
-func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn, r *http.Request) {
+func (s *LinkSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn, r *http.Request) {
 	// Wrap the websocket connection
 	wsConn := NewWSConn(ws, "", s.log)
 	wsConn.SetClientIPFromRequest(r) // Extract and set client IP
@@ -925,7 +925,7 @@ func (s *WSSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn,
 }
 
 // messageDispatcher handles WebSocket message distribution
-func (s *WSSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clientID uuid.UUID) error {
+func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clientID uuid.UUID) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -1033,7 +1033,7 @@ func (s *WSSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clien
 }
 
 // New helper method to handle connector messages
-func (s *WSSocksServer) handleConnectorMessage(m ConnectorMessage, ws *WSConn, clientID uuid.UUID) {
+func (s *LinkSocksServer) handleConnectorMessage(m ConnectorMessage, ws *WSConn, clientID uuid.UUID) {
 	// Check permissions
 	s.mu.RLock()
 	var token string
@@ -1095,7 +1095,7 @@ func (s *WSSocksServer) handleConnectorMessage(m ConnectorMessage, ws *WSConn, c
 }
 
 // connectorMessageDispatcher handles WebSocket message distribution for connector tokens
-func (s *WSSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSConn, reverseToken string) error {
+func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSConn, reverseToken string) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -1181,7 +1181,7 @@ func (s *WSSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSCo
 }
 
 // disconnectChannel handles forwarding disconnect message and cleanup of channel resources
-func (s *WSSocksServer) disconnectChannel(channelID uuid.UUID, ws *WSConn, msg BaseMessage) {
+func (s *LinkSocksServer) disconnectChannel(channelID uuid.UUID, ws *WSConn, msg BaseMessage) {
 	// Forward disconnect message to connector if exists
 	s.connCache.mu.Lock()
 	if targetWS, exists := s.connCache.channelIDToConnector[channelID]; exists {
@@ -1198,7 +1198,7 @@ func (s *WSSocksServer) disconnectChannel(channelID uuid.UUID, ws *WSConn, msg B
 }
 
 // cleanupConnection cleans up resources when a client disconnects
-func (s *WSSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
+func (s *LinkSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 	if clientID == uuid.Nil {
 		return
 	}
@@ -1245,7 +1245,7 @@ func (s *WSSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 }
 
 // broadcastPartnersToConnectors sends the current number of reverse clients to all connectors
-func (s *WSSocksServer) broadcastPartnersToConnectors() {
+func (s *LinkSocksServer) broadcastPartnersToConnectors() {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1276,7 +1276,7 @@ func (s *WSSocksServer) broadcastPartnersToConnectors() {
 }
 
 // broadcastPartnersToReverseClients sends the current number of connectors to all reverse clients for a given token
-func (s *WSSocksServer) broadcastPartnersToReverseClients(reverseToken string) {
+func (s *LinkSocksServer) broadcastPartnersToReverseClients(reverseToken string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1307,7 +1307,7 @@ func (s *WSSocksServer) broadcastPartnersToReverseClients(reverseToken string) {
 }
 
 // getNextWebSocket gets next available WebSocket connection using round-robin
-func (s *WSSocksServer) getNextWebSocket(token string) (*WSConn, error) {
+func (s *LinkSocksServer) getNextWebSocket(token string) (*WSConn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1328,7 +1328,7 @@ func (s *WSSocksServer) getNextWebSocket(token string) (*WSConn, error) {
 }
 
 // handleSocksRequest handles incoming SOCKS5 connection
-func (s *WSSocksServer) handleSocksRequest(ctx context.Context, socksConn net.Conn, addr net.Addr, token string) error {
+func (s *LinkSocksServer) handleSocksRequest(ctx context.Context, socksConn net.Conn, addr net.Addr, token string) error {
 	s.mu.RLock()
 	_, hasClients := s.tokenClients[token]
 	s.mu.RUnlock()
@@ -1381,7 +1381,7 @@ ClientFound:
 }
 
 // runSocksServer runs a SOCKS5 server for a specific token and port
-func (s *WSSocksServer) runSocksServer(ctx context.Context, token string, socksPort int) error {
+func (s *LinkSocksServer) runSocksServer(ctx context.Context, token string, socksPort int) error {
 	listener, err := s.socketManager.GetListener(socksPort)
 	if err != nil {
 		return err
@@ -1415,8 +1415,8 @@ func (s *WSSocksServer) runSocksServer(ctx context.Context, token string, socksP
 	}
 }
 
-// Close gracefully shuts down the WSSocksServer
-func (s *WSSocksServer) Close() {
+// Close gracefully shuts down the LinkSocksServer
+func (s *LinkSocksServer) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1491,21 +1491,21 @@ func (s *WSSocksServer) Close() {
 }
 
 // GetClientCount returns the total number of connected clients
-func (s *WSSocksServer) GetClientCount() int {
+func (s *LinkSocksServer) GetClientCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.clients)
 }
 
 // HasClients returns true if there are any connected clients
-func (s *WSSocksServer) HasClients() bool {
+func (s *LinkSocksServer) HasClients() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.clients) > 0
 }
 
 // GetTokenClientCount counts clients connected for a given token
-func (s *WSSocksServer) GetTokenClientCount(token string) int {
+func (s *LinkSocksServer) GetTokenClientCount(token string) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

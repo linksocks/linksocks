@@ -1,4 +1,4 @@
-package wssocks
+package linksocks
 
 import (
 	"context"
@@ -30,8 +30,8 @@ func (e *nonRetriableError) Error() string {
 	return e.msg
 }
 
-// WSSocksClient represents a SOCKS5 over WebSocket protocol client
-type WSSocksClient struct {
+// LinkSocksClient represents a SOCKS5 over WebSocket protocol client
+type LinkSocksClient struct {
 	Connected    chan struct{} // Channel that is closed when connection is established
 	Disconnected chan struct{} // Channel that is closed when connection is lost
 	IsConnected  bool          // Boolean flag indicating current connection status
@@ -68,7 +68,7 @@ type WSSocksClient struct {
 	batchLogger *batchLogger
 }
 
-// ClientOption represents configuration options for WSSocksClient
+// ClientOption represents configuration options for LinkSocksClient
 type ClientOption struct {
 	WSURL            string
 	Reverse          bool
@@ -223,8 +223,8 @@ func (o *ClientOption) WithNoEnvProxy(noEnvProxy bool) *ClientOption {
 	return o
 }
 
-// NewWSSocksClient creates a new WSSocksClient instance
-func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
+// NewLinkSocksClient creates a new LinkSocksClient instance
+func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 	if opt == nil {
 		opt = DefaultClientOption()
 	}
@@ -261,7 +261,7 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 		WithUpstreamProxy(opt.UpstreamProxy).
 		WithUpstreamAuth(opt.UpstreamUsername, opt.UpstreamPassword)
 
-	client := &WSSocksClient{
+	client := &LinkSocksClient{
 		instanceID:      uuid.New(),
 		relay:           NewRelay(opt.Logger, relayOpt),
 		log:             opt.Logger,
@@ -315,7 +315,7 @@ func convertWSPath(wsURL string) string {
 }
 
 // WaitReady waits for the client to be ready with optional timeout
-func (c *WSSocksClient) WaitReady(ctx context.Context, timeout time.Duration) error {
+func (c *LinkSocksClient) WaitReady(ctx context.Context, timeout time.Duration) error {
 	ctx, cancel := context.WithCancel(ctx)
 
 	c.mu.Lock()
@@ -376,9 +376,9 @@ func (c *WSSocksClient) WaitReady(ctx context.Context, timeout time.Duration) er
 }
 
 // Connect starts the client operation
-func (c *WSSocksClient) Connect(ctx context.Context) error {
-	// threads parameter is already validated in NewWSSocksClient
-	c.log.Info().Str("url", c.wsURL).Msg("WSSocks Client is connecting to")
+func (c *LinkSocksClient) Connect(ctx context.Context) error {
+	// threads parameter is already validated in NewLinkSocksClient
+	c.log.Info().Str("url", c.wsURL).Msg("LinkSocks Client is connecting to")
 
 	if c.reverse {
 		return c.startReverse(ctx)
@@ -387,7 +387,7 @@ func (c *WSSocksClient) Connect(ctx context.Context) error {
 }
 
 // getNextWebSocket returns the next available WebSocket connection in round-robin fashion
-func (c *WSSocksClient) getNextWebSocket() *WSConn {
+func (c *LinkSocksClient) getNextWebSocket() *WSConn {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -407,7 +407,7 @@ func (c *WSSocksClient) getNextWebSocket() *WSConn {
 }
 
 // startForward connects to WebSocket server in forward proxy mode
-func (c *WSSocksClient) startForward(ctx context.Context) error {
+func (c *LinkSocksClient) startForward(ctx context.Context) error {
 	// Initialize socksReady channel
 	c.mu.Lock()
 	c.socksReady = make(chan struct{})
@@ -483,7 +483,7 @@ func (c *WSSocksClient) startForward(ctx context.Context) error {
 }
 
 // maintainWebSocketConnection maintains a single WebSocket connection
-func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index int) error {
+func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index int) error {
 	// Create batch logger if not exists
 	c.mu.Lock()
 	if c.batchLogger == nil {
@@ -719,7 +719,7 @@ func (c *WSSocksClient) maintainWebSocketConnection(ctx context.Context, index i
 }
 
 // startReverse connects to WebSocket server in reverse proxy mode
-func (c *WSSocksClient) startReverse(ctx context.Context) error {
+func (c *LinkSocksClient) startReverse(ctx context.Context) error {
 	var wg sync.WaitGroup
 	errChan := make(chan error, c.threads)
 
@@ -763,7 +763,7 @@ func (c *WSSocksClient) startReverse(ctx context.Context) error {
 }
 
 // messageDispatcher handles global WebSocket message dispatching
-func (c *WSSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) error {
+func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -866,7 +866,7 @@ func (c *WSSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) error
 }
 
 // heartbeatHandler maintains WebSocket connection with periodic pings
-func (c *WSSocksClient) heartbeatHandler(ctx context.Context, ws *WSConn) error {
+func (c *LinkSocksClient) heartbeatHandler(ctx context.Context, ws *WSConn) error {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -889,7 +889,7 @@ func (c *WSSocksClient) heartbeatHandler(ctx context.Context, ws *WSConn) error 
 }
 
 // runSocksServer runs local SOCKS5 server
-func (c *WSSocksClient) runSocksServer(ctx context.Context) error {
+func (c *LinkSocksClient) runSocksServer(ctx context.Context) error {
 	c.mu.Lock()
 	if c.socksListener != nil {
 		c.mu.Unlock()
@@ -938,7 +938,7 @@ func (c *WSSocksClient) runSocksServer(ctx context.Context) error {
 }
 
 // handleSocksRequest handles SOCKS5 client request
-func (c *WSSocksClient) handleSocksRequest(ctx context.Context, socksConn net.Conn) {
+func (c *LinkSocksClient) handleSocksRequest(ctx context.Context, socksConn net.Conn) {
 	defer socksConn.Close()
 
 	// Wait up to 10 seconds for WebSocket connection
@@ -960,8 +960,8 @@ func (c *WSSocksClient) handleSocksRequest(ctx context.Context, socksConn net.Co
 	}
 }
 
-// Close gracefully shuts down the WSSocksClient
-func (c *WSSocksClient) Close() {
+// Close gracefully shuts down the LinkSocksClient
+func (c *LinkSocksClient) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -1007,7 +1007,7 @@ func (c *WSSocksClient) Close() {
 
 // AddConnector sends a request to add a new connector token and waits for response.
 // This function is only available in reverse proxy mode.
-func (c *WSSocksClient) AddConnector(connectorToken string) (string, error) {
+func (c *LinkSocksClient) AddConnector(connectorToken string) (string, error) {
 	if !c.reverse {
 		return "", errors.New("add connector is only available in reverse proxy mode")
 	}
@@ -1053,7 +1053,7 @@ func (c *WSSocksClient) AddConnector(connectorToken string) (string, error) {
 
 // RemoveConnector sends a request to remove a connector token and waits for response.
 // This function is only available in reverse proxy mode.
-func (c *WSSocksClient) RemoveConnector(connectorToken string) error {
+func (c *LinkSocksClient) RemoveConnector(connectorToken string) error {
 	if !c.reverse {
 		return errors.New("remove connector is only available in reverse proxy mode")
 	}
@@ -1098,7 +1098,7 @@ func (c *WSSocksClient) RemoveConnector(connectorToken string) error {
 }
 
 // setConnectionStatus safely handle channel operations
-func (c *WSSocksClient) setConnectionStatus(connected bool) {
+func (c *LinkSocksClient) setConnectionStatus(connected bool) {
 	c.connectionMu.Lock()
 	defer c.connectionMu.Unlock()
 
@@ -1133,7 +1133,7 @@ func (c *WSSocksClient) setConnectionStatus(connected bool) {
 }
 
 // GetPartnersCount returns the current number of partners
-func (c *WSSocksClient) GetPartnersCount() int {
+func (c *LinkSocksClient) GetPartnersCount() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.numPartners

@@ -1,4 +1,4 @@
-package wssocks
+package linksocks
 
 import (
 	"bytes"

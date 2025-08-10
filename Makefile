@@ -1,4 +1,4 @@
-# Makefile for wssocks project
+# Makefile for linksocks project
 .PHONY: help build clean test python-bindings python-clean python-install python-test python-test-lib python-test-wrapper python-test-crash python-bindings-deps
 
 # Python binding targets
@@ -18,10 +18,10 @@ help:
 
 # Go targets
 build:
-	go build -o bin/wssocks cmd/wssocks/main.go
+	go build -o bin/linksocks cmd/linksocks/main.go
 
 test:
-	go test -v -race -coverprofile="coverage.txt" -covermode=atomic -coverpkg="./wssocks" "./wssocks" "./tests"
+	go test -v -race -coverprofile="coverage.txt" -covermode=atomic -coverpkg="./linksocks" "./linksocks" "./tests"
 
 clean:
 	rm -rf bin
@@ -35,17 +35,17 @@ python-bindings-deps:
 
 python-bindings: python-clean
 	@echo "Generating Python bindings with gopy pkg..."
-	@orig="wssocks/_python.go"; tmp="wssocks/python.go"; rc=0; \
+	@orig="linksocks/_python.go"; tmp="linksocks/python.go"; rc=0; \
 	if [ -f "$$orig" ]; then cp "$$orig" "$$tmp"; fi; \
-	gopy build -vm=python3 -output=$(PYTHON_OUTPUT_DIR)/wssockslib -name=wssockslib -no-make=true \
-		-build-tags=gopy github.com/zetxtech/wssocks/wssocks || rc=$$?; \
-	echo "from .wssocks import *" > $(PYTHON_OUTPUT_DIR)/wssockslib/__init__.py; \
+	gopy build -vm=python3 -output=$(PYTHON_OUTPUT_DIR)/linksockslib -name=linksockslib -no-make=true \
+		-build-tags=gopy github.com/zetxtech/linksocks/linksocks || rc=$$?; \
+	echo "from .linksocks import *" > $(PYTHON_OUTPUT_DIR)/linksockslib/__init__.py; \
 	rm -f "$$tmp"; \
 	exit $$rc
 		
 python-clean:
-	rm -rf $(PYTHON_OUTPUT_DIR)/wssockslib
-	rm -rf $(PYTHON_OUTPUT_DIR)/wssocks.egg-info
+	rm -rf $(PYTHON_OUTPUT_DIR)/linksockslib
+	rm -rf $(PYTHON_OUTPUT_DIR)/linksocks.egg-info
 
 python-test-deps:
 	@echo "Installing Python dev dependencies..."

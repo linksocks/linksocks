@@ -1,18 +1,18 @@
-[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/zetxtech/wssocks/ci.yml?logo=github&label=Tests)](https://github.com/zetxtech/wssocks/actions) [![Codecov](https://img.shields.io/codecov/c/github/zetxtech/wssocks?logo=codecov&logoColor=white)](https://app.codecov.io/gh/zetxtech/wssocks/tree/main) [![Docker Pulls](https://img.shields.io/docker/pulls/jackzzs/wssocks?logo=docker&logoColor=white)](https://hub.docker.com/r/jackzzs/wssocks)
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/zetxtech/linksocks/ci.yml?logo=github&label=Tests)](https://github.com/zetxtech/linksocks/actions) [![Codecov](https://img.shields.io/codecov/c/github/zetxtech/linksocks?logo=codecov&logoColor=white)](https://app.codecov.io/gh/zetxtech/linksocks/tree/main) [![Docker Pulls](https://img.shields.io/docker/pulls/jackzzs/linksocks?logo=docker&logoColor=white)](https://hub.docker.com/r/jackzzs/linksocks)
 
-# WSSocks
+# LinkSocks
 
-WSSocks 是一个基于 WebSocket 协议的跨网络跨机器 SOCKS 代理实现。
+LinkSocks 是一个基于 WebSocket 协议的跨网络跨机器 SOCKS 代理实现。
 
 [English README](README.md)
 
 ## 概述
 
-WSSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCKS 代理服务（正向代理模式），或使没有公网 IP 的客户端连接并作为 SOCKS 代理服务器（反向代理模式）。
+LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCKS 代理服务（正向代理模式），或使没有公网 IP 的客户端连接并作为 SOCKS 代理服务器（反向代理模式）。
 
-![架构图](https://github.com/zetxtech/wssocks/raw/main/images/abstract.svg)
+![架构图](https://github.com/zetxtech/linksocks/raw/main/images/abstract.svg)
 
-如需 Python 版本，请查看 [zetxtech/pywssocks](https://github.com/zetxtech/pywssocks)。但请注意，Python 版本的性能通常低于 Go 语言实现版本。
+如需 Python 版本，请查看 [zetxtech/pylinksocks](https://github.com/zetxtech/pylinksocks)。但请注意，Python 版本的性能通常低于 Go 语言实现版本。
 
 ## 特性
 
@@ -37,53 +37,53 @@ WSSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCKS 
 
 ```bash
 # 服务端（WebSockets 监听 8765 端口，作为网络提供方）
-wssocks server -t example_token
+linksocks server -t example_token
 
 # 客户端（SOCKS5 监听 9870 端口）
-wssocks client -t example_token -u http://localhost:8765 -p 9870
+linksocks client -t example_token -u http://localhost:8765 -p 9870
 ```
 
 反向代理模式（使用 `-r` 参数）：
 
 ```bash
 # 服务端（WebSockets 监听 8765 端口，SOCKS 监听 9870 端口）
-wssocks server -t example_token -p 9870 -r
+linksocks server -t example_token -p 9870 -r
 
 # 客户端（作为网络提供方）
-wssocks client -t example_token -u http://localhost:8765 -r
+linksocks client -t example_token -u http://localhost:8765 -r
 ```
 
 代理模式（使用 `-c` 参数指定连接器令牌）：
 
 ```bash
 # 服务端（WebSockets 监听 8765 端口，SOCKS 监听 9870 端口）
-wssocks server -t example_token -c example_connector_token -p 9870 -r
+linksocks server -t example_token -c example_connector_token -p 9870 -r
 
 # 客户端（作为网络提供方）
-wssocks provider -t example_token -u http://localhost:8765
+linksocks provider -t example_token -u http://localhost:8765
 
 # 连接器（SOCKS5 监听 1180 端口）
-wssocks connector -t example_connector_token -u http://localhost:8765 -p 1180
+linksocks connector -t example_connector_token -u http://localhost:8765 -p 1180
 ```
 
 您也可以使用我们的公共演示服务器：
 
 ```bash
 # 客户端（作为网络提供方）
-wssocks provider -t any_token -u https://wssocks.zetx.tech -c any_connector_token
+linksocks provider -t any_token -u https://linksocks.zetx.tech -c any_connector_token
 
 # 连接器（SOCKS5 监听 1180 端口）
-wssocks connector -t any_connector_token -u https://wssocks.zetx.tech -p 1180
+linksocks connector -t any_connector_token -u https://linksocks.zetx.tech -p 1180
 ```
 
 自主代理模式（使用 `-a` 参数）：
 
 ```bash
 # 服务端（WebSocket 监听 8765 端口，自主模式）
-wssocks server -r -t example_token -a
+linksocks server -r -t example_token -a
 
 # 客户端（作为网络提供方，启动时设置连接器令牌）
-wssocks provider -t example_token -c example_connector_token
+linksocks provider -t example_token -c example_connector_token
 ```
 
 在自主模式下：
@@ -93,35 +93,35 @@ wssocks provider -t example_token -c example_connector_token
 
 ## 安装
 
-安装 WSSocks：
+安装 LinkSocks：
 
 ```bash
-go install github.com/zetxtech/wssocks/cmd/wssocks@latest
+go install github.com/zetxtech/linksocks/cmd/linksocks@latest
 ```
 
-您也可以从[发布页面](https://github.com/zetxtech/wssocks/releases)下载适合您系统架构的预编译二进制文件。
+您也可以从[发布页面](https://github.com/zetxtech/linksocks/releases)下载适合您系统架构的预编译二进制文件。
 
-WSSocks 也提供 Docker 镜像：
+LinkSocks 也提供 Docker 镜像：
 
 ```bash
-docker run --rm -it jackzzs/wssocks --help
+docker run --rm -it jackzzs/linksocks --help
 ```
 
 ## Cloudflare Worker
 
-WSSocks 服务端可以部署在 Cloudflare Worker 上，详见：[zetxtech/wssocks.js](https://github.com/zetxtech/wssocks.js)
+LinkSocks 服务端可以部署在 Cloudflare Worker 上，详见：[zetxtech/linksocks.js](https://github.com/zetxtech/linksocks.js)
 
-[![部署到 Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/zetxtech/wssocks.js)
+[![部署到 Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/zetxtech/linksocks.js)
 
-wssocks.js 版本是一个轻量级版本，不包含 API 功能。
+linksocks.js 版本是一个轻量级版本，不包含 API 功能。
 
 ## API 服务
 
-使用 `--api-key` 参数启用时，WSSocks 服务端提供 HTTP API：
+使用 `--api-key` 参数启用时，LinkSocks 服务端提供 HTTP API：
 
 ```bash
 # 启用 API 功能启动服务端
-wssocks server --api-key your_api_key
+linksocks server --api-key your_api_key
 ```
 
 ### API 接口
@@ -189,4 +189,4 @@ Content-Type: application/json
 
 ## 许可证
 
-WSSocks 在 MIT 许可证下开源。
+LinkSocks 在 MIT 许可证下开源。

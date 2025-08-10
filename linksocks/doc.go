@@ -1,15 +1,15 @@
-// Package wssocks implements the core functionality of WSSocks proxy.
+// Package linksocks implements the core functionality of LinkSocks proxy.
 //
-// WSSocks is a SOCKS proxy implementation over WebSocket protocol, supporting
+// LinkSocks is a SOCKS proxy implementation over WebSocket protocol, supporting
 // both forward and reverse proxy modes. This package provides the core
 // components needed to build SOCKS proxy servers and clients.
 //
 // Basic usage:
 //
-//	import "github.com/zetxtech/wssocks/wssocks"
+//	import "github.com/zetxtech/linksocks/linksocks"
 //
 //	// Create a server with default options
-//	server := wssocks.NewWSSocksServer(wssocks.DefaultServerOption())
+//	server := linksocks.NewLinkSocksServer(linksocks.DefaultServerOption())
 //
 //	// Add a forward proxy token
 //	token, err := server.AddForwardToken("")
@@ -18,7 +18,7 @@
 //	}
 //
 //	// Add a reverse proxy token
-//	result, err := server.AddReverseToken(wssocks.DefaultReverseTokenOptions())
+//	result, err := server.AddReverseToken(linksocks.DefaultReverseTokenOptions())
 //	if err != nil {
 //		log.Fatal(err)
 //	}
@@ -30,4 +30,4 @@
 //		log.Fatal(err)
 //	}
 
-package wssocks
+package linksocks
