@@ -950,7 +950,7 @@ func (s *WSSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clien
 					case queue.(chan BaseMessage) <- m:
 						s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Message forwarded to channel")
 					default:
-						s.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Message queue full, dropping message")
+						s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Message queue full, dropping message")
 					}
 					continue
 				}
@@ -966,7 +966,7 @@ func (s *WSSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clien
 						s.log.Debug().Err(err).Msg("Failed to forward data message to connector client")
 					}
 				} else {
-					s.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Received data for unknown channel")
+					s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Received data for unknown channel, dropping message")
 				}
 
 			case ConnectMessage:

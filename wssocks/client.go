@@ -786,6 +786,8 @@ func (c *WSSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) error
 						// Drop message if queue is full instead of blocking
 						c.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Message queue full, dropping message")
 					}
+				} else {
+					c.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Received data for unknown channel, dropping message")
 				}
 
 			case ConnectMessage:
@@ -852,7 +854,7 @@ func (c *WSSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) error
 				c.log.Debug().Int("partners", m.Count).Msg("Updated partners count")
 
 			default:
-				c.log.Debug().Str("type", msg.GetType()).Msg("Received unknown message type")
+				c.log.Warn().Str("type", msg.GetType()).Msg("Received unknown message type, dropping message")
 			}
 		}
 	}
