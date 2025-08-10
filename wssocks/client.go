@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -228,6 +229,24 @@ func NewWSSocksClient(token string, opt *ClientOption) *WSSocksClient {
 		opt = DefaultClientOption()
 	}
 
+	// Validate and adjust threads parameter before using it
+	numCPU := runtime.NumCPU()
+	maxThreads := numCPU * 100
+
+	if opt.Threads < 0 {
+		// If negative, use all CPU cores
+		opt.Threads = numCPU
+		opt.Logger.Info().Int("threads", opt.Threads).Int("cpu_cores", numCPU).Msg("Negative threads value detected, using all CPU cores")
+	} else if opt.Threads == 0 {
+		// If zero, use default value of 1
+		opt.Threads = 1
+		opt.Logger.Info().Int("threads", opt.Threads).Msg("Zero threads value detected, using default value")
+	} else if opt.Threads > maxThreads {
+		// If greater than 100x CPU cores, limit to 100x CPU cores
+		opt.Threads = maxThreads
+		opt.Logger.Info().Int("threads", opt.Threads).Int("cpu_cores", numCPU).Msg("Large threads value detected, limiting to 100x CPU cores")
+	}
+
 	// Convert URL with token
 	opt.WSURL = convertWSPath(opt.WSURL)
 
@@ -358,6 +377,7 @@ func (c *WSSocksClient) WaitReady(ctx context.Context, timeout time.Duration) er
 
 // Connect starts the client operation
 func (c *WSSocksClient) Connect(ctx context.Context) error {
+	// threads parameter is already validated in NewWSSocksClient
 	c.log.Info().Str("url", c.wsURL).Msg("WSSocks Client is connecting to")
 
 	if c.reverse {
