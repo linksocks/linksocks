@@ -35,11 +35,16 @@ func getFreePort() (int, error) {
 
 // createPrefixedLogger creates a zerolog.Logger with customized level prefixes
 func createPrefixedLogger(prefix string) zerolog.Logger {
+	return createPrefixedLoggerWithLevel(prefix, zerolog.InfoLevel)
+}
+
+// createPrefixedLoggerWithLevel creates a zerolog.Logger with customized level prefixes and specified log level
+func createPrefixedLoggerWithLevel(prefix string, level zerolog.Level) zerolog.Logger {
 	return zerolog.New(zerolog.ConsoleWriter{
 		Out: os.Stdout,
 		FormatLevel: func(i interface{}) string {
-			level := i.(string)
-			switch level {
+			logLevel := i.(string)
+			switch logLevel {
 			case "trace":
 				return fmt.Sprintf("%s TRC", prefix)
 			case "debug":
@@ -51,8 +56,8 @@ func createPrefixedLogger(prefix string) zerolog.Logger {
 			case "error":
 				return fmt.Sprintf("%s ERR", prefix)
 			default:
-				return fmt.Sprintf("%s %s", prefix, level[:3])
+				return fmt.Sprintf("%s %s", prefix, logLevel[:3])
 			}
 		},
-	}).With().Timestamp().Logger()
+	}).Level(level).With().Timestamp().Logger()
 }

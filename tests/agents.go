@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/zetxtech/wssocks/wssocks"
 
 	"github.com/stretchr/testify/require"
@@ -31,6 +32,7 @@ type ProxyTestServerOption struct {
 	ConnectorAutonomy bool
 	PortPool          *wssocks.PortPool
 	LoggerPrefix      string
+	LogLevel          zerolog.Level
 	Reconnect         bool
 	StrictConnect     bool
 }
@@ -43,14 +45,15 @@ type ProxyTestClient struct {
 }
 
 type ProxyTestClientOption struct {
-	WSPort        int    // WebSocket server port
-	Token         string // Client token
-	SocksPort     int    // Custom SOCKS port
-	Threads       int    // Number of client threads
-	LoggerPrefix  string // Logger prefix for the client
-	Reverse       bool   // Whether to use reverse mode
-	StrictConnect bool   // Whether to enable strict connection mode
-	Reconnect     bool   // Whether to enable auto-reconnection
+	WSPort        int           // WebSocket server port
+	Token         string        // Client token
+	SocksPort     int           // Custom SOCKS port
+	Threads       int           // Number of client threads
+	LoggerPrefix  string        // Logger prefix for the client
+	LogLevel      zerolog.Level // Log level for the client logger
+	Reverse       bool          // Whether to use reverse mode
+	StrictConnect bool          // Whether to enable strict connection mode
+	Reconnect     bool          // Whether to enable auto-reconnection
 }
 
 // ProxyTestEnv encapsulates both server and client test environments
@@ -80,13 +83,18 @@ func forwardServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 		token = opt.Token
 
 		// Use provided options or defaults
-		if opt.LoggerPrefix != "" {
-			logger := createPrefixedLogger(opt.LoggerPrefix)
-			serverOpt = wssocks.DefaultServerOption().WithLogger(logger)
-		} else {
-			logger := createPrefixedLogger("SRV0")
-			serverOpt = wssocks.DefaultServerOption().WithLogger(logger)
+		var logger zerolog.Logger
+		prefix := opt.LoggerPrefix
+		if prefix == "" {
+			prefix = "SRV0"
 		}
+
+		if opt.LogLevel != 0 {
+			logger = createPrefixedLoggerWithLevel(prefix, opt.LogLevel)
+		} else {
+			logger = createPrefixedLogger(prefix)
+		}
+		serverOpt = wssocks.DefaultServerOption().WithLogger(logger)
 
 		// Set WSPort
 		if opt.WSPort != 0 {
@@ -134,7 +142,12 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		require.NoError(t, err)
 	}
 
-	logger := createPrefixedLogger(opt.LoggerPrefix)
+	var logger zerolog.Logger
+	if opt.LogLevel != 0 {
+		logger = createPrefixedLoggerWithLevel(opt.LoggerPrefix, opt.LogLevel)
+	} else {
+		logger = createPrefixedLogger(opt.LoggerPrefix)
+	}
 	clientOpt := wssocks.DefaultClientOption().
 		WithWSURL(fmt.Sprintf("ws://localhost:%d", opt.WSPort)).
 		WithSocksPort(socksPort).
@@ -187,13 +200,18 @@ func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 		connectorAutonomy = opt.ConnectorAutonomy
 
 		// Use provided options or defaults
-		if opt.LoggerPrefix != "" {
-			logger := createPrefixedLogger(opt.LoggerPrefix)
-			serverOpt = wssocks.DefaultServerOption().WithLogger(logger)
-		} else {
-			logger := createPrefixedLogger("SRV0")
-			serverOpt = wssocks.DefaultServerOption().WithLogger(logger)
+		var logger zerolog.Logger
+		prefix := opt.LoggerPrefix
+		if prefix == "" {
+			prefix = "SRV0"
 		}
+
+		if opt.LogLevel != 0 {
+			logger = createPrefixedLoggerWithLevel(prefix, opt.LogLevel)
+		} else {
+			logger = createPrefixedLogger(prefix)
+		}
+		serverOpt = wssocks.DefaultServerOption().WithLogger(logger)
 
 		// Set WSPort
 		if opt.WSPort != 0 {
@@ -258,7 +276,12 @@ func reverseClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		opt.LoggerPrefix = "CLT0"
 	}
 
-	logger := createPrefixedLogger(opt.LoggerPrefix)
+	var logger zerolog.Logger
+	if opt.LogLevel != 0 {
+		logger = createPrefixedLoggerWithLevel(opt.LoggerPrefix, opt.LogLevel)
+	} else {
+		logger = createPrefixedLogger(opt.LoggerPrefix)
+	}
 	clientOpt := wssocks.DefaultClientOption().
 		WithWSURL(fmt.Sprintf("ws://localhost:%d", opt.WSPort)).
 		WithReconnectDelay(1 * time.Second).
@@ -285,12 +308,23 @@ func reverseClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 
 // forwardProxy creates a complete forward proxy test environment
 func forwardProxy(t *testing.T) *ProxyTestEnv {
-	server := forwardServer(t, nil)
-	client := forwardClient(t, &ProxyTestClientOption{
-		WSPort:       server.WSPort,
-		Token:        server.Token,
-		LoggerPrefix: "CLT0",
-	})
+	return forwardProxyWithOptions(t, nil, nil)
+}
+
+// forwardProxyWithOptions creates a complete forward proxy test environment with custom options
+func forwardProxyWithOptions(t *testing.T, serverOpt *ProxyTestServerOption, clientOpt *ProxyTestClientOption) *ProxyTestEnv {
+	server := forwardServer(t, serverOpt)
+
+	if clientOpt == nil {
+		clientOpt = &ProxyTestClientOption{}
+	}
+	clientOpt.WSPort = server.WSPort
+	clientOpt.Token = server.Token
+	if clientOpt.LoggerPrefix == "" {
+		clientOpt.LoggerPrefix = "CLT0"
+	}
+
+	client := forwardClient(t, clientOpt)
 
 	return &ProxyTestEnv{
 		Server:    server,
@@ -306,12 +340,23 @@ func forwardProxy(t *testing.T) *ProxyTestEnv {
 
 // reverseProxy creates a complete reverse proxy test environment
 func reverseProxy(t *testing.T) *ProxyTestEnv {
-	server := reverseServer(t, nil)
-	client := reverseClient(t, &ProxyTestClientOption{
-		WSPort:       server.WSPort,
-		Token:        server.Token,
-		LoggerPrefix: "CLT0",
-	})
+	return reverseProxyWithOptions(t, nil, nil)
+}
+
+// reverseProxyWithOptions creates a complete reverse proxy test environment with custom options
+func reverseProxyWithOptions(t *testing.T, serverOpt *ProxyTestServerOption, clientOpt *ProxyTestClientOption) *ProxyTestEnv {
+	server := reverseServer(t, serverOpt)
+
+	if clientOpt == nil {
+		clientOpt = &ProxyTestClientOption{}
+	}
+	clientOpt.WSPort = server.WSPort
+	clientOpt.Token = server.Token
+	if clientOpt.LoggerPrefix == "" {
+		clientOpt.LoggerPrefix = "CLT0"
+	}
+
+	client := reverseClient(t, clientOpt)
 
 	return &ProxyTestEnv{
 		Server:    server,

@@ -26,3 +26,6 @@ go.work.sum
 
 # coverage
 coverage.txt
+
+# binaries
+bin/

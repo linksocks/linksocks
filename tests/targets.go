@@ -57,13 +57,13 @@ func startUDPEchoServer(useIPv6 bool) (string, string, func(), error) {
 				if err != nil {
 					continue
 				}
-				TestLogger.Info().Int("bytes", n).Msg("UDP echo server received")
+				// TestLogger.Info().Int("bytes", n).Msg("UDP echo server received")
 
 				_, err = conn.WriteToUDP(buf[:n], remoteAddr)
 				if err != nil {
 					continue
 				}
-				TestLogger.Info().Int("bytes", n).Msg("UDP echo server sent")
+				// TestLogger.Info().Int("bytes", n).Msg("UDP echo server sent")
 			}
 		}
 	}()

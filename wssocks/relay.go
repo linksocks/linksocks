@@ -340,6 +340,7 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 			Str("address", request.Address).
 			Int("port", request.Port).
 			Str("target", targetAddr).
+			Str("channel_id", request.ChannelID.String()).
 			Msg("Failed to connect to target")
 
 		response := ConnectResponseMessage{
@@ -362,6 +363,7 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 		conn.Close()
 		r.tcpChannels.Delete(request.ChannelID)
 		r.lastActivity.Delete(request.ChannelID)
+		r.log.Trace().Str("channel_id", request.ChannelID.String()).Msg("TCP connection handler finished")
 	}()
 
 	// Send success response
@@ -1332,7 +1334,7 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 
 				addr, ok := r.udpClientAddrs.Load(dataMsg.ChannelID)
 				if !ok {
-					r.log.Debug().Msg("Dropping UDP packet: no socks client address available")
+					r.log.Warn().Msg("Dropping UDP packet: no socks client address available")
 					continue
 				}
 
@@ -1448,7 +1450,12 @@ func (r *Relay) disconnectChannel(channelID uuid.UUID) {
 		}
 	}
 	r.udpClientAddrs.Delete(channelID)
-	r.messageQueues.Delete(channelID)
+	if queue, ok := r.messageQueues.LoadAndDelete(channelID); ok {
+		if ch, ok := queue.(chan BaseMessage); ok {
+			// Close channel to unblock any waiting goroutines
+			close(ch)
+		}
+	}
 	r.connectionSuccessMap.Delete(channelID)
 }
 
