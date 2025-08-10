@@ -642,13 +642,36 @@ func (s *WSSocksServer) Serve(ctx context.Context) error {
 		}
 	}
 
-	s.log.Info().
-		Str("listen", s.wsServer.Addr).
-		Str("url", fmt.Sprintf("http://localhost:%d", s.wsPort)).
-		Msg("WSSocks Server started")
-	close(s.ready)
+	// Start server in background goroutine
+	go func() {
+		if err := s.wsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.errors <- err
+		}
+	}()
 
-	return s.wsServer.ListenAndServe()
+	// Wait for server to actually start listening
+	go func() {
+		for {
+			// Check if we can connect to the server
+			conn, err := net.DialTimeout("tcp", s.wsServer.Addr, 10*time.Millisecond)
+			if err == nil {
+				conn.Close()
+				// Server is listening, signal ready
+				s.log.Info().
+					Str("listen", s.wsServer.Addr).
+					Str("url", fmt.Sprintf("http://localhost:%d", s.wsPort)).
+					Msg("WSSocks server started")
+				close(s.ready)
+				return
+			}
+			// Wait a bit before trying again
+			time.Sleep(1 * time.Millisecond)
+		}
+	}()
+
+	// Block until context is done
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 // WaitReady waits for the server to be ready with optional timeout
