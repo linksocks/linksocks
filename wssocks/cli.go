@@ -116,7 +116,7 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().IntP("ws-port", "P", 8765, "WebSocket server listen port")
 	serverCmd.Flags().StringP("token", "t", "", "Specify auth token, auto-generate if not provided")
 	serverCmd.Flags().StringP("connector-token", "c", "", "Specify connector token for reverse proxy, auto-generate if not provided")
-	serverCmd.Flags().BoolP("connector-autonomy", "a", false, "Allow connector clients to manage their own tokens")
+	serverCmd.Flags().BoolP("connector-autonomy", "a", false, "Allow clients to manage their connector tokens")
 	serverCmd.Flags().IntP("buffer-size", "b", DefaultBufferSize, "Set buffer size for data transfer")
 	serverCmd.Flags().BoolP("reverse", "r", false, "Use reverse socks5 proxy")
 	serverCmd.Flags().StringP("socks-host", "s", "127.0.0.1", "SOCKS5 server listen address for reverse proxy")
