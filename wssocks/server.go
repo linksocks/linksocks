@@ -1157,7 +1157,7 @@ func (s *WSSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSCo
 						s.log.Debug().Err(err).Msg("Failed to forward data message")
 					}
 				} else {
-					s.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Received data for unknown channel")
+					s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Received data for unknown channel, dropping packet")
 				}
 				s.connCache.mu.RUnlock()
 
@@ -1229,6 +1229,12 @@ func (s *WSSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 			}
 		} else {
 			s.tokenClients[token] = clients
+			// Adjust index if it's now out of bounds
+			if currentIndex, ok := s.tokenIndexes[token]; ok {
+				if currentIndex >= len(clients) {
+					s.tokenIndexes[token] = 0
+				}
+			}
 		}
 	}
 
@@ -1317,14 +1323,12 @@ func (s *WSSocksServer) getNextWebSocket(token string) (*WSConn, error) {
 
 	clients := s.tokenClients[token]
 	currentIndex := s.tokenIndexes[token]
+	ws := clients[currentIndex].Conn
+
+	// Move to the next client for the subsequent request
 	s.tokenIndexes[token] = (currentIndex + 1) % len(clients)
 
-	s.log.Trace().Int("index", currentIndex).Msg("Using client index for request")
-
-	if currentIndex < len(clients) {
-		return clients[currentIndex].Conn, nil
-	}
-	return clients[0].Conn, nil
+	return ws, nil
 }
 
 // handleSocksRequest handles incoming SOCKS5 connection
