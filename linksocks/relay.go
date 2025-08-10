@@ -958,7 +958,34 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 		for {
 			select {
 			case <-ctx.Done():
-				return
+				// Drain any remaining queued messages before exiting to avoid
+				// losing final response bytes when context is cancelled
+				for {
+					select {
+					case msg, ok := <-msgChan:
+						if !ok {
+							return
+						}
+						dataMsg, ok := msg.(DataMessage)
+						if !ok {
+							if msg != nil {
+								r.log.Debug().Str("type", msg.GetType()).Msg("Unexpected message type for data")
+							} else {
+								r.log.Debug().Msg("Nil message received, skipping")
+							}
+							continue
+						}
+						// Update activity time
+						r.updateActivityTime(channelID)
+						if _, err := remoteConn.Write(dataMsg.Data); err != nil {
+							errChan <- fmt.Errorf("remote write error: %w", err)
+							return
+						}
+						r.log.Trace().Int("size", len(dataMsg.Data)).Msg("Sent TCP data to target (drain)")
+					default:
+						return
+					}
+				}
 			case msg, ok := <-msgChan:
 				if !ok {
 					// Channel closed; exit goroutine cleanly
@@ -1178,7 +1205,36 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 		for {
 			select {
 			case <-ctx.Done():
-				return
+				// Drain any remaining queued messages before exiting to avoid
+				// losing final response bytes when context is cancelled
+				for {
+					select {
+					case msg, ok := <-msgChan:
+						if !ok {
+							return
+						}
+						// Type assert to DataMessage
+						dataMsg, ok := msg.(DataMessage)
+						if !ok {
+							if msg != nil {
+								r.log.Debug().Str("type", msg.GetType()).Msg("Unexpected message type for data")
+							} else {
+								r.log.Debug().Msg("Nil message received, skipping")
+							}
+							continue
+						}
+						// Update activity time
+						r.updateActivityTime(channelID)
+
+						if _, err := socksConn.Write(dataMsg.Data); err != nil {
+							errChan <- fmt.Errorf("socks write error: %w", err)
+							return
+						}
+						r.log.Trace().Int("size", len(dataMsg.Data)).Msg("Sent TCP data to SOCKS (drain)")
+					default:
+						return
+					}
+				}
 			case msg, ok := <-msgChan:
 				if !ok {
 					// Channel closed; exit goroutine cleanly
@@ -1497,24 +1553,25 @@ func (r *Relay) determineCompression(dataSize int) byte {
 
 // disconnectChannel handles cleanup of channel resources
 func (r *Relay) disconnectChannel(channelID uuid.UUID) {
-	if cancelVal, ok := r.tcpChannels.LoadAndDelete(channelID); ok {
-		if cancel, ok := cancelVal.(context.CancelFunc); ok {
-			cancel()
+	// Gracefully tear down after a short delay to allow any in-flight data
+	// to be forwarded from WebSocket to SOCKS before cancellation.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		if cancelVal, ok := r.tcpChannels.LoadAndDelete(channelID); ok {
+			if cancel, ok := cancelVal.(context.CancelFunc); ok {
+				cancel()
+			}
 		}
-	}
-	if cancelVal, ok := r.udpChannels.LoadAndDelete(channelID); ok {
-		if cancel, ok := cancelVal.(context.CancelFunc); ok {
-			cancel()
+		if cancelVal, ok := r.udpChannels.LoadAndDelete(channelID); ok {
+			if cancel, ok := cancelVal.(context.CancelFunc); ok {
+				cancel()
+			}
 		}
-	}
-	r.udpClientAddrs.Delete(channelID)
-	if queue, ok := r.messageQueues.LoadAndDelete(channelID); ok {
-		if ch, ok := queue.(chan BaseMessage); ok {
-			// Close channel to unblock any waiting goroutines
-			close(ch)
-		}
-	}
-	r.connectionSuccessMap.Delete(channelID)
+		// Remove queue mapping after cancellation; do not close channel to avoid send-on-closed panic
+		r.messageQueues.Delete(channelID)
+		r.udpClientAddrs.Delete(channelID)
+		r.connectionSuccessMap.Delete(channelID)
+	}()
 }
 
 // SetConnectionSuccess sets the connection success status for a channel

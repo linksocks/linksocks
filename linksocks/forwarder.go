@@ -201,6 +201,11 @@ func (s *DynamicForwarder) ProcessReads(conn io.Reader) {
 
 		n, err := conn.Read(buffer)
 		if err != nil {
+			// Flush any pending batched data BEFORE signaling error, to preserve
+			// ordering of final response bytes relative to the upcoming disconnect.
+			// This avoids races that can make clients observe EOF before headers.
+			flushBatch("read error")
+
 			// Always propagate the read error (including io.EOF) so caller can decide how to signal
 			select {
 			case s.errChan <- err:

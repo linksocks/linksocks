@@ -823,7 +823,11 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 				} else {
 					c.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Disconnected")
 				}
-				c.relay.disconnectChannel(m.ChannelID)
+				// Grace period to allow any in-flight data messages to be drained to SOCKS client
+				go func(id uuid.UUID) {
+					time.Sleep(200 * time.Millisecond)
+					c.relay.disconnectChannel(id)
+				}(m.ChannelID)
 
 			case ConnectorResponseMessage:
 				if queue, ok := c.relay.messageQueues.Load(m.ChannelID); ok {
