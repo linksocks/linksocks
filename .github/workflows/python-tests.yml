@@ -47,15 +47,45 @@ jobs:
       - name: Install Python build and test deps
         run: |
           python -m pip install --upgrade pip
-          pip install build pytest pytest-xdist wheel
+          pip install build pytest pytest-xdist wheel setuptools pybindgen
+      
 
-      - name: Generate Python bindings with gopy
+      - name: Generate Python bindings (gopy, Unix)
+        if: runner.os != 'Windows'
         env:
           CGO_ENABLED: 1
-        run: |
-          gopy build -vm=python -output=_bindings/python/linksockslib -name=linksockslib -no-make=true -build-tags=gopy github.com/zetxtech/linksocks/linksocks
-          echo "from .linksocks import *" > _bindings/python/linksockslib/__init__.py
         shell: bash
+        run: |
+          set -euo pipefail
+          PYTHON_OUTPUT_DIR="_bindings/python"
+          echo "Generating Python bindings with gopy..."
+          orig="linksocks/_python.go"; tmp="linksocks/python.go"; rc=0
+          if [ -f "$orig" ]; then cp "$orig" "$tmp"; fi
+          gopy build -vm=python -output="${PYTHON_OUTPUT_DIR}/linksockslib" -name=linksockslib -no-make=true -build-tags=gopy github.com/zetxtech/linksocks/linksocks || rc=$?
+          echo "from .linksocks import *" > "${PYTHON_OUTPUT_DIR}/linksockslib/__init__.py"
+          rm -f "$tmp"
+          go mod tidy
+          exit $rc
+
+      - name: Generate Python bindings (gopy, Windows)
+        if: runner.os == 'Windows'
+        env:
+          CGO_ENABLED: 1
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PYTHON_OUTPUT_DIR = "_bindings/python"
+          Write-Host "Generating Python bindings with gopy..."
+          $orig = "linksocks/_python.go"
+          $tmp = "linksocks/python.go"
+          $rc = 0
+          if (Test-Path $orig) { Copy-Item $orig $tmp }
+          gopy build -vm=python -output="$PYTHON_OUTPUT_DIR/linksockslib" -name=linksockslib -no-make=true -build-tags=gopy github.com/zetxtech/linksocks/linksocks
+          if ($LASTEXITCODE -ne 0) { $rc = $LASTEXITCODE }
+          "from .linksocks import *" | Set-Content -Path "$PYTHON_OUTPUT_DIR/linksockslib/__init__.py" -Encoding ascii
+          if (Test-Path $tmp) { Remove-Item $tmp }
+          go mod tidy
+          if ($rc -ne 0) { exit $rc }
 
       - name: Install linksocks (editable) with test extras
         run: |
@@ -66,10 +96,20 @@ jobs:
         run: |
           pytest -v -n auto
 
-      - name: Build wheel (only on tag)
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Build wheel (only on tag, Unix)
+        if: startsWith(github.ref, 'refs/tags/') && runner.os != 'Windows'
         working-directory: _bindings/python
+        shell: bash
         run: |
+          set -euo pipefail
+          python -m build --wheel --outdir ../../dist
+
+      - name: Build wheel (only on tag, Windows)
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
+        working-directory: _bindings/python
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
           python -m build --wheel --outdir ../../dist
 
       - name: Upload wheel artifact (only on tag)
