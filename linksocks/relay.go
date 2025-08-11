@@ -19,11 +19,11 @@ import (
 const (
 	// DefaultBufferSize is the size of reusable buffers
 	// Larger buffers improve throughput but consume more memory
-	DefaultBufferSize       = 512 * 1024 // 512KB buffer size
+	DefaultBufferSize       = 1024 * 1024 // 1MB buffer size
 	DefaultChannelTimeout   = 12 * time.Hour
 	DefaultConnectTimeout   = 10 * time.Second
 	DefaultMinBatchWaitTime = 20 * time.Millisecond
-	DefaultMaxBatchWaitTime = 200 * time.Millisecond
+	DefaultMaxBatchWaitTime = 500 * time.Millisecond
 	// Default threshold in bytes/sec for increasing batch delay
 	DefaultHighSpeedThreshold = 256 * 1024
 	// Default threshold in bytes/sec for reverting to immediate send
@@ -739,7 +739,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 	case 0x01: // CONNECT
 		channelQueue := make(chan BaseMessage, 1000)
 		r.messageQueues.Store(channelID, channelQueue)
-		defer r.messageQueues.Delete(channelID)
+		defer r.disconnectChannel(channelID)
 
 		// Send connection request to server
 		requestData := ConnectMessage{
@@ -856,7 +856,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 		// Create temporary queue for connection response
 		connectQueue := make(chan BaseMessage, 1000)
 		r.messageQueues.Store(channelID, connectQueue)
-		defer r.messageQueues.Delete(channelID)
+		defer r.disconnectChannel(channelID)
 
 		// Send UDP associate request to server
 		requestData := ConnectMessage{
@@ -942,7 +942,7 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 		msgChan = make(chan BaseMessage, 1000)
 		r.messageQueues.Store(channelID, msgChan)
 	}
-	defer r.messageQueues.Delete(channelID)
+	defer r.disconnectChannel(channelID)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -1054,7 +1054,7 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 		msgChan = make(chan BaseMessage, 1000)
 		r.messageQueues.Store(channelID, msgChan)
 	}
-	defer r.messageQueues.Delete(channelID)
+	defer r.disconnectChannel(channelID)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -1187,7 +1187,7 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 		msgChan = make(chan BaseMessage, 1000)
 		r.messageQueues.Store(channelID, msgChan)
 	}
-	defer r.messageQueues.Delete(channelID)
+	defer r.disconnectChannel(channelID)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -1314,7 +1314,7 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 		msgChan = make(chan BaseMessage, 1000)
 		r.messageQueues.Store(channelID, msgChan)
 	}
-	defer r.messageQueues.Delete(channelID)
+	defer r.disconnectChannel(channelID)
 
 	var wg sync.WaitGroup
 	wg.Add(3)
@@ -1391,6 +1391,9 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *
 				}
 				r.logMessage(msg, "send", ws.Label())
 				if err := ws.WriteMessage(msg); err != nil {
+					// Log the error but don't immediately exit - client may have disconnected
+					// but we should still handle any remaining UDP packets gracefully
+					r.log.Warn().Err(err).Msg("Failed to send UDP response to client")
 					errChan <- fmt.Errorf("websocket write error: %w", err)
 					return
 				}
@@ -1511,6 +1514,7 @@ func (r *Relay) logMessage(msg BaseMessage, direction string, label string) {
 
 // Close gracefully shuts down the Relay
 func (r *Relay) Close() {
+	r.log.Trace().Msg("Closing relay")
 	close(r.done)
 
 	// Cancel all active TCP channels
@@ -1559,7 +1563,8 @@ func (r *Relay) disconnectChannel(channelID uuid.UUID) {
 	// Gracefully tear down after a short delay to allow any in-flight data
 	// to be forwarded from WebSocket to SOCKS before cancellation.
 	go func() {
-		time.Sleep(100 * time.Millisecond)
+		r.log.Trace().Str("channel_id", channelID.String()).Msg("Disconnecting channel")
+		time.Sleep(5 * time.Second)
 		if cancelVal, ok := r.tcpChannels.LoadAndDelete(channelID); ok {
 			if cancel, ok := cancelVal.(context.CancelFunc); ok {
 				cancel()
@@ -1570,14 +1575,16 @@ func (r *Relay) disconnectChannel(channelID uuid.UUID) {
 				cancel()
 			}
 		}
-		// Remove queue mapping after cancellation; do not close channel to avoid send-on-closed panic
 		r.messageQueues.Delete(channelID)
 		r.udpClientAddrs.Delete(channelID)
 		r.connectionSuccessMap.Delete(channelID)
+		r.lastActivity.Delete(channelID)
+		r.log.Trace().Str("channel_id", channelID.String()).Msg("Disconnected channel")
 	}()
 }
 
 // SetConnectionSuccess sets the connection success status for a channel
 func (r *Relay) SetConnectionSuccess(channelID uuid.UUID) {
+	r.log.Trace().Str("channel_id", channelID.String()).Msg("Setting connection success")
 	r.connectionSuccessMap.Store(channelID, true)
 }
