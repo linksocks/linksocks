@@ -53,12 +53,14 @@ extras_require = {
         "black>=21.0",
         "flake8>=3.8",
         "mypy>=0.800",
+        "httpx",
     ],
     "test": [
         "pytest>=6.0",
         "pytest-cov>=2.10",
         "pytest-mock>=3.0",
         "pytest-xdist",
+        "httpx",
     ],
 }
 
