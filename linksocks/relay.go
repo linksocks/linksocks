@@ -767,6 +767,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 				var ok bool
 				response, ok = msg.(ConnectResponseMessage)
 				if !ok {
+					r.log.Debug().Str("channel_id", channelID.String()).Msg("Unexpected message type in connect response queue")
 					resp := []byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 					if _, err := socksConn.Write(resp); err != nil {
 						return fmt.Errorf("write failure response error: %w", err)
@@ -776,6 +777,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 					return fmt.Errorf("unexpected message type for connect response")
 				}
 			case <-time.After(r.option.ConnectTimeout + 5*time.Second):
+				r.log.Debug().Str("channel_id", channelID.String()).Str("addr", targetAddr).Int("port", int(targetPort)).Msg("Connect response timeout waiting on queue")
 				// Return connection failure response to SOCKS client (0x04 = Host unreachable)
 				resp := []byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 				if _, err := socksConn.Write(resp); err != nil {
@@ -787,6 +789,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 				return nil
 			}
 			if !response.Success {
+				r.log.Debug().Str("channel_id", channelID.String()).Str("error", response.Error).Msg("Connect response indicates failure")
 				// Return connection failure response to SOCKS client (0x04 = Host unreachable)
 				resp := []byte{0x05, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
 				if _, err := socksConn.Write(resp); err != nil {

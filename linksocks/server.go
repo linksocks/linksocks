@@ -1006,8 +1006,9 @@ func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, cli
 
 						select {
 						case queue.(chan BaseMessage) <- m:
-						default:
-							s.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Response queue full")
+							s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Delivered connect response to queue")
+						case <-time.After(2 * time.Second):
+							s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Timeout delivering connect response")
 						}
 					} else {
 						// Forward to connector
@@ -1017,6 +1018,9 @@ func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, cli
 							if err := connectorWS.WriteMessage(m); err != nil {
 								s.log.Debug().Err(err).Msg("Failed to forward connect response")
 							}
+							s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Forwarded connect response to connector")
+						} else {
+							s.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("No queue and no connector for connect response")
 						}
 						s.connCache.mu.RUnlock()
 					}
@@ -1327,41 +1331,70 @@ func (s *LinkSocksServer) getNextWebSocket(token string) (*WSConn, error) {
 	return clients[0].Conn, nil
 }
 
-// handleSocksRequest handles incoming SOCKS5 connection
-func (s *LinkSocksServer) handleSocksRequest(ctx context.Context, socksConn net.Conn, addr net.Addr, token string) error {
+// waitForClients waits for clients to be available for the given token
+func (s *LinkSocksServer) waitForClients(token string, addr net.Addr) error {
 	s.mu.RLock()
 	_, hasClients := s.tokenClients[token]
 	s.mu.RUnlock()
 
-	// Wait up to 10 seconds for clients to connect if needed
-	if !hasClients {
-		timeout := time.After(10 * time.Second)
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
+	// If clients are already available, return immediately
+	if hasClients {
+		return nil
+	}
 
-		for {
-			select {
-			case <-timeout:
-				s.log.Debug().Str("addr", addr.String()).Msg("No valid clients after timeout")
-				return s.relay.RefuseSocksRequest(socksConn, 3)
-			case <-ticker.C:
-				s.mu.RLock()
-				clients, ok := s.tokenClients[token]
-				hasValidClients := ok && len(clients) > 0
-				s.mu.RUnlock()
-				if hasValidClients {
-					goto ClientFound
-				}
+	// Wait up to 10 seconds for clients to connect if needed
+	timeout := time.After(10 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeout:
+			s.log.Debug().Str("addr", addr.String()).Msg("No valid clients after timeout")
+			return fmt.Errorf("no valid clients after timeout")
+		case <-ticker.C:
+			s.mu.RLock()
+			clients, ok := s.tokenClients[token]
+			hasValidClients := ok && len(clients) > 0
+			s.mu.RUnlock()
+			if hasValidClients {
+				return nil
 			}
 		}
 	}
+}
 
-ClientFound:
-	// Get WebSocket connection using round-robin
-	ws, err := s.getNextWebSocket(token)
-	if err != nil {
+// handleSocksRequest handles incoming SOCKS5 connection
+func (s *LinkSocksServer) handleSocksRequest(ctx context.Context, socksConn net.Conn, addr net.Addr, token string) error {
+	// Wait for clients to be available
+	if err := s.waitForClients(token, addr); err != nil {
+		return s.relay.RefuseSocksRequest(socksConn, 3)
+	}
+	// Get WebSocket connection using round-robin with basic liveness check (ping)
+	var ws *WSConn
+	var err error
+	// Determine number of attempts based on current clients
+	s.mu.RLock()
+	maxAttempts := len(s.tokenClients[token])
+	s.mu.RUnlock()
+	if maxAttempts == 0 {
 		s.log.Warn().Int("port", s.tokens[token]).Msg("No available client for SOCKS5 port")
 		return s.relay.RefuseSocksRequest(socksConn, 3)
+	}
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		ws, err = s.getNextWebSocket(token)
+		if err != nil {
+			s.log.Warn().Int("port", s.tokens[token]).Msg("No available client for SOCKS5 port")
+			return s.relay.RefuseSocksRequest(socksConn, 3)
+		}
+		// Quick liveness probe to avoid choosing a dead socket
+		if pingErr := ws.SyncWriteControl(websocket.PingMessage, nil, time.Now().Add(1*time.Second)); pingErr != nil {
+			s.log.Debug().Str("ws_label", ws.Label()).Msg("WS ping failed, trying next client")
+			continue
+		}
+		s.log.Trace().Str("ws_label", ws.Label()).Msg("Selected reverse client for SOCKS request")
+		break
 	}
 
 	// Get authentication info if configured

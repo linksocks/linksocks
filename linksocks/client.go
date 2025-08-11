@@ -812,8 +812,8 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 					// Non-blocking send for connect response
 					select {
 					case queue.(chan BaseMessage) <- m:
-					default:
-						c.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Connect response queue full")
+					case <-time.After(2 * time.Second):
+						c.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Timeout delivering connect response")
 					}
 				}
 
