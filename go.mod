@@ -3,7 +3,6 @@ module github.com/zetxtech/linksocks
 go 1.20
 
 require (
-	github.com/go-python/gopy v0.4.10
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/rs/zerolog v1.33.0

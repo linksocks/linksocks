@@ -41,6 +41,7 @@ python-bindings: python-clean
 		-build-tags=gopy github.com/zetxtech/linksocks/linksocks || rc=$$?; \
 	echo "from .linksocks import *" > $(PYTHON_OUTPUT_DIR)/linksockslib/__init__.py; \
 	rm -f "$$tmp"; \
+	go mod tidy; \
 	exit $$rc
 		
 python-clean:
