@@ -1,6 +1,6 @@
 """linksocks: SOCKS5 over WebSocket proxy library."""
 
-__version__ = "1.6.5"
+__version__ = "2.0.0"
 
 from ._server import Server
 from ._client import Client
