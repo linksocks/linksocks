@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -796,7 +797,7 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 					c.relay.messageQueues.Store(m.ChannelID, msgChan)
 					go func() {
 						if err := c.relay.HandleNetworkConnection(ctx, ws, m); err != nil && !errors.Is(err, context.Canceled) {
-							c.log.Debug().Err(err).Msg("Network connection handler error")
+							c.log.Debug().Err(err).Msg("Error handling network connection")
 						}
 					}()
 				}
@@ -947,7 +948,11 @@ func (c *LinkSocksClient) handleSocksRequest(ctx context.Context, socksConn net.
 		ws := c.getNextWebSocket()
 		if ws != nil {
 			if err := c.relay.HandleSocksRequest(ctx, ws, socksConn, c.socksUsername, c.socksPassword); err != nil && !errors.Is(err, context.Canceled) {
-				c.log.Warn().Err(err).Msg("Error handling SOCKS request")
+				if errors.Is(err, io.EOF) {
+					c.log.Debug().Err(err).Msg("Error handling SOCKS request")
+				} else {
+					c.log.Warn().Err(err).Msg("Error handling SOCKS request")
+				}
 			}
 			return
 		}
