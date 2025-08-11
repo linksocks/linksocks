@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,7 +70,8 @@ func (s *DynamicForwarder) ProcessReads(conn io.Reader) {
 		return
 	}
 
-	// Setup for dynamic batching
+	// Setup for dynamic batching (guarded by batchMu to avoid data races)
+	var batchMu sync.Mutex
 	var currentBatchBuffer []byte
 	currentBatchBuffer = make([]byte, 0, s.bufferSize)
 	var batchTimer *time.Timer
@@ -94,6 +96,8 @@ func (s *DynamicForwarder) ProcessReads(conn io.Reader) {
 
 	// Function to flush the current batch and adjust delay
 	flushBatch := func(reason string) {
+		batchMu.Lock()
+		defer batchMu.Unlock()
 		// Stop the timer if it's running
 		if batchTimer != nil {
 			batchTimer.Stop()
@@ -182,7 +186,6 @@ func (s *DynamicForwarder) ProcessReads(conn io.Reader) {
 				// Timer expired, flush and adjust delay based on speed since last flush
 				flushBatch("timer expired")
 			case <-s.ctx.Done():
-				s.log.Trace().Str("channel_id", s.channelID.String()).Msg("Context cancelled, exiting timer handler goroutine")
 				return // Exit timer handler goroutine
 			}
 		}
@@ -193,7 +196,6 @@ func (s *DynamicForwarder) ProcessReads(conn io.Reader) {
 		// Check context cancellation before blocking read
 		select {
 		case <-s.ctx.Done():
-			s.log.Trace().Str("channel_id", s.channelID.String()).Msg("Context cancelled, exiting main loop")
 			return
 		default:
 			// Continue to read
@@ -222,29 +224,40 @@ func (s *DynamicForwarder) ProcessReads(conn io.Reader) {
 		}
 
 		s.relay.updateActivityTime(s.channelID) // Update channel activity
-		bytesSinceLastFlush += int64(n)         // Track bytes for speed calculation
+		batchMu.Lock()
+		bytesSinceLastFlush += int64(n) // Track bytes for speed calculation
 
 		// Append read data to batch buffer
 		currentBatchBuffer = append(currentBatchBuffer, buffer[:n]...)
+		curLen := len(currentBatchBuffer)
+		curDelay := currentDelay
+		hasTimer := batchTimer != nil
+		batchMu.Unlock()
 
 		// --- Flush Logic ---
-		if len(currentBatchBuffer) >= s.bufferSize {
+		if curLen >= s.bufferSize {
 			// Flush immediately if buffer is full
 			flushBatch("buffer full")
-		} else if currentDelay == 0 {
+		} else if curDelay == 0 {
 			// Flush immediately if batching is not active (delay is zero)
 			flushBatch("immediate send")
 		} else {
 			// Batching is active (delay > 0)
-			if batchTimer == nil {
+			if !hasTimer {
 				// Start timer only if it's not already running
-				batchTimer = time.AfterFunc(currentDelay, func() {
-					// Use channel to signal expiry
-					select {
-					case flushSignalChannel <- struct{}{}:
-					default:
-					}
-				})
+				batchMu.Lock()
+				// Re-check condition under lock
+				if batchTimer == nil {
+					d := currentDelay
+					batchTimer = time.AfterFunc(d, func() {
+						// Use channel to signal expiry
+						select {
+						case flushSignalChannel <- struct{}{}:
+						default:
+						}
+					})
+				}
+				batchMu.Unlock()
 			}
 			// If timer is already running, do nothing, let it expire or be stopped by buffer full
 		}
