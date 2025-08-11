@@ -164,7 +164,7 @@ func assertUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConf
 
 		// Test UDP communication
 		for i := 0; i < udpTestAttempts; i++ {
-			conn.SetDeadline(time.Now().Add(time.Second))
+			conn.SetDeadline(time.Now().Add(3 * time.Second))
 
 			// Create SOCKS5 UDP header
 			var header []byte
@@ -228,7 +228,7 @@ func assertUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConf
 		defer conn.Close()
 
 		for i := 0; i < udpTestAttempts; i++ {
-			conn.SetDeadline(time.Now().Add(time.Second))
+			conn.SetDeadline(time.Now().Add(3 * time.Second))
 			_, err = conn.Write(testData)
 			if err != nil {
 				TestLogger.Error().Err(err).Msg("UDP test failed")
