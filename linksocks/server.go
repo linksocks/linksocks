@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -986,7 +987,7 @@ func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, cli
 					if isForwardClient {
 						go func() {
 							if err := s.relay.HandleNetworkConnection(ctx, ws, m); err != nil && !errors.Is(err, context.Canceled) {
-								s.log.Debug().Err(err).Msg("Network connection handler error")
+								s.log.Debug().Err(err).Msg("Error handling network connection")
 							}
 						}()
 					}
@@ -1407,10 +1408,7 @@ func (s *LinkSocksServer) handleSocksRequest(ctx context.Context, socksConn net.
 	s.mu.RUnlock()
 
 	// Handle SOCKS request using relay
-	if err := s.relay.HandleSocksRequest(ctx, ws, socksConn, username, password); err != nil && !errors.Is(err, context.Canceled) {
-		s.log.Warn().Err(err).Msg("Error handling SOCKS request")
-	}
-	return nil
+	return s.relay.HandleSocksRequest(ctx, ws, socksConn, username, password)
 }
 
 // runSocksServer runs a SOCKS5 server for a specific token and port
@@ -1442,7 +1440,11 @@ func (s *LinkSocksServer) runSocksServer(ctx context.Context, token string, sock
 
 		go func() {
 			if err := s.handleSocksRequest(ctx, conn, conn.RemoteAddr(), token); err != nil && !errors.Is(err, context.Canceled) {
-				s.log.Warn().Err(err).Msg("Error handling SOCKS request")
+				if errors.Is(err, io.EOF) {
+					s.log.Debug().Err(err).Msg("Error handling SOCKS request")
+				} else {
+					s.log.Warn().Err(err).Msg("Error handling SOCKS request")
+				}
 			}
 		}()
 	}
