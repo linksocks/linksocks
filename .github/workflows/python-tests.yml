@@ -1,0 +1,83 @@
+name: Python Tests and Wheels
+
+on:
+  workflow_dispatch:
+  push:
+    paths-ignore:
+      - "*.md"
+  pull_request:
+    paths-ignore:
+      - "*.md"
+
+jobs:
+  python:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.8", "3.9", "3.13"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.22'
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Show versions
+        run: |
+          go version
+          python --version
+          pip --version
+
+      - name: Install Go build tools
+        run: |
+          go install github.com/go-python/gopy@latest
+          go install golang.org/x/tools/cmd/goimports@latest
+
+      - name: Install Python build and test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install build pytest pytest-xdist wheel
+
+      - name: Generate Python bindings with gopy
+        env:
+          CGO_ENABLED: 1
+        run: |
+          gopy build -vm=python -output=_bindings/python/linksockslib -name=linksockslib -no-make=true -build-tags=gopy github.com/zetxtech/linksocks/linksocks
+          echo "from .linksocks import *" > _bindings/python/linksockslib/__init__.py
+        shell: bash
+
+      - name: Install linksocks (editable) with test extras
+        run: |
+          python -m pip install -e _bindings/python[test]
+
+      - name: Run pytest
+        working-directory: _bindings/python
+        run: |
+          pytest -v -n auto
+
+      - name: Build wheel (only on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: _bindings/python
+        run: |
+          python -m build --wheel --outdir ../../dist
+
+      - name: Upload wheel artifact (only on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-wheels-${{ runner.os }}-py${{ matrix.python-version }}-tag-${{ github.ref_name }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+

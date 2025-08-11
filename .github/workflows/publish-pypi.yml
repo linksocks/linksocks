@@ -18,52 +18,31 @@ jobs:
       id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
 
     steps:
-      - name: Checkout code
+      - name: Checkout code (for tag context)
         uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v4
         with:
-          go-version: '1.22'
+          fetch-depth: 0
 
-      - name: Install gopy
-        run: go install github.com/go-python/gopy@latest
+      - name: Resolve tag commit
+        id: tag_commit
+        run: |
+          echo "sha=$(git rev-list -n 1 ${{ github.event.release.tag_name }})" >> $GITHUB_OUTPUT
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Download wheels from tag workflow
+        uses: dawidd6/action-download-artifact@v11
         with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install build twine
-
-      - name: Set version environment variable
-        run: |
-          echo "LINKSOCKS_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-
-      - name: Build source distribution
-        run: |
-          cd bindings/python
-          python -m build --sdist --outdir ../../dist
-
-      - name: Verify package
-        run: |
-          python -m twine check dist/*
-
-      - name: Download artifacts from build job
-        uses: actions/download-artifact@v3
-        with:
+          workflow: python-tests.yml
+          workflow_conclusion: success
+          commit: ${{ steps.tag_commit.outputs.sha }}
           path: dist/
-          pattern: python-wheels-*
-          merge-multiple: true
+          check_artifacts: true
+          if_no_artifact_found: error
 
-      - name: List all packages
+      - name: List distributions
         run: |
           ls -la dist/
 
-      - name: Publish package distributions to PyPI
+      - name: Publish distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/

@@ -13,11 +13,15 @@ jobs:
     name: Build and Upload Release Assets
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           # Windows builds
           - os: windows
             arch: amd64
+            extension: .exe
+          - os: windows
+            arch: arm64
             extension: .exe
           
           # Linux builds
@@ -26,6 +30,21 @@ jobs:
             extension: ""
           - os: linux
             arch: arm64
+            extension: ""
+          - os: linux
+            arch: 386
+            extension: ""
+          - os: linux
+            arch: arm
+            extension: ""
+          - os: linux
+            arch: ppc64le
+            extension: ""
+          - os: linux
+            arch: s390x
+            extension: ""
+          - os: linux
+            arch: riscv64
             extension: ""
           - os: linux
             arch: mips64
@@ -41,6 +60,14 @@ jobs:
 
           # FreeBSD builds
           - os: freebsd
+            arch: amd64
+            extension: ""
+          - os: freebsd
+            arch: arm64
+            extension: ""
+
+          # OpenBSD builds
+          - os: openbsd
             arch: amd64
             extension: ""
 
