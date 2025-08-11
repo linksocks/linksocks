@@ -665,7 +665,7 @@ func (s *LinkSocksServer) Serve(ctx context.Context) error {
 				return
 			}
 			// Wait a bit before trying again
-			time.Sleep(1 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 		}
 	}()
 
