@@ -56,6 +56,7 @@ async def forward_client(ws_port: int, token: str):
         client_opt.WithWSURL(f"ws://localhost:{ws_port}")
         client_opt.WithSocksPort(socks_port)
         client_opt.WithReconnectDelay(1 * linksockslib.Second())
+        client_opt.WithNoEnvProxy(True)
         client = linksockslib.NewLinkSocksClient(token, client_opt)
         try:
             ctx = linksockslib.NewContext()
@@ -127,6 +128,7 @@ async def reverse_client(ws_port: int, token: str):
         client_opt.WithWSURL(f"ws://localhost:{ws_port}")
         client_opt.WithReconnectDelay(1 * linksockslib.Second())
         client_opt.WithReverse(True)
+        client_opt.WithNoEnvProxy(True)
         client = linksockslib.NewLinkSocksClient(token, client_opt)
         try:
             ctx = linksockslib.NewContext()

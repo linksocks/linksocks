@@ -36,7 +36,7 @@ def test_forward_basic(website):
         socks_port = get_free_port()
         async with Server(ws_port=ws_port) as srv:
             token = await srv.async_add_forward_token()
-            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port) as cli:
+            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, no_env_proxy=True) as cli:
                 await async_assert_web_connection(website, socks_port)
 
     asyncio.run(asyncio.wait_for(_main(), 30))
@@ -49,7 +49,7 @@ def test_reverse_basic(website):
         ws_port = get_free_port()
         async with Server(ws_port=ws_port) as srv:
             res = srv.add_reverse_token()
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True) as cli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, no_env_proxy=True) as cli:
                 await async_assert_web_connection(website, res.port)
 
     asyncio.run(asyncio.wait_for(_main(), 30))
@@ -66,7 +66,7 @@ def test_forward_remove_token(website):
         socks_port = get_free_port()
         async with Server(ws_port=ws_port) as srv:
             token = await srv.async_add_forward_token()
-            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port) as cli:
+            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, no_env_proxy=True) as cli:
                 await async_assert_web_connection(website, socks_port)
                 srv.remove_token(token)
                 with pytest.raises(Exception):
@@ -82,7 +82,7 @@ def test_reverse_remove_token(website):
         ws_port = get_free_port()
         async with Server(ws_port=ws_port) as srv:
             res = srv.add_reverse_token()
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True) as cli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, no_env_proxy=True) as cli:
                 await async_assert_web_connection(website, res.port)
                 srv.remove_token(res.token)
                 with pytest.raises(Exception):
@@ -103,7 +103,7 @@ def test_forward_ipv6(website_v6):
         socks_port = get_free_port()
         async with Server(ws_port=ws_port) as srv:
             token = await srv.async_add_forward_token()
-            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port) as cli:
+            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, no_env_proxy=True) as cli:
                 await async_assert_web_connection(website_v6, socks_port)
 
     asyncio.run(asyncio.wait_for(_main(), 30))
@@ -117,7 +117,7 @@ def test_reverse_ipv6(website_v6):
         ws_port = get_free_port()
         async with Server(ws_port=ws_port) as srv:
             res = srv.add_reverse_token()
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True) as cli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, no_env_proxy=True) as cli:
                 await async_assert_web_connection(website_v6, res.port)
 
     asyncio.run(asyncio.wait_for(_main(), 30))
@@ -134,7 +134,7 @@ def test_udp_forward_proxy(udp_server):
         socks_port = get_free_port()
         async with Server(ws_port=ws_port) as srv:
             token = await srv.async_add_forward_token()
-            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port) as cli:
+            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, no_env_proxy=True) as cli:
                 await async_assert_udp_connection(udp_server, socks_port)
 
     asyncio.run(asyncio.wait_for(_main(), 30))
@@ -147,7 +147,7 @@ def test_udp_reverse_proxy(udp_server):
         ws_port = get_free_port()
         async with Server(ws_port=ws_port) as srv:
             res = srv.add_reverse_token()
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True) as cli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, no_env_proxy=True) as cli:
                 await async_assert_udp_connection(udp_server, res.port)
 
     asyncio.run(asyncio.wait_for(_main(), 30))
@@ -162,7 +162,7 @@ def test_udp_forward_proxy_v6(udp_server_v6):
         socks_port = get_free_port()
         async with Server(ws_port=ws_port) as srv:
             token = await srv.async_add_forward_token()
-            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port) as cli:
+            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, no_env_proxy=True) as cli:
                 await async_assert_udp_connection(udp_server_v6, socks_port)
 
     asyncio.run(asyncio.wait_for(_main(), 30))
@@ -176,7 +176,7 @@ def test_udp_reverse_proxy_v6(udp_server_v6):
         ws_port = get_free_port()
         async with Server(ws_port=ws_port) as srv:
             res = srv.add_reverse_token()
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True) as cli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, no_env_proxy=True) as cli:
                 await async_assert_udp_connection(udp_server_v6, res.port)
 
     asyncio.run(asyncio.wait_for(_main(), 30))
@@ -201,6 +201,7 @@ def test_forward_reconnect(website):
                 socks_port=socks_port,
                 reconnect=True,
                 reconnect_delay=1,
+                no_env_proxy=True,
             ) as cli:
                 await async_assert_web_connection(website, socks_port)
                 # stop server
@@ -223,12 +224,12 @@ def test_reverse_reconnect(website):
         async with Server(ws_port=ws_port) as srv:
             res = srv.add_reverse_token()
             # first client
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True) as cli1:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, no_env_proxy=True) as cli1:
                 await async_assert_web_connection(website, res.port)
 
             await asyncio.sleep(2)
             # second client
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True) as cli2:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, no_env_proxy=True) as cli2:
                 await asyncio.sleep(2)
                 await async_assert_web_connection(website, res.port)
 
@@ -249,8 +250,8 @@ def test_connector(website):
             connector = "CONNECTOR"
             srv.add_connector_token(connector, res.token)
 
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True) as rcli:
-                async with Client(connector, ws_url=_ws_url(ws_port), socks_port=get_free_port()) as fcli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, no_env_proxy=True) as rcli:
+                async with Client(connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), no_env_proxy=True) as fcli:
                     await async_assert_web_connection(website, res.port)
                     await async_assert_web_connection(website, fcli.socks_port)
 
@@ -264,12 +265,12 @@ def test_connector_autonomy(website):
         ws_port = get_free_port()
         async with Server(ws_port=ws_port) as srv:
             res = srv.add_reverse_token(allow_manage_connector=True)
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True) as rcli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, no_env_proxy=True) as rcli:
                 # client creates connector
                 token = await rcli.async_add_connector("CONNECTOR")
                 assert token
                 # Forward client using connector
-                async with Client("CONNECTOR", ws_url=_ws_url(ws_port), socks_port=get_free_port()) as fcli:
+                async with Client("CONNECTOR", ws_url=_ws_url(ws_port), socks_port=get_free_port(), no_env_proxy=True) as fcli:
                     # reverse should fail due to autonomy
                     with pytest.raises(Exception):
                         await async_assert_web_connection(website, res.port, timeout=3)
@@ -290,7 +291,7 @@ def test_client_threads(website):
         socks_port = get_free_port()
         async with Server(ws_port=ws_port) as srv:
             token = await srv.async_add_forward_token()
-            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, threads=2) as cli:
+            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, threads=2, no_env_proxy=True) as cli:
                 for _ in range(3):
                     await async_assert_web_connection(website, socks_port)
 
@@ -308,7 +309,7 @@ def test_fast_open_forward(website):
         socks_port = get_free_port()
         async with Server(ws_port=ws_port) as srv:
             token = await srv.async_add_forward_token()
-            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, fast_open=True) as cli:
+            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, fast_open=True, no_env_proxy=True) as cli:
                 for _ in range(3):
                     await async_assert_web_connection(website, socks_port)
 
@@ -322,7 +323,7 @@ def test_fast_open_reverse(website):
         ws_port = get_free_port()
         async with Server(ws_port=ws_port, fast_open=True) as srv:
             res = srv.add_reverse_token()
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, fast_open=True) as cli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, fast_open=True, no_env_proxy=True) as cli:
                 for _ in range(3):
                     await async_assert_web_connection(website, res.port)
 
@@ -337,7 +338,7 @@ def test_fast_open_forward(website):
         socks_port = get_free_port()
         async with Server(ws_port=ws_port, fast_open=True) as srv:
             token = await srv.async_add_forward_token()
-            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, fast_open=True) as cli:
+            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, fast_open=True, no_env_proxy=True) as cli:
                 for _ in range(3):
                     await async_assert_web_connection(website, socks_port)
 
@@ -351,7 +352,7 @@ def test_fast_open_reverse(website):
         ws_port = get_free_port()
         async with Server(ws_port=ws_port, fast_open=True) as srv:
             res = srv.add_reverse_token()
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, fast_open=True) as cli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, fast_open=True, no_env_proxy=True) as cli:
                 for _ in range(3):
                     await async_assert_web_connection(website, res.port)
 
@@ -367,9 +368,9 @@ def test_fast_open_connector(website):
             res = srv.add_reverse_token()
             connector = "CONNECTOR"
             srv.add_connector_token(connector, res.token)
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, fast_open=True) as rcli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, fast_open=True, no_env_proxy=True) as rcli:
                 async with Client(
-                    connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), fast_open=True
+                    connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), fast_open=True, no_env_proxy=True
                 ) as fcli:
                     await async_assert_web_connection(website, res.port)
                     await async_assert_web_connection(website, fcli.socks_port)
@@ -389,9 +390,9 @@ def test_mixed_fast_open_connector_all_fast_open(website):
             res = srv.add_reverse_token()
             connector = "CONNECTOR"
             srv.add_connector_token(connector, res.token)
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, fast_open=True) as rcli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, fast_open=True, no_env_proxy=True) as rcli:
                 async with Client(
-                    connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), fast_open=True
+                    connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), fast_open=True, no_env_proxy=True
                 ) as fcli:
                     await async_assert_web_connection(website, res.port)
                     await async_assert_web_connection(website, fcli.socks_port)
@@ -408,9 +409,9 @@ def test_mixed_fast_open_connector_server_fast_open(website):
             res = srv.add_reverse_token()
             connector = "CONNECTOR"
             srv.add_connector_token(connector, res.token)
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True) as rcli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, no_env_proxy=True) as rcli:
                 async with Client(
-                    connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), fast_open=True
+                    connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), fast_open=True, no_env_proxy=True
                 ) as fcli:
                     await async_assert_web_connection(website, res.port)
                     await async_assert_web_connection(website, fcli.socks_port)
@@ -427,10 +428,10 @@ def test_mixed_fast_open_connector_connector_fast_open(website):
             res = srv.add_reverse_token()
             connector = "CONNECTOR"
             srv.add_connector_token(connector, res.token)
-            with Client(res.token, ws_url=_ws_url(ws_port), reverse=True) as rcli:
+            with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, no_env_proxy=True) as rcli:
                 await rcli.async_wait_ready(timeout=start_time_limit)
                 with Client(
-                    connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), fast_open=True
+                    connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), fast_open=True, no_env_proxy=True
                 ) as fcli:
                     await fcli.async_wait_ready(timeout=start_time_limit)
                     await async_assert_web_connection(website, res.port)
@@ -448,8 +449,8 @@ def test_mixed_fast_open_connector_client_fast_open(website):
             res = srv.add_reverse_token()
             connector = "CONNECTOR"
             srv.add_connector_token(connector, res.token)
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, fast_open=True) as rcli:
-                async with Client(connector, ws_url=_ws_url(ws_port), socks_port=get_free_port()) as fcli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, fast_open=True, no_env_proxy=True) as rcli:
+                async with Client(connector, ws_url=_ws_url(ws_port), socks_port=get_free_port(), no_env_proxy=True) as fcli:
                     await async_assert_web_connection(website, res.port)
                     await async_assert_web_connection(website, fcli.socks_port)
 
@@ -468,7 +469,7 @@ def test_tcp_stress_forward(website):
         
         async with Server(ws_port=ws_port) as srv:
             token = await srv.async_add_forward_token()
-            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port) as cli:
+            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, no_env_proxy=True) as cli:
                 # High volume concurrent requests
                 tasks = []
                 start_time = time.time()
@@ -508,7 +509,7 @@ def test_udp_stress_forward(udp_server):
         
         async with Server(ws_port=ws_port) as srv:
             token = await srv.async_add_forward_token()
-            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port) as cli:
+            async with Client(token, ws_url=_ws_url(ws_port), socks_port=socks_port, no_env_proxy=True) as cli:
                 # High volume UDP packets with content verification
                 tasks = []
                 start_time = time.time()
@@ -549,7 +550,7 @@ def test_tcp_stress_reverse(website):
         
         async with Server(ws_port=ws_port) as srv:
             res = srv.add_reverse_token()
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True) as rcli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, no_env_proxy=True) as rcli:
                 # High volume concurrent requests through reverse proxy
                 tasks = []
                 start_time = time.time()
@@ -587,7 +588,7 @@ def test_udp_stress_reverse(udp_server):
         
         async with Server(ws_port=ws_port) as srv:
             res = srv.add_reverse_token()
-            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True) as rcli:
+            async with Client(res.token, ws_url=_ws_url(ws_port), reverse=True, no_env_proxy=True) as rcli:
                 # Test high volume UDP through reverse proxy
                 tasks = []
                 start_time = time.time()
@@ -631,7 +632,7 @@ def test_multi_client_tcp_stress(website):
             # Create multiple clients concurrently
             async def client_stress_test(client_id):
                 client_port = get_free_port()
-                async with Client(token, ws_url=_ws_url(ws_port), socks_port=client_port) as cli:
+                async with Client(token, ws_url=_ws_url(ws_port), socks_port=client_port, no_env_proxy=True) as cli:
                     # Each client makes multiple concurrent requests
                     tasks = []
                     for req_id in range(20):  # 20 requests per client
@@ -683,7 +684,7 @@ def test_multi_client_udp_stress(udp_server):
             # Create multiple clients concurrently
             async def client_udp_stress_test(client_id):
                 client_port = get_free_port()
-                async with Client(token, ws_url=_ws_url(ws_port), socks_port=client_port) as cli:
+                async with Client(token, ws_url=_ws_url(ws_port), socks_port=client_port, no_env_proxy=True) as cli:
                     # Each client sends multiple UDP packets
                     tasks = []
                     for batch_id in range(10):  # 10 batches per client

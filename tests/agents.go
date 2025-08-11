@@ -153,7 +153,8 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		WithSocksPort(socksPort).
 		WithReconnectDelay(1 * time.Second).
 		WithFastOpen(opt.FastOpen).
-		WithLogger(logger)
+		WithLogger(logger).
+		WithNoEnvProxy(true)
 
 	if opt.Reconnect {
 		clientOpt.WithReconnect(true)
@@ -287,7 +288,8 @@ func reverseClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		WithReconnectDelay(1 * time.Second).
 		WithReverse(true).
 		WithFastOpen(opt.FastOpen).
-		WithLogger(logger)
+		WithLogger(logger).
+		WithNoEnvProxy(true)
 
 	if opt.Reconnect {
 		clientOpt.WithReconnect(true)
