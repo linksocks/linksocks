@@ -32,12 +32,12 @@ func testWebConnection(targetURL string, proxyConfig *ProxyConfig) error {
 	var httpClient *http.Client
 
 	if proxyConfig != nil {
-		proxyURL := fmt.Sprintf("socks5://%s", net.JoinHostPort("localhost", fmt.Sprint(proxyConfig.Port)))
+		proxyURL := fmt.Sprintf("socks5://%s", net.JoinHostPort("127.0.0.1", fmt.Sprint(proxyConfig.Port)))
 		if proxyConfig.Username != "" || proxyConfig.Password != "" {
 			proxyURL = fmt.Sprintf("socks5://%s:%s@%s",
 				url.QueryEscape(proxyConfig.Username),
 				url.QueryEscape(proxyConfig.Password),
-				net.JoinHostPort("localhost", fmt.Sprint(proxyConfig.Port)))
+				net.JoinHostPort("127.0.0.1", fmt.Sprint(proxyConfig.Port)))
 		}
 
 		parsedURL, err := url.Parse(proxyURL)
@@ -95,7 +95,7 @@ func assertUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConf
 
 	var proxyAddr string
 	if proxyConfig != nil {
-		proxyAddr = net.JoinHostPort("localhost", fmt.Sprint(proxyConfig.Port))
+		proxyAddr = net.JoinHostPort("127.0.0.1", fmt.Sprint(proxyConfig.Port))
 	} else {
 		proxyAddr = serverAddr
 	}

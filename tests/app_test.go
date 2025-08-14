@@ -956,7 +956,6 @@ func TestUDPStressReverse(t *testing.T) {
 }
 
 func TestMultiClientTCPStressReverse(t *testing.T) {
-	// Multiple clients TCP stress test with concurrent connections
 	server := reverseServer(t, &ProxyTestServerOption{LogLevel: zerolog.TraceLevel})
 	defer server.Close()
 
@@ -967,17 +966,14 @@ func TestMultiClientTCPStressReverse(t *testing.T) {
 	start := time.Now()
 	results := make(chan error, numClients)
 	var wg sync.WaitGroup
-	// Keep all clients alive until all requests across all clients are done
 	var clients []*ProxyTestClient
 	var clientsMu sync.Mutex
 
-	// Create multiple reverse clients concurrently
 	for i := 0; i < numClients; i++ {
 		wg.Add(1)
 		go func(clientID int) {
 			defer wg.Done()
 
-			// Create reverse client that connects to the server
 			client := reverseClient(t, &ProxyTestClientOption{
 				WSPort:       server.WSPort,
 				Token:        server.Token,
@@ -988,7 +984,6 @@ func TestMultiClientTCPStressReverse(t *testing.T) {
 			clients = append(clients, client)
 			clientsMu.Unlock()
 
-			// Each client makes multiple concurrent requests through the server's SOCKS port
 			clientResults := make(chan error, requestsPerClient)
 			for req := 0; req < requestsPerClient; req++ {
 				go func(reqID int) {
@@ -996,8 +991,6 @@ func TestMultiClientTCPStressReverse(t *testing.T) {
 					clientResults <- err
 				}(req)
 			}
-
-			// Collect client results
 			var clientErrors []error
 			for req := 0; req < requestsPerClient; req++ {
 				if err := <-clientResults; err != nil {
@@ -1013,10 +1006,8 @@ func TestMultiClientTCPStressReverse(t *testing.T) {
 		}(i)
 	}
 
-	// Wait for all clients to complete
 	go func() {
 		wg.Wait()
-		// Close all clients only after all requests from all clients are completed
 		clientsMu.Lock()
 		for _, c := range clients {
 			c.Close()
@@ -1025,7 +1016,6 @@ func TestMultiClientTCPStressReverse(t *testing.T) {
 		close(results)
 	}()
 
-	// Collect all client results
 	var errors []error
 	for err := range results {
 		if err != nil {
@@ -1035,10 +1025,8 @@ func TestMultiClientTCPStressReverse(t *testing.T) {
 
 	duration := time.Since(start)
 
-	// Verify all clients completed successfully
 	assert.Empty(t, errors, "Some multi-client TCP requests failed: %v", errors)
 
-	// Verify timing
 	assert.Less(t, duration, time.Duration(timeoutSeconds)*time.Second,
 		"Multi-client TCP stress test took too long: %v", duration)
 
@@ -1052,7 +1040,6 @@ func TestMultiClientTCPStressReverse(t *testing.T) {
 }
 
 func TestMultiClientUDPStressReverse(t *testing.T) {
-	// Multiple clients UDP stress test with concurrent connections
 	server := reverseServer(t, &ProxyTestServerOption{LogLevel: zerolog.DebugLevel})
 	defer server.Close()
 
@@ -1065,11 +1052,9 @@ func TestMultiClientUDPStressReverse(t *testing.T) {
 	results := make(chan error, numClients)
 	var wg sync.WaitGroup
 
-	// Keep all clients alive until all requests are done (like TCP stress test)
 	var clients []*ProxyTestClient
 	var clientsMu sync.Mutex
 
-	// Create multiple clients concurrently
 	for i := 0; i < numClients; i++ {
 		wg.Add(1)
 		go func(clientID int) {
@@ -1080,35 +1065,29 @@ func TestMultiClientUDPStressReverse(t *testing.T) {
 				}
 			}()
 
-			// Create client
 			client := reverseClient(t, &ProxyTestClientOption{
 				WSPort:       server.WSPort,
 				Token:        server.Token,
 				LoggerPrefix: fmt.Sprintf("CLT%d", clientID),
 				LogLevel:     zerolog.DebugLevel,
 			})
-			// Add client to shared list for later cleanup
 			clientsMu.Lock()
 			clients = append(clients, client)
 			clientsMu.Unlock()
 
-			// Each client sends multiple UDP packet batches through server's SOCKS port
 			for batch := 0; batch < batchesPerClient; batch++ {
 				for packet := 0; packet < packetsPerBatch; packet++ {
 					assertUDPConnection(t, globalUDPServer, &ProxyConfig{Port: server.SocksPort})
 				}
 			}
 
-			results <- nil // Success
+			results <- nil
 
-			// Client will be closed later in centralized cleanup
 		}(i)
 	}
 
-	// Wait for all clients to complete
 	go func() {
 		wg.Wait()
-		// Close all clients only after all requests are completed
 		clientsMu.Lock()
 		for _, c := range clients {
 			c.Close()
@@ -1117,7 +1096,6 @@ func TestMultiClientUDPStressReverse(t *testing.T) {
 		close(results)
 	}()
 
-	// Collect all client results
 	var errors []error
 	for err := range results {
 		if err != nil {
@@ -1127,10 +1105,8 @@ func TestMultiClientUDPStressReverse(t *testing.T) {
 
 	duration := time.Since(start)
 
-	// Verify all clients completed successfully
 	assert.Empty(t, errors, "Some multi-client UDP requests failed: %v", errors)
 
-	// Verify timing
 	assert.Less(t, duration, time.Duration(timeoutSeconds)*time.Second,
 		"Multi-client UDP stress test took too long: %v", duration)
 
@@ -1145,7 +1121,6 @@ func TestMultiClientUDPStressReverse(t *testing.T) {
 }
 
 func TestMultiClientMixedStressReverse(t *testing.T) {
-	// Mixed multiple clients stress test with both TCP and UDP traffic
 	server := reverseServer(t, &ProxyTestServerOption{LogLevel: zerolog.DebugLevel})
 	defer server.Close()
 
@@ -1159,30 +1134,21 @@ func TestMultiClientMixedStressReverse(t *testing.T) {
 	start := time.Now()
 	results := make(chan error, tcpClients+udpClients)
 	var wg sync.WaitGroup
-
-	// Keep all clients alive until all requests are done (like TCP stress test)
 	var allClients []*ProxyTestClient
 	var clientsMu sync.Mutex
-
-	// TCP clients
 	for i := 0; i < tcpClients; i++ {
 		wg.Add(1)
 		go func(clientID int) {
 			defer wg.Done()
-
-			// Create TCP client
 			client := reverseClient(t, &ProxyTestClientOption{
 				WSPort:       server.WSPort,
 				Token:        server.Token,
 				LoggerPrefix: fmt.Sprintf("TCP%d", clientID),
 				LogLevel:     zerolog.DebugLevel,
 			})
-			// Add client to shared list for later cleanup
 			clientsMu.Lock()
 			allClients = append(allClients, client)
 			clientsMu.Unlock()
-
-			// Send TCP requests through server's SOCKS port
 			clientResults := make(chan error, tcpRequestsPerClient)
 			for req := 0; req < tcpRequestsPerClient; req++ {
 				go func(reqID int) {
@@ -1190,8 +1156,6 @@ func TestMultiClientMixedStressReverse(t *testing.T) {
 					clientResults <- err
 				}(req)
 			}
-
-			// Collect TCP client results
 			var clientErrors []error
 			for req := 0; req < tcpRequestsPerClient; req++ {
 				if err := <-clientResults; err != nil {
@@ -1204,8 +1168,6 @@ func TestMultiClientMixedStressReverse(t *testing.T) {
 			} else {
 				results <- nil
 			}
-
-			// Client will be closed later in centralized cleanup
 		}(i)
 	}
 

@@ -26,7 +26,7 @@ func setupTestServer(t *testing.T) (*linksocks.LinkSocksServer, string, int) {
 	server := linksocks.NewLinkSocksServer(serverOpt)
 	require.NoError(t, server.WaitReady(context.Background(), 5*time.Second))
 
-	baseURL := fmt.Sprintf("http://localhost:%d", wsPort)
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", wsPort)
 	return server, baseURL, wsPort
 }
 

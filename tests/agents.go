@@ -149,7 +149,7 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		logger = createPrefixedLogger(opt.LoggerPrefix)
 	}
 	clientOpt := linksocks.DefaultClientOption().
-		WithWSURL(fmt.Sprintf("ws://localhost:%d", opt.WSPort)).
+		WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", opt.WSPort)).
 		WithSocksPort(socksPort).
 		WithReconnectDelay(1 * time.Second).
 		WithFastOpen(opt.FastOpen).
@@ -284,7 +284,7 @@ func reverseClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		logger = createPrefixedLogger(opt.LoggerPrefix)
 	}
 	clientOpt := linksocks.DefaultClientOption().
-		WithWSURL(fmt.Sprintf("ws://localhost:%d", opt.WSPort)).
+		WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", opt.WSPort)).
 		WithReconnectDelay(1 * time.Second).
 		WithReverse(true).
 		WithFastOpen(opt.FastOpen).
