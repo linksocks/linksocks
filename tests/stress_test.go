@@ -139,6 +139,8 @@ func TestTCPStressForward(t *testing.T) {
 	start := time.Now()
 	results := make(chan error, numRequests)
 
+	time.Sleep(500 * time.Millisecond)
+
 	// Launch concurrent requests
 	for i := 0; i < numRequests; i++ {
 		go func(reqID int) {
@@ -183,6 +185,8 @@ func TestUDPStressForward(t *testing.T) {
 
 	start := time.Now()
 	results := make(chan error, numBatches)
+
+	time.Sleep(500 * time.Millisecond)
 
 	// Launch concurrent UDP batches
 	for i := 0; i < numBatches; i++ {
@@ -238,6 +242,8 @@ func TestTCPStressReverse(t *testing.T) {
 	start := time.Now()
 	results := make(chan error, numRequests)
 
+	time.Sleep(500 * time.Millisecond)
+
 	// Launch concurrent requests
 	for i := 0; i < numRequests; i++ {
 		go func(reqID int) {
@@ -282,6 +288,8 @@ func TestUDPStressReverse(t *testing.T) {
 
 	start := time.Now()
 	results := make(chan error, numBatches)
+
+	time.Sleep(500 * time.Millisecond)
 
 	// Launch concurrent UDP batches
 	for i := 0; i < numBatches; i++ {
@@ -337,22 +345,26 @@ func TestMultiClientTCPStressReverse(t *testing.T) {
 	results := make(chan error, numClients)
 	var wg sync.WaitGroup
 	var clients []*ProxyTestClient
-	var clientsMu sync.Mutex
 
+	// Start all reverse clients first
+	for i := 0; i < numClients; i++ {
+		client := reverseClient(t, &ProxyTestClientOption{
+			WSPort:       server.WSPort,
+			Token:        server.Token,
+			LoggerPrefix: fmt.Sprintf("CLT%d", i),
+			LogLevel:     zerolog.TraceLevel,
+		})
+		clients = append(clients, client)
+	}
+
+	// Wait at least 500ms after starting reverseServer and reverseClients
+	time.Sleep(500 * time.Millisecond)
+
+	// Now concurrently issue requests for each client
 	for i := 0; i < numClients; i++ {
 		wg.Add(1)
-		go func(clientID int) {
+		go func(clientID int, client *ProxyTestClient) {
 			defer wg.Done()
-
-			client := reverseClient(t, &ProxyTestClientOption{
-				WSPort:       server.WSPort,
-				Token:        server.Token,
-				LoggerPrefix: fmt.Sprintf("CLT%d", clientID),
-				LogLevel:     zerolog.TraceLevel,
-			})
-			clientsMu.Lock()
-			clients = append(clients, client)
-			clientsMu.Unlock()
 
 			clientResults := make(chan error, requestsPerClient)
 			for req := 0; req < requestsPerClient; req++ {
@@ -373,16 +385,14 @@ func TestMultiClientTCPStressReverse(t *testing.T) {
 			} else {
 				results <- nil
 			}
-		}(i)
+		}(i, clients[i])
 	}
 
 	go func() {
 		wg.Wait()
-		clientsMu.Lock()
 		for _, c := range clients {
 			c.Close()
 		}
-		clientsMu.Unlock()
 		close(results)
 	}()
 
@@ -407,4 +417,86 @@ func TestMultiClientTCPStressReverse(t *testing.T) {
 		Dur("duration", duration).
 		Int("errors", len(errors)).
 		Msg("Multi-client TCP stress test completed")
+}
+
+func TestMultiClientUDPStressReverse(t *testing.T) {
+	server := reverseServer(t, &ProxyTestServerOption{LogLevel: zerolog.DebugLevel})
+	defer server.Close()
+
+	const numClients = 5
+	const batchesPerClient = 5
+	const packetsPerBatch = 50
+	const timeoutSeconds = 90
+
+	start := time.Now()
+	results := make(chan error, numClients)
+	var wg sync.WaitGroup
+
+	var clients []*ProxyTestClient
+
+	// Start all reverse clients first
+	for i := 0; i < numClients; i++ {
+		client := reverseClient(t, &ProxyTestClientOption{
+			WSPort:       server.WSPort,
+			Token:        server.Token,
+			LoggerPrefix: fmt.Sprintf("CLT%d", i),
+			LogLevel:     zerolog.DebugLevel,
+		})
+		clients = append(clients, client)
+	}
+
+	// Wait at least 500ms after starting reverseServer and reverseClients
+	time.Sleep(500 * time.Millisecond)
+
+	for i := 0; i < numClients; i++ {
+		wg.Add(1)
+		go func(clientID int, client *ProxyTestClient) {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					results <- fmt.Errorf("client %d panicked: %v", clientID, r)
+				}
+			}()
+
+			for batch := 0; batch < batchesPerClient; batch++ {
+				for packet := 0; packet < packetsPerBatch; packet++ {
+					assertUDPConnection(t, globalUDPServer, &ProxyConfig{Port: server.SocksPort})
+				}
+			}
+
+			results <- nil
+
+		}(i, clients[i])
+	}
+
+	go func() {
+		wg.Wait()
+		for _, c := range clients {
+			c.Close()
+		}
+		close(results)
+	}()
+
+	var errors []error
+	for err := range results {
+		if err != nil {
+			errors = append(errors, err)
+		}
+	}
+
+	duration := time.Since(start)
+
+	assert.Empty(t, errors, "Some multi-client UDP requests failed: %v", errors)
+
+	assert.Less(t, duration, time.Duration(timeoutSeconds)*time.Second,
+		"Multi-client UDP stress test took too long: %v", duration)
+
+	TestLogger.Info().
+		Int("clients", numClients).
+		Int("batches_per_client", batchesPerClient).
+		Int("packets_per_batch", packetsPerBatch).
+		Int("total_packets", numClients*batchesPerClient*packetsPerBatch).
+		Dur("duration", duration).
+		Int("errors", len(errors)).
+		Msg("Multi-client UDP stress test completed")
 }
