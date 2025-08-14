@@ -55,6 +55,7 @@ extras_require = {
         "mypy>=0.800",
         "httpx[socks]",
         "requests",
+        "pysocks",
     ],
     "test": [
         "pytest>=6.0",
@@ -63,6 +64,7 @@ extras_require = {
         "pytest-xdist",
         "httpx[socks]",
         "requests",
+        "pysocks",
     ],
 }
 
@@ -127,7 +129,7 @@ setup(
     extras_require=extras_require,
     
     # Python version requirement
-    python_requires=">=3.7",
+    python_requires=">=3.9",
     
     # Metadata
     classifiers=[

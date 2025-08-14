@@ -47,7 +47,7 @@ jobs:
       - name: Install Python build and test deps
         run: |
           python -m pip install --upgrade pip
-          pip install build pytest pytest-xdist wheel setuptools pybindgen httpx[socks] requests
+          pip install build pytest pytest-xdist wheel setuptools pybindgen httpx[socks] requests pip install pysocks
       
       - name: Generate Python bindings (gopy, Unix)
         if: runner.os != 'Windows'
