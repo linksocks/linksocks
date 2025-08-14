@@ -1,37 +1,45 @@
-name: Python Tests and Wheels
+name: Build
 
 on:
-  workflow_dispatch:
   push:
-    paths-ignore:
-      - "*.md"
+    branches: ["master"]
+    paths-ignore: ["pypi/**"]
   pull_request:
-    paths-ignore:
-      - "*.md"
+    paths-ignore: ["pypi/**"]
+  workflow_dispatch:
 
 jobs:
-  python:
-    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+  tests:
+    name: Tests py${{ matrix.python }} on ${{ matrix.os }} ${{ matrix.goarch }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
-
+        include:
+          - os: ubuntu-latest
+            python: "3.9"
+            goarch: amd64
+          - os: ubuntu-latest
+            python: "3.13"
+            goarch: amd64
+          - os: windows-latest
+            python: "3.9"
+            goarch: amd64
+          - os: windows-latest
+            python: "3.13"
+            goarch: amd64
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v3
 
-      - name: Set up Go
-        uses: actions/setup-go@v4
+      - name: set up Go
+        uses: actions/setup-go@v3
         with:
-          go-version: '1.22'
+          go-version: "1.19.x"
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ matrix.python }}
 
       - name: Show versions
         run: |
@@ -39,20 +47,34 @@ jobs:
           python --version
           pip --version
 
-      - name: Install Go build tools
+      - name: install gopy (Unix)
+        if: runner.os != 'Windows'
         run: |
-          go install github.com/go-python/gopy@latest
+          go install github.com/go-python/gopy@v0.4.5
+          go install golang.org/x/tools/cmd/goimports@latest
+
+      - name: install gopy (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd $env:TEMP
+          git clone https://github.com/bjia56/gopy
+          cd gopy
+          git checkout v0.4.5+bjia56.v1
+          go install -v
+          gopy
           go install golang.org/x/tools/cmd/goimports@latest
 
       - name: Install Python build and test deps
         run: |
           python -m pip install --upgrade pip
           pip install build pytest pytest-xdist wheel setuptools pybindgen httpx[socks] requests pysocks
-      
+
       - name: Generate Python bindings (gopy, Unix)
         if: runner.os != 'Windows'
         env:
           CGO_ENABLED: 1
+          GOARCH: ${{ matrix.goarch }}
         shell: bash
         run: |
           set -euo pipefail
@@ -70,6 +92,7 @@ jobs:
         if: runner.os == 'Windows'
         env:
           CGO_ENABLED: 1
+          GOARCH: ${{ matrix.goarch }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -86,37 +109,183 @@ jobs:
           go mod tidy
           if ($rc -ne 0) { exit $rc }
 
-      - name: Install linksocks (editable) with test extras
+      - name: Install linksocks (editable)
         run: |
           python -m pip install -e _bindings/python[test]
 
       - name: Run pytest
         working-directory: _bindings/python
-        run: |
-          pytest -v -n auto
+        run: pytest -v -n auto
 
-      - name: Build wheel (only on tag, Unix)
-        if: startsWith(github.ref, 'refs/tags/') && runner.os != 'Windows'
-        working-directory: _bindings/python
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m build --wheel --outdir ../../dist
+  build_macos:
+    #if: false
+    name: MacOS ${{ matrix.os_version }} cp3${{ matrix.python3_version }} ${{ matrix.arch_cibw_go[0] }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os_version: [ 10.15, 11, 12 ]
+        python3_version: [ 7, 8, 9, 10, 11 ]
+        arch_cibw_go:
+          - [ "x86_64", "amd64" ]
+          - [ "arm64", "arm64" ]
+        exclude:
+          - os_version: 10.15
+            python3_version: 11
+          - os_version: 10.15
+            arch_cibw_go: [ "arm64", "arm64"]
+          - python3_version: 7
+            arch_cibw_go: [ "arm64", "arm64"]
+    runs-on: macos-${{ matrix.os_version }}
+    steps:
+      - uses: actions/checkout@v3
 
-      - name: Build wheel (only on tag, Windows)
-        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
-        working-directory: _bindings/python
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          python -m build --wheel --outdir ../../dist
-
-      - name: Upload wheel artifact (only on tag)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-artifact@v4
+      - name: set up Go
+        uses: actions/setup-go@v3
         with:
-          name: python-wheels-${{ runner.os }}-py${{ matrix.python-version }}-tag-${{ github.ref_name }}
-          path: dist/*.whl
-          if-no-files-found: error
+          go-version: "1.19.x"
+
+      - name: install gopy
+        run: go install github.com/go-python/gopy@v0.4.5
+
+      - name: install goimports
+        run: go install golang.org/x/tools/cmd/goimports@latest
+
+      - name: install python 3.${{ matrix.python3_version }} 
+        run: |
+          brew install python@3.${{ matrix.python3_version }}
+          ln -s /usr/local/opt/python@3.${{ matrix.python3_version }}/bin/python3.${{ matrix.python3_version }}  /usr/local/bin/python_for_build
+          /usr/local/bin/python_for_build --version
+
+      - name: install cibuildwheel and pybindgen
+        run: /usr/local/bin/python_for_build -m pip install cibuildwheel==2.11.2 pybindgen
+
+      - name: build wheels
+        run: /usr/local/bin/python_for_build -m cibuildwheel --output-dir wheelhouse
+        env:
+          CIBW_ARCHS: ${{ matrix.arch_cibw_go[0] }}
+          PYTHON_BINARY_PATH: /usr/local/bin/python_for_build
+          CIBW_BUILD: "cp3${{ matrix.python3_version }}-*"
+          CIBW_ENVIRONMENT: >
+            PATH=$PATH:/usr/local/go/bin
+            GOARCH=${{ matrix.arch_cibw_go[1] }}
+            CGO_ENABLED=1
+          
+      - name: Upload Artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels
+          path: ./wheelhouse/*.whl
+
+  build_linux_x86_64:
+    #if: false
+    name: Linux cp37,cp38,cp39,cp310,cp311 x86_64
+    runs-on: ubuntu-20.04
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v2.11.2
+        env:
+          CIBW_BUILD: "cp3*_x86_64"
+          CIBW_SKIP: "cp36-* *-musllinux_x86_64"
+          CIBW_ARCHS: "native"
+          CIBW_ENVIRONMENT: >
+            PATH=$PATH:/usr/local/go/bin
+            CGO_ENABLED=1
+          CIBW_BEFORE_ALL_LINUX: |
+            curl -o go.tar.gz https://dl.google.com/go/go1.19.3.linux-amd64.tar.gz
+            tar -C /usr/local -xzf go.tar.gz
+            go install github.com/go-python/gopy@v0.4.5
+            go install golang.org/x/tools/cmd/goimports@latest
+
+      - name: Upload Artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels
+          path: ./wheelhouse/*.whl
+
+  build_linux_arm:
+    #if: false
+    name: Linux cp37,cp38,cp39,cp310,cp311 armv7l
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build wheels via Docker
+        uses: docker/build-push-action@v3
+        with:
+          context: .
+          file: ./Dockerfile.armv7l
+          push: false
+          platforms: linux/armhf
+          tags: armv7l:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=min
+          load: true
+
+      - name: Extract output
+        run: |
+          docker run -v /tmp/output:/host armv7l:latest bash -c "cp /export/* /host/"
+          tar -zcvf /tmp/output.tar.gz /tmp/output
+
+      - name: Upload Artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels
+          path: /tmp/output/*.whl
+
+  build_windows:
+    #if: false
+    name: Windows cp37,cp38,cp39,cp310,cp311 x86_64
+    runs-on: windows-2019
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: "1.19.x"
+
+      - name: install gopy
+        run: |
+          cd $env:TEMP
+          git clone https://github.com/bjia56/gopy
+          cd gopy
+          git checkout v0.4.5+bjia56.v1
+          go install -v
+          gopy
+
+      - name: install goimports
+        run: go install golang.org/x/tools/cmd/goimports@latest
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v2.11.2
+        env:
+          CIBW_BUILD: "cp3*"
+          CIBW_SKIP: "cp36-*"
+          CIBW_ARCHS: "native"
+          CIBW_ENVIRONMENT: >
+            GOARCH=amd64
+            CGO_ENABLED=1
+
+      - name: Upload Artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v3
+        with:
+          name: wheels
+          path: ./wheelhouse/*.whl
 
 
