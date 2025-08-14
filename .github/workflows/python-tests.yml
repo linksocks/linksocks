@@ -1,11 +1,9 @@
-name: Build
+name: Build Python Bindings
 
 on:
   push:
-    branches: ["master"]
-    paths-ignore: ["pypi/**"]
-  pull_request:
-    paths-ignore: ["pypi/**"]
+    branches: ["**"]
+    tags: ["v*"]
   workflow_dispatch:
 
 jobs:
@@ -29,12 +27,13 @@ jobs:
             python: "3.13"
             goarch: amd64
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: set up Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v5
         with:
-          go-version: "1.19.x"
+          go-version-file: go.mod
+          check-latest: true
 
       - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v5
@@ -50,7 +49,7 @@ jobs:
       - name: install gopy (Unix)
         if: runner.os != 'Windows'
         run: |
-          go install github.com/go-python/gopy@v0.4.5
+          go install github.com/go-python/gopy@v0.4.7
           go install golang.org/x/tools/cmd/goimports@latest
 
       - name: install gopy (Windows)
@@ -118,7 +117,7 @@ jobs:
         run: pytest -v -n auto
 
   build_macos:
-    #if: false
+    if: startsWith(github.ref, 'refs/tags/')
     name: MacOS ${{ matrix.os_version }} cp3${{ matrix.python3_version }} ${{ matrix.arch_cibw_go[0] }}
     strategy:
       fail-fast: false
@@ -137,15 +136,16 @@ jobs:
             arch_cibw_go: [ "arm64", "arm64"]
     runs-on: macos-${{ matrix.os_version }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: set up Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v5
         with:
-          go-version: "1.19.x"
+          go-version-file: go.mod
+          check-latest: true
 
       - name: install gopy
-        run: go install github.com/go-python/gopy@v0.4.5
+        run: go install github.com/go-python/gopy@v0.4.7
 
       - name: install goimports
         run: go install golang.org/x/tools/cmd/goimports@latest
@@ -171,19 +171,18 @@ jobs:
             CGO_ENABLED=1
           
       - name: Upload Artifacts
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: wheels
           path: ./wheelhouse/*.whl
 
   build_linux_x86_64:
-    #if: false
+    if: startsWith(github.ref, 'refs/tags/')
     name: Linux cp37,cp38,cp39,cp310,cp311 x86_64
     runs-on: ubuntu-20.04
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v2.11.2
@@ -201,29 +200,28 @@ jobs:
             go install golang.org/x/tools/cmd/goimports@latest
 
       - name: Upload Artifacts
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: wheels
           path: ./wheelhouse/*.whl
 
   build_linux_arm:
-    #if: false
+    if: startsWith(github.ref, 'refs/tags/')
     name: Linux cp37,cp38,cp39,cp310,cp311 armv7l
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
 
       - name: Build wheels via Docker
-        uses: docker/build-push-action@v3
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile.armv7l
@@ -240,24 +238,24 @@ jobs:
           tar -zcvf /tmp/output.tar.gz /tmp/output
 
       - name: Upload Artifacts
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: wheels
           path: /tmp/output/*.whl
 
   build_windows:
-    #if: false
+    if: startsWith(github.ref, 'refs/tags/')
     name: Windows cp37,cp38,cp39,cp310,cp311 x86_64
     runs-on: windows-2019
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: set up Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v5
         with:
-          go-version: "1.19.x"
+          go-version-file: go.mod
+          check-latest: true
 
       - name: install gopy
         run: |
@@ -282,8 +280,7 @@ jobs:
             CGO_ENABLED=1
 
       - name: Upload Artifacts
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: wheels
           path: ./wheelhouse/*.whl
