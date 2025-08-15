@@ -675,7 +675,7 @@ func (s *LinkSocksServer) Serve(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// WaitReady waits for the server to be ready with optional timeout
+// WaitReady starts the server and waits for the server to be ready with optional timeout
 func (s *LinkSocksServer) WaitReady(ctx context.Context, timeout time.Duration) error {
 	ctx, cancel := context.WithCancel(ctx)
 

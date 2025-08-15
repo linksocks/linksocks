@@ -315,7 +315,7 @@ func convertWSPath(wsURL string) string {
 	return u.String()
 }
 
-// WaitReady waits for the client to be ready with optional timeout
+// WaitReady start the client and waits for the client to be ready with optional timeout
 func (c *LinkSocksClient) WaitReady(ctx context.Context, timeout time.Duration) error {
 	ctx, cancel := context.WithCancel(ctx)
 
