@@ -178,36 +178,33 @@ func TestUDPStressForward(t *testing.T) {
 	env := forwardProxyWithOptions(t, &ProxyTestServerOption{LogLevel: zerolog.DebugLevel}, &ProxyTestClientOption{LogLevel: zerolog.DebugLevel})
 	defer env.Close()
 
-	// High volume UDP packets with content verification
-	const numBatches = 10
-	const packetsPerBatch = 25
+	// High volume UDP test - each test creates a complete UDP connection and sends 10 packets
+	const numUDPTests = 100
 	const timeoutSeconds = 30
 
 	start := time.Now()
-	results := make(chan error, numBatches)
+	results := make(chan error, numUDPTests)
 
 	time.Sleep(500 * time.Millisecond)
 
-	// Launch concurrent UDP batches
-	for i := 0; i < numBatches; i++ {
-		go func(batchID int) {
+	// Launch concurrent UDP tests
+	for i := 0; i < numUDPTests; i++ {
+		go func(testID int) {
 			defer func() {
 				if r := recover(); r != nil {
-					results <- fmt.Errorf("batch %d panicked: %v", batchID, r)
+					results <- fmt.Errorf("UDP test %d panicked: %v", testID, r)
 				}
 			}()
 
-			// Send multiple UDP packets in this batch
-			for j := 0; j < packetsPerBatch; j++ {
-				assertUDPConnection(t, globalUDPServer, &ProxyConfig{Port: env.Client.SocksPort})
-			}
+			// Each test establishes UDP ASSOCIATE and sends 10 packets
+			assertUDPConnection(t, globalUDPServer, &ProxyConfig{Port: env.Client.SocksPort})
 			results <- nil // Success
 		}(i)
 	}
 
-	// Collect all batch results
+	// Collect all test results
 	var errors []error
-	for i := 0; i < numBatches; i++ {
+	for i := 0; i < numUDPTests; i++ {
 		if err := <-results; err != nil {
 			errors = append(errors, err)
 		}
@@ -215,16 +212,16 @@ func TestUDPStressForward(t *testing.T) {
 
 	duration := time.Since(start)
 
-	// Verify all batches completed successfully (no packet loss)
-	assert.Empty(t, errors, "Some UDP batches failed: %v", errors)
+	// Verify all UDP tests completed successfully (no packet loss)
+	assert.Empty(t, errors, "Some UDP tests failed: %v", errors)
 
 	// Verify timing
 	assert.Less(t, duration, time.Duration(timeoutSeconds)*time.Second,
 		"UDP stress test took too long: %v", duration)
 
 	TestLogger.Info().
-		Int("batches", numBatches).
-		Int("total_packets", numBatches*packetsPerBatch).
+		Int("udp_tests", numUDPTests).
+		Int("total_packets", numUDPTests*10). // 10 packets per test from udpTestAttempts
 		Dur("duration", duration).
 		Int("errors", len(errors)).
 		Msg("UDP forward stress test completed")
@@ -282,35 +279,32 @@ func TestUDPStressReverse(t *testing.T) {
 	defer env.Close()
 
 	// Test high volume UDP through reverse proxy
-	const numBatches = 10
-	const packetsPerBatch = 25
+	const numUDPTests = 100
 	const timeoutSeconds = 30
 
 	start := time.Now()
-	results := make(chan error, numBatches)
+	results := make(chan error, numUDPTests)
 
 	time.Sleep(500 * time.Millisecond)
 
-	// Launch concurrent UDP batches
-	for i := 0; i < numBatches; i++ {
-		go func(batchID int) {
+	// Launch concurrent UDP tests
+	for i := 0; i < numUDPTests; i++ {
+		go func(testID int) {
 			defer func() {
 				if r := recover(); r != nil {
-					results <- fmt.Errorf("batch %d panicked: %v", batchID, r)
+					results <- fmt.Errorf("UDP test %d panicked: %v", testID, r)
 				}
 			}()
 
-			// Send multiple UDP packets in this batch
-			for j := 0; j < packetsPerBatch; j++ {
-				assertUDPConnection(t, globalUDPServer, &ProxyConfig{Port: env.Server.SocksPort})
-			}
+			// Each test establishes UDP ASSOCIATE and sends 10 packets
+			assertUDPConnection(t, globalUDPServer, &ProxyConfig{Port: env.Server.SocksPort})
 			results <- nil // Success
 		}(i)
 	}
 
-	// Collect all batch results
+	// Collect all test results
 	var errors []error
-	for i := 0; i < numBatches; i++ {
+	for i := 0; i < numUDPTests; i++ {
 		if err := <-results; err != nil {
 			errors = append(errors, err)
 		}
@@ -318,16 +312,16 @@ func TestUDPStressReverse(t *testing.T) {
 
 	duration := time.Since(start)
 
-	// Verify all batches completed
-	assert.Empty(t, errors, "Some reverse UDP batches failed: %v", errors)
+	// Verify all tests completed successfully
+	assert.Empty(t, errors, "Some reverse UDP tests failed: %v", errors)
 
 	// Verify timing
 	assert.Less(t, duration, time.Duration(timeoutSeconds)*time.Second,
 		"Reverse UDP stress test took too long: %v", duration)
 
 	TestLogger.Info().
-		Int("batches", numBatches).
-		Int("total_packets", numBatches*packetsPerBatch).
+		Int("udp_tests", numUDPTests).
+		Int("total_packets", numUDPTests*10). // 10 packets per test from udpTestAttempts
 		Dur("duration", duration).
 		Int("errors", len(errors)).
 		Msg("UDP reverse stress test completed")
@@ -424,9 +418,11 @@ func TestMultiClientUDPStressReverse(t *testing.T) {
 	defer server.Close()
 
 	const numClients = 5
-	const batchesPerClient = 10
-	const packetsPerBatch = 5
+	const totalUDPTests = 250
 	const timeoutSeconds = 90
+
+	// Each client will handle totalUDPTests/numClients UDP tests
+	testsPerClient := totalUDPTests / numClients
 
 	start := time.Now()
 	results := make(chan error, numClients)
@@ -458,10 +454,9 @@ func TestMultiClientUDPStressReverse(t *testing.T) {
 				}
 			}()
 
-			for batch := 0; batch < batchesPerClient; batch++ {
-				for packet := 0; packet < packetsPerBatch; packet++ {
-					assertUDPConnection(t, globalUDPServer, &ProxyConfig{Port: server.SocksPort})
-				}
+			// Each client handles its share of the total UDP tests
+			for test := 0; test < testsPerClient; test++ {
+				assertUDPConnection(t, globalUDPServer, &ProxyConfig{Port: server.SocksPort})
 			}
 
 			results <- nil
@@ -493,9 +488,8 @@ func TestMultiClientUDPStressReverse(t *testing.T) {
 
 	TestLogger.Info().
 		Int("clients", numClients).
-		Int("batches_per_client", batchesPerClient).
-		Int("packets_per_batch", packetsPerBatch).
-		Int("total_packets", numClients*batchesPerClient*packetsPerBatch).
+		Int("total_udp_tests", totalUDPTests).
+		Int("total_packets", totalUDPTests*10). // 10 packets per test from udpTestAttempts
 		Dur("duration", duration).
 		Int("errors", len(errors)).
 		Msg("Multi-client UDP stress test completed")
