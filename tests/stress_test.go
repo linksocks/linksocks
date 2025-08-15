@@ -47,7 +47,7 @@ func testDirectUDPConnection(serverAddr string) error {
 
 func TestDirectHTTPStress(t *testing.T) {
 	// Direct HTTP stress test without proxy to establish baseline performance
-	const numRequests = 100
+	const numRequests = 250
 	const timeoutSeconds = 30
 
 	start := time.Now()
@@ -88,7 +88,7 @@ func TestDirectHTTPStress(t *testing.T) {
 
 func TestDirectUDPStress(t *testing.T) {
 	// Direct UDP stress test without proxy to establish baseline performance
-	const numRequests = 100
+	const numRequests = 250
 	const timeoutSeconds = 30
 
 	start := time.Now()
@@ -133,7 +133,7 @@ func TestTCPStressForward(t *testing.T) {
 	defer env.Close()
 
 	// High volume concurrent requests
-	const numRequests = 100
+	const numRequests = 250
 	const timeoutSeconds = 30
 
 	start := time.Now()
@@ -179,9 +179,9 @@ func TestUDPStressForward(t *testing.T) {
 	defer env.Close()
 
 	// High volume UDP packets with content verification
-	const numBatches = 50
-	const packetsPerBatch = 10
-	const timeoutSeconds = 45
+	const numBatches = 10
+	const packetsPerBatch = 25
+	const timeoutSeconds = 30
 
 	start := time.Now()
 	results := make(chan error, numBatches)
@@ -236,7 +236,7 @@ func TestTCPStressReverse(t *testing.T) {
 	defer env.Close()
 
 	// High volume concurrent requests through reverse proxy
-	const numRequests = 100
+	const numRequests = 250
 	const timeoutSeconds = 30
 
 	start := time.Now()
@@ -282,9 +282,9 @@ func TestUDPStressReverse(t *testing.T) {
 	defer env.Close()
 
 	// Test high volume UDP through reverse proxy
-	const numBatches = 50
-	const packetsPerBatch = 10
-	const timeoutSeconds = 45
+	const numBatches = 10
+	const packetsPerBatch = 25
+	const timeoutSeconds = 30
 
 	start := time.Now()
 	results := make(chan error, numBatches)
@@ -338,8 +338,8 @@ func TestMultiClientTCPStressReverse(t *testing.T) {
 	defer server.Close()
 
 	const numClients = 10
-	const requestsPerClient = 50
-	const timeoutSeconds = 60
+	const requestsPerClient = 25
+	const timeoutSeconds = 30
 
 	start := time.Now()
 	results := make(chan error, numClients)
@@ -424,8 +424,8 @@ func TestMultiClientUDPStressReverse(t *testing.T) {
 	defer server.Close()
 
 	const numClients = 5
-	const batchesPerClient = 5
-	const packetsPerBatch = 50
+	const batchesPerClient = 10
+	const packetsPerBatch = 5
 	const timeoutSeconds = 90
 
 	start := time.Now()
