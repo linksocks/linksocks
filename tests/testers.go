@@ -88,8 +88,8 @@ func testWebConnection(targetURL string, proxyConfig *ProxyConfig) error {
 	return nil
 }
 
-// assertUDPConnection tests UDP connection through the proxy
-func assertUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConfig) {
+// testUDPConnection tests UDP connection through the proxy
+func testUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConfig) error {
 	testData := []byte("Hello UDP")
 	successCount := 0
 
@@ -251,8 +251,9 @@ func assertUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConf
 	}
 
 	if successCount < udpTestAttempts {
-		t.Errorf("UDP test failed: only %d/%d packets were successfully echoed", successCount, udpTestAttempts)
+		return fmt.Errorf("UDP test failed: only %d/%d packets were successfully echoed", successCount, udpTestAttempts)
 	}
+	return nil
 }
 
 // apiRequest is a helper function to send API requests to the test server

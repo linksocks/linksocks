@@ -18,12 +18,12 @@ func TestHTTPServerV6(t *testing.T) {
 }
 
 func TestUDPServer(t *testing.T) {
-	assertUDPConnection(t, globalUDPServer, nil)
+	require.NoError(t, testUDPConnection(t, globalUDPServer, nil))
 }
 
 func TestUDPServerV6(t *testing.T) {
 	if !hasIPv6Support() {
 		t.Skip("IPv6 is not supported")
 	}
-	assertUDPConnection(t, globalUDPServerV6, nil)
+	require.NoError(t, testUDPConnection(t, globalUDPServerV6, nil))
 }

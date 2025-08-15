@@ -26,7 +26,7 @@ func TestForwardProxyV6(t *testing.T) {
 func TestUDPForwardProxy(t *testing.T) {
 	env := forwardProxy(t)
 	defer env.Close()
-	assertUDPConnection(t, globalUDPServer, &ProxyConfig{Port: env.Client.SocksPort})
+	require.NoError(t, testUDPConnection(t, globalUDPServer, &ProxyConfig{Port: env.Client.SocksPort}))
 }
 
 func TestUDPForwardProxyDomain(t *testing.T) {
@@ -52,7 +52,7 @@ func TestUDPForwardProxyDomain(t *testing.T) {
 
 	env := forwardProxy(t)
 	defer env.Close()
-	assertUDPConnection(t, serverAddr, &ProxyConfig{Port: env.Client.SocksPort})
+	require.NoError(t, testUDPConnection(t, serverAddr, &ProxyConfig{Port: env.Client.SocksPort}))
 }
 
 func TestUDPForwardProxyV6(t *testing.T) {
@@ -61,7 +61,7 @@ func TestUDPForwardProxyV6(t *testing.T) {
 	}
 	env := forwardProxy(t)
 	defer env.Close()
-	assertUDPConnection(t, globalUDPServerV6, &ProxyConfig{Port: env.Client.SocksPort})
+	require.NoError(t, testUDPConnection(t, globalUDPServerV6, &ProxyConfig{Port: env.Client.SocksPort}))
 }
 
 func TestForwardProxyCloseMultipleTimes(t *testing.T) {

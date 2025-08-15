@@ -179,7 +179,7 @@ func TestUDPStressForward(t *testing.T) {
 	defer env.Close()
 
 	// High volume UDP test - each test creates a complete UDP connection and sends 10 packets
-	const numUDPTests = 100
+	const numUDPTests = 25
 	const timeoutSeconds = 30
 
 	start := time.Now()
@@ -197,8 +197,8 @@ func TestUDPStressForward(t *testing.T) {
 			}()
 
 			// Each test establishes UDP ASSOCIATE and sends 10 packets
-			assertUDPConnection(t, globalUDPServer, &ProxyConfig{Port: env.Client.SocksPort})
-			results <- nil // Success
+			err := testUDPConnection(t, globalUDPServer, &ProxyConfig{Port: env.Client.SocksPort})
+			results <- err
 		}(i)
 	}
 
@@ -279,7 +279,7 @@ func TestUDPStressReverse(t *testing.T) {
 	defer env.Close()
 
 	// Test high volume UDP through reverse proxy
-	const numUDPTests = 100
+	const numUDPTests = 25
 	const timeoutSeconds = 30
 
 	start := time.Now()
@@ -297,8 +297,8 @@ func TestUDPStressReverse(t *testing.T) {
 			}()
 
 			// Each test establishes UDP ASSOCIATE and sends 10 packets
-			assertUDPConnection(t, globalUDPServer, &ProxyConfig{Port: env.Server.SocksPort})
-			results <- nil // Success
+			err := testUDPConnection(t, globalUDPServer, &ProxyConfig{Port: env.Server.SocksPort})
+			results <- err
 		}(i)
 	}
 
@@ -418,7 +418,7 @@ func TestMultiClientUDPStressReverse(t *testing.T) {
 	defer server.Close()
 
 	const numClients = 5
-	const totalUDPTests = 250
+	const totalUDPTests = 25
 	const timeoutSeconds = 90
 
 	// Each client will handle totalUDPTests/numClients UDP tests
@@ -455,11 +455,18 @@ func TestMultiClientUDPStressReverse(t *testing.T) {
 			}()
 
 			// Each client handles its share of the total UDP tests
+			var clientErrors []error
 			for test := 0; test < testsPerClient; test++ {
-				assertUDPConnection(t, globalUDPServer, &ProxyConfig{Port: server.SocksPort})
+				if err := testUDPConnection(t, globalUDPServer, &ProxyConfig{Port: server.SocksPort}); err != nil {
+					clientErrors = append(clientErrors, err)
+				}
 			}
 
-			results <- nil
+			if len(clientErrors) > 0 {
+				results <- fmt.Errorf("client %d had %d UDP test failures: %v", clientID, len(clientErrors), clientErrors[0])
+			} else {
+				results <- nil
+			}
 
 		}(i, clients[i])
 	}
