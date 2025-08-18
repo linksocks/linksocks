@@ -33,7 +33,7 @@ python-bindings-deps:
 	go install github.com/go-python/gopy@v0.4.10
 	go install golang.org/x/tools/cmd/goimports@latest
 	@echo "Installing Python dependencies..."
-	$(PIP) install pybindgen wheel setuptools pytest
+	$(PIP) install pybindgen wheel setuptools
 
 python-bindings: python-clean
 	@echo "Generating Python bindings with gopy pkg..."
