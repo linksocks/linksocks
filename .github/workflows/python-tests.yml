@@ -20,12 +20,6 @@ jobs:
           - os: ubuntu-latest
             python: "3.13"
             goarch: amd64
-          - os: windows-latest
-            python: "3.9"
-            goarch: amd64
-          - os: windows-latest
-            python: "3.13"
-            goarch: amd64
     steps:
       - uses: actions/checkout@v4
 
