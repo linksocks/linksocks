@@ -92,18 +92,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $PYTHON_OUTPUT_DIR = "_bindings/python"
-          Write-Host "Generating Python bindings with gopy..."
-          $orig = "linksocks/_python.go"
-          $tmp = "linksocks/python.go"
-          $rc = 0
-          if (Test-Path $orig) { Copy-Item $orig $tmp }
-          gopy build -vm=python -output="$PYTHON_OUTPUT_DIR/linksockslib" -name=linksockslib -no-make=true -build-tags=gopy github.com/zetxtech/linksocks/linksocks
-          if ($LASTEXITCODE -ne 0) { $rc = $LASTEXITCODE }
-          "from .linksocks import *" | Set-Content -Path "$PYTHON_OUTPUT_DIR/linksockslib/__init__.py" -Encoding ascii
-          if (Test-Path $tmp) { Remove-Item $tmp }
-          go mod tidy
-          if ($rc -ne 0) { exit $rc }
+          Write-Host "Generating Python bindings with gopy (Windows)..."
+          
+          # Use the specialized Windows build script for Python 3.13 compatibility
+          python _bindings/python/build_windows.py
+          if ($LASTEXITCODE -ne 0) { 
+            Write-Host "Build script failed with exit code $LASTEXITCODE"
+            exit $LASTEXITCODE 
+          }
 
       - name: Install Linksocks (Editable)
         run: |
@@ -226,6 +222,7 @@ jobs:
           CIBW_ENVIRONMENT: >
             GOARCH=amd64
             CGO_ENABLED=1
+          CIBW_BEFORE_BUILD_WINDOWS: python _bindings/python/cibw_before_build_windows.py
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4

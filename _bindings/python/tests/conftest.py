@@ -8,6 +8,20 @@ import os
 
 from .utils import *
 
+# Windows-specific asyncio event loop policy for UDP compatibility
+if sys.platform.startswith('win'):
+    import selectors
+    
+    class WindowsUDPEventLoopPolicy(asyncio.DefaultEventLoopPolicy):
+        """Custom event loop policy for Windows to handle UDP properly"""
+        def new_event_loop(self):
+            # Use SelectorEventLoop on Windows for better UDP support
+            selector = selectors.SelectSelector()
+            return asyncio.SelectorEventLoop(selector)
+    
+    # Set the policy globally for all tests
+    asyncio.set_event_loop_policy(WindowsUDPEventLoopPolicy())
+
 SKIP_DEFAULT_FLAGS = ["integration_tests"]
 
 

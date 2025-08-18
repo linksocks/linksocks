@@ -108,6 +108,29 @@ class BinaryDistribution(setuptools.Distribution):
     def has_ext_modules(_):
         return True
 
+def configure_windows_python313():
+    """Configure environment for Windows Python 3.13 builds."""
+    import platform
+    import sys
+    from pathlib import Path
+    
+    if platform.system() == "Windows":
+        py_version = f"{sys.version_info.major}{sys.version_info.minor}"
+        if py_version == "313":
+            py_dir = Path(sys.executable).parent
+            include_dir = py_dir / "include"
+            libs_dir = py_dir / "libs"
+            
+            if include_dir.exists() and libs_dir.exists():
+                import os
+                os.environ["CGO_CFLAGS"] = f"-I{include_dir}"
+                os.environ["CGO_LDFLAGS"] = f"-L{libs_dir} -lpython{py_version}"
+                os.environ["CGO_ENABLED"] = "1"
+                print(f"Configured Python {py_version} build environment for Windows")
+
+# Configure Windows Python 3.13 environment if needed
+configure_windows_python313()
+
 setup(
     name="linksocks",
     version="2.0.0",
