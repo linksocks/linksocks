@@ -636,7 +636,7 @@ if os.environ.get('LINKSOCKS_TEST_BINDINGS', '').lower() in ('1', 'true', 'yes')
 
 setup(
     name="linksocks",
-    version="3.0.4",
+    version="3.0.5",
     description="Python bindings for LinkSocks - SOCKS proxy over WebSocket",
     long_description=get_long_description(),
     long_description_content_type="text/markdown",
