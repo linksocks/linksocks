@@ -133,7 +133,7 @@ configure_windows_python313()
 
 setup(
     name="linksocks",
-    version="2.0.0",
+    version="3.0.0",
     description="Python bindings for LinkSocks - SOCKS proxy over WebSocket",
     long_description=get_long_description(),
     long_description_content_type="text/markdown",
