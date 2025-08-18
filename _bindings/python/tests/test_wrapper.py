@@ -8,7 +8,6 @@ from .utils import (
     has_ipv6_support,
     async_assert_udp_connection,
     async_assert_web_connection,
-    parse_host_port,
 )
 
 

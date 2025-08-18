@@ -8,7 +8,7 @@ on:
 
 jobs:
   tests:
-    name: Tests py${{ matrix.python }} on ${{ matrix.os }} ${{ matrix.goarch }}
+    name: Tests Py${{ matrix.python }} on ${{ matrix.os }} ${{ matrix.goarch }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -29,47 +29,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: set up Go
+      - name: Set Up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           check-latest: true
 
-      - name: Set up Python ${{ matrix.python }}
+      - name: Set Up Python ${{ matrix.python }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
 
-      - name: Show versions
+      - name: Show Versions
         run: |
           go version
           python --version
           pip --version
 
-      - name: install gopy (Unix)
+      - name: Install Dependencies (Unix)
         if: runner.os != 'Windows'
         run: |
-          go install github.com/go-python/gopy@v0.4.7
+          python3 -m pip install pybindgen
           go install golang.org/x/tools/cmd/goimports@latest
+          go install github.com/go-python/gopy@latest
 
-      - name: install gopy (Windows)
+      - name: Install Dependencies (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cd $env:TEMP
-          git clone https://github.com/bjia56/gopy
-          cd gopy
-          git checkout v0.4.5+bjia56.v1
-          go install -v
-          gopy
+          python -m pip install pybindgen
           go install golang.org/x/tools/cmd/goimports@latest
+          go install github.com/go-python/gopy@latest
 
-      - name: Install Python build and test deps
+      - name: Install Python Build and Test Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install build pytest pytest-xdist wheel setuptools pybindgen httpx[socks] requests pysocks
+          pip install build pytest pytest-xdist wheel setuptools httpx[socks] requests pysocks
 
-      - name: Generate Python bindings (gopy, Unix)
+      - name: Generate Python Bindings (Gopy, Unix)
         if: runner.os != 'Windows'
         env:
           CGO_ENABLED: 1
@@ -87,7 +84,7 @@ jobs:
           go mod tidy
           exit $rc
 
-      - name: Generate Python bindings (gopy, Windows)
+      - name: Generate Python Bindings (Gopy, Windows)
         if: runner.os == 'Windows'
         env:
           CGO_ENABLED: 1
@@ -108,58 +105,53 @@ jobs:
           go mod tidy
           if ($rc -ne 0) { exit $rc }
 
-      - name: Install linksocks (editable)
+      - name: Install Linksocks (Editable)
         run: |
           python -m pip install -e _bindings/python[test]
 
-      - name: Run pytest
+      - name: Run Pytest
         working-directory: _bindings/python
         run: pytest -v -n auto
 
   build_macos:
     if: startsWith(github.ref, 'refs/tags/')
-    name: MacOS ${{ matrix.os_version }} cp3${{ matrix.python3_version }} ${{ matrix.arch_cibw_go[0] }}
+    name: MacOS ${{ matrix.os_version }} Cp3${{ matrix.python3_version }} ${{ matrix.arch_cibw_go[0] }}
     strategy:
       fail-fast: false
       matrix:
-        os_version: [ 10.15, 11, 12 ]
-        python3_version: [ 7, 8, 9, 10, 11 ]
+        os_version: [ 11, 12 ]
+        python3_version: [ 9, 10, 11, 12, 13 ]
         arch_cibw_go:
           - [ "x86_64", "amd64" ]
           - [ "arm64", "arm64" ]
         exclude:
-          - os_version: 10.15
-            python3_version: 11
-          - os_version: 10.15
-            arch_cibw_go: [ "arm64", "arm64"]
-          - python3_version: 7
+          - python3_version: 9
             arch_cibw_go: [ "arm64", "arm64"]
     runs-on: macos-${{ matrix.os_version }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: set up Go
+      - name: Set Up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           check-latest: true
 
-      - name: install gopy
-        run: go install github.com/go-python/gopy@v0.4.7
+      - name: Install Gopy
+        run: go install github.com/go-python/gopy@latest
 
-      - name: install goimports
+      - name: Install Goimports
         run: go install golang.org/x/tools/cmd/goimports@latest
 
-      - name: install python 3.${{ matrix.python3_version }} 
+      - name: Install Python 3.${{ matrix.python3_version }} 
         run: |
           brew install python@3.${{ matrix.python3_version }}
           ln -s /usr/local/opt/python@3.${{ matrix.python3_version }}/bin/python3.${{ matrix.python3_version }}  /usr/local/bin/python_for_build
           /usr/local/bin/python_for_build --version
 
-      - name: install cibuildwheel and pybindgen
-        run: /usr/local/bin/python_for_build -m pip install cibuildwheel==2.11.2 pybindgen
+      - name: Install Cibuildwheel and Pybindgen
+        run: /usr/local/bin/python_for_build -m pip install cibuildwheel pybindgen
 
-      - name: build wheels
+      - name: Build Wheels
         run: /usr/local/bin/python_for_build -m cibuildwheel --output-dir wheelhouse
         env:
           CIBW_ARCHS: ${{ matrix.arch_cibw_go[0] }}
@@ -173,108 +165,64 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: wheels
+          name: wheels-macos-${{ matrix.os_version }}-cp3${{ matrix.python3_version }}-${{ matrix.arch_cibw_go[0] }}
           path: ./wheelhouse/*.whl
 
   build_linux_x86_64:
     if: startsWith(github.ref, 'refs/tags/')
-    name: Linux cp37,cp38,cp39,cp310,cp311 x86_64
+    name: Linux Cp39+ x86_64 (manylinux)
     runs-on: ubuntu-20.04
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build wheels
-        uses: pypa/cibuildwheel@v2.11.2
+      - name: Build Wheels
+        uses: pypa/cibuildwheel@v2.16.2
         env:
-          CIBW_BUILD: "cp3*_x86_64"
-          CIBW_SKIP: "cp36-* *-musllinux_x86_64"
-          CIBW_ARCHS: "native"
+          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-*"
+          CIBW_SKIP: "*-musllinux_x86_64"
+          CIBW_ARCHS: "x86_64"
           CIBW_ENVIRONMENT: >
             PATH=$PATH:/usr/local/go/bin
             CGO_ENABLED=1
           CIBW_BEFORE_ALL_LINUX: |
-            curl -o go.tar.gz https://dl.google.com/go/go1.19.3.linux-amd64.tar.gz
+            curl -o go.tar.gz https://dl.google.com/go/go1.21.6.linux-amd64.tar.gz
             tar -C /usr/local -xzf go.tar.gz
-            go install github.com/go-python/gopy@v0.4.5
+            go install github.com/go-python/gopy@latest
             go install golang.org/x/tools/cmd/goimports@latest
+          CIBW_BUILD_VERBOSITY: 1
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: wheels
+          name: wheels-linux-x86_64
           path: ./wheelhouse/*.whl
-
-  build_linux_arm:
-    if: startsWith(github.ref, 'refs/tags/')
-    name: Linux cp37,cp38,cp39,cp310,cp311 armv7l
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build wheels via Docker
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile.armv7l
-          push: false
-          platforms: linux/armhf
-          tags: armv7l:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=min
-          load: true
-
-      - name: Extract output
-        run: |
-          docker run -v /tmp/output:/host armv7l:latest bash -c "cp /export/* /host/"
-          tar -zcvf /tmp/output.tar.gz /tmp/output
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels
-          path: /tmp/output/*.whl
 
   build_windows:
     if: startsWith(github.ref, 'refs/tags/')
-    name: Windows cp37,cp38,cp39,cp310,cp311 x86_64
+    name: Windows Cp39+ x86_64
     runs-on: windows-2019
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: set up Go
+      - name: Set Up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           check-latest: true
 
-      - name: install gopy
-        run: |
-          cd $env:TEMP
-          git clone https://github.com/bjia56/gopy
-          cd gopy
-          git checkout v0.4.5+bjia56.v1
-          go install -v
-          gopy
+      - name: Install Gopy
+        run: go install github.com/go-python/gopy@latest
 
-      - name: install goimports
+      - name: Install Goimports
         run: go install golang.org/x/tools/cmd/goimports@latest
 
-      - name: Build wheels
-        uses: pypa/cibuildwheel@v2.11.2
+      - name: Build Wheels
+        uses: pypa/cibuildwheel@v2.16.2
         env:
-          CIBW_BUILD: "cp3*"
-          CIBW_SKIP: "cp36-*"
-          CIBW_ARCHS: "native"
+          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-*"
+          CIBW_ARCHS: "AMD64"
           CIBW_ENVIRONMENT: >
             GOARCH=amd64
             CGO_ENABLED=1
@@ -282,7 +230,7 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: wheels
+          name: wheels-windows-x86_64
           path: ./wheelhouse/*.whl
 
 
