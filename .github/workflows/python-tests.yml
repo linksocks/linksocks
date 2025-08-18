@@ -94,8 +94,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           Write-Host "Generating Python bindings with gopy (Windows)..."
           
-          # Use the specialized Windows build script for Python 3.13 compatibility
-          python _bindings/python/build_windows.py
+          # Use the simple Windows build script for Python 3.13 compatibility
+          python _bindings/python/build_windows_simple.py
           if ($LASTEXITCODE -ne 0) { 
             Write-Host "Build script failed with exit code $LASTEXITCODE"
             exit $LASTEXITCODE 
@@ -222,7 +222,7 @@ jobs:
           CIBW_ENVIRONMENT: >
             GOARCH=amd64
             CGO_ENABLED=1
-          CIBW_BEFORE_BUILD_WINDOWS: python _bindings/python/cibw_before_build_windows.py
+          CIBW_BEFORE_BUILD_WINDOWS: python _bindings/python/build_windows_simple.py
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4

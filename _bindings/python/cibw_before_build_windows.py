@@ -8,6 +8,7 @@ specifically handling Python 3.13 linking issues.
 
 import os
 import sys
+import shutil
 from pathlib import Path
 
 def main():
@@ -40,7 +41,26 @@ def main():
             lib_files = list(libs_dir.glob("python*.lib"))
             if lib_files:
                 print(f"Python libraries found: {[f.name for f in lib_files]}")
-                cgo_ldflags = f"-L{libs_dir} -lpython{py_version}"
+                
+                # Workaround for gopy's .dll assumption on Windows
+                python313_lib = libs_dir / "python313.lib"
+                python313_dll = libs_dir / "python313.dll"
+                
+                if python313_lib.exists():
+                    try:
+                        # If .dll doesn't exist, copy .lib to .dll
+                        if not python313_dll.exists():
+                            shutil.copy2(python313_lib, python313_dll)
+                            print(f"Created {python313_dll} from {python313_lib}")
+                        
+                        cgo_ldflags = f"-L{libs_dir} -lpython{py_version}"
+                        print(f"Using workaround for Python 3.13 .dll linking")
+                        
+                    except Exception as e:
+                        print(f"Warning: Could not create .dll file: {e}")
+                        cgo_ldflags = f"-L{libs_dir} -lpython{py_version}"
+                else:
+                    cgo_ldflags = f"-L{libs_dir} -lpython{py_version}"
             else:
                 print(f"Warning: No Python library files in {libs_dir}")
         else:

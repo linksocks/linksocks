@@ -37,15 +37,49 @@ def configure_python313_environment(py_version, py_dir):
             lib_files = list(libs_dir.glob("python*.lib"))
             if lib_files:
                 print(f"Available Python libraries: {[f.name for f in lib_files]}")
-                # Use the correct library name for linking
-                os.environ["CGO_LDFLAGS"] = f"-L{libs_dir} -lpython{py_version}"
-                print(f"Set CGO_LDFLAGS: {os.environ['CGO_LDFLAGS']}")
+                
+                # Workaround for gopy's .dll assumption on Windows
+                # Create a .dll file that points to the .lib file
+                python313_lib = libs_dir / "python313.lib"
+                python313_dll = libs_dir / "python313.dll"
+                
+                if python313_lib.exists():
+                    try:
+                        # Method 1: Try to create a .dll file from .lib
+                        if not python313_dll.exists():
+                            shutil.copy2(python313_lib, python313_dll)
+                            print(f"Created {python313_dll} from {python313_lib}")
+                        
+                        # Method 2: Use direct library path instead of -l flag
+                        # This bypasses gopy's .dll assumption
+                        lib_path = str(python313_lib).replace('\\', '/')
+                        os.environ["CGO_LDFLAGS"] = f"-L{libs_dir} {lib_path}"
+                        print(f"Set CGO_LDFLAGS (direct path): {os.environ['CGO_LDFLAGS']}")
+                        
+                        # Also try setting LIBRARY_PATH for extra compatibility
+                        os.environ["LIBRARY_PATH"] = str(libs_dir)
+                        print(f"Set LIBRARY_PATH: {os.environ['LIBRARY_PATH']}")
+                        
+                        return python313_dll  # Return the created .dll file for cleanup
+                        
+                    except Exception as e:
+                        print(f"Warning: Could not create .dll file: {e}")
+                        # Fallback to using the full path only
+                        lib_path = str(python313_lib).replace('\\', '/')
+                        os.environ["CGO_LDFLAGS"] = f"{lib_path}"
+                        print(f"Set CGO_LDFLAGS (fallback direct): {os.environ['CGO_LDFLAGS']}")
+                else:
+                    # Fallback to standard linking
+                    os.environ["CGO_LDFLAGS"] = f"-L{libs_dir} -lpython{py_version}"
+                    print(f"Set CGO_LDFLAGS (standard fallback): {os.environ['CGO_LDFLAGS']}")
             else:
                 print(f"Warning: No Python library files found in {libs_dir}")
         else:
             print(f"Warning: Libs directory not found: {libs_dir}")
     else:
         print(f"Python version {py_version} - no special configuration needed")
+    
+    return None
 
 def run_gopy_build():
     """Run gopy build command with proper error handling."""
@@ -110,21 +144,30 @@ def main():
     print(f"Python directory: {py_dir}")
     
     # Configure environment for Python 3.13
-    configure_python313_environment(py_version, py_dir)
+    created_dll = configure_python313_environment(py_version, py_dir)
     
     # Set CGO enabled
     os.environ["CGO_ENABLED"] = "1"
     print("Set CGO_ENABLED=1")
     
-    # Run gopy build
-    success = run_gopy_build()
-    
-    if success:
-        print("\nBuild completed successfully!")
-        return 0
-    else:
-        print("\nBuild failed!")
-        return 1
+    try:
+        # Run gopy build
+        success = run_gopy_build()
+        
+        if success:
+            print("\nBuild completed successfully!")
+            return 0
+        else:
+            print("\nBuild failed!")
+            return 1
+    finally:
+        # Cleanup created .dll file if it exists
+        if created_dll and created_dll.exists():
+            try:
+                created_dll.unlink()
+                print(f"Cleaned up {created_dll}")
+            except Exception as e:
+                print(f"Warning: Could not cleanup {created_dll}: {e}")
 
 if __name__ == "__main__":
     sys.exit(main())
