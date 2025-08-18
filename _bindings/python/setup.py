@@ -26,6 +26,20 @@ from setuptools.command.install import install as _install
 # Get the current directory
 here = Path(__file__).parent.absolute()
 
+def ensure_placeholder_linksockslib():
+    """Ensure a placeholder Python package exists so find_packages() includes it.
+    The actual native bindings will be generated later during the build step.
+    """
+    pkg_dir = here / "linksockslib"
+    init_py = pkg_dir / "__init__.py"
+    try:
+        if not pkg_dir.exists():
+            pkg_dir.mkdir(parents=True, exist_ok=True)
+        if not init_py.exists():
+            init_py.write_text("# Placeholder; real contents generated during build\n")
+    except Exception as e:
+        print(f"Warning: failed to create placeholder linksockslib: {e}")
+
 def prepare_go_sources():
     """Prepare Go source files by copying them to linksocks_go directory."""
     go_src_dir = here / "linksocks_go"
@@ -65,6 +79,26 @@ def prepare_go_sources():
     
     print(f"Go sources prepared in {go_src_dir}")
     return go_src_dir
+
+def is_linksockslib_built(lib_dir: Path) -> bool:
+    """Determine if linksockslib contains real built artifacts (not just placeholder)."""
+    if not lib_dir.exists():
+        return False
+    # Native extensions produced by gopy
+    native_patterns = ["linksocks.*.so", "linksocks.*.pyd", "*.dll", "*.dylib"]
+    for pattern in native_patterns:
+        if any(lib_dir.glob(pattern)):
+            return True
+    # Heuristic: a non-placeholder __init__.py that imports the wrapper
+    init_file = lib_dir / "__init__.py"
+    if init_file.exists():
+        try:
+            content = init_file.read_text(encoding="utf-8", errors="ignore")
+            if "from .linksocks import *" in content:
+                return True
+        except Exception:
+            pass
+    return False
 
 def run_command(cmd, cwd=None, env=None):
     """Run a command and return the result."""
@@ -314,13 +348,9 @@ def ensure_python_bindings():
     local_go_src_dir = here / "linksocks_go"
     local_go_mod = here / "go.mod"
     
-    # Check if we're in a wheel build environment (skip building in this case)
-    if os.environ.get('CIBUILDWHEEL', '0') == '1':
-        print("Running in cibuildwheel environment, bindings should be pre-built")
-        return
-    
-    if not linksocks_lib_dir.exists():
-        print("linksockslib directory not found, building Python bindings...")
+    # Decide purely based on whether real bindings exist
+    if not is_linksockslib_built(linksocks_lib_dir):
+        print("linksockslib not built or only placeholder found, building Python bindings...")
         
         # Determine availability of Go sources
         have_local_sources = local_go_src_dir.exists() and (local_go_src_dir / "_python.go").exists() and local_go_mod.exists()
@@ -373,10 +403,10 @@ def ensure_python_bindings():
             # Clean up temporary Go installation
             cleanup_temp_go()
         
-        if not linksocks_lib_dir.exists():
-            raise RuntimeError("Failed to build Python bindings")
+        if not is_linksockslib_built(linksocks_lib_dir):
+            raise RuntimeError("Failed to build Python bindings (artifacts missing)")
     else:
-        print(f"Found existing linksockslib directory at {linksocks_lib_dir}")
+        print(f"Found existing built linksockslib at {linksocks_lib_dir}")
 
 def test_bindings():
     """Test if the Python bindings work correctly."""
@@ -480,6 +510,8 @@ class BuildPyEnsureBindings(_build_py):
     """
 
     def run(self):
+        # Ensure placeholder so that wheel metadata captures the package
+        ensure_placeholder_linksockslib()
         try:
             ensure_python_bindings()
         except Exception as e:
@@ -494,6 +526,7 @@ class DevelopEnsureBindings(_develop):
     """Ensure bindings exist for editable installs (pip install -e .)."""
 
     def run(self):
+        ensure_placeholder_linksockslib()
         ensure_python_bindings()
         super().run()
 
@@ -502,6 +535,7 @@ class InstallEnsureBindings(_install):
     """Ensure bindings exist for regular installs (pip install .)."""
 
     def run(self):
+        ensure_placeholder_linksockslib()
         ensure_python_bindings()
         super().run()
 
