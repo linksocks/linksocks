@@ -19,27 +19,26 @@ async def forward_server(
     """Create a forward server using the Go bindings"""
     import linksockslib
 
-    try:
-        ws_port = ws_port or get_free_port()
-        assert ws_port
+    ws_port = ws_port or get_free_port()
+    assert ws_port
 
-        # Create server using Go bindings
-        server_opt = linksockslib.DefaultServerOption()
-        server_opt.WithWSPort(ws_port)
-        server = linksockslib.NewLinkSocksServer(server_opt)
-        test_logger.info(f"Created forward server on port {ws_port} with token {token}")
-        try:
-            # Add forward token to server
-            server.AddForwardToken(token)
-            await asyncio.to_thread(
-                server.WaitReady, ctx=linksockslib.NewContext(), timeout=start_time_limit * linksockslib.Second()
-            )
-            yield server, ws_port, token
-        finally:
-            server.Close()
+    # Create server using Go bindings
+    server_opt = linksockslib.DefaultServerOption()
+    server_opt.WithWSPort(ws_port)
+    server = linksockslib.NewLinkSocksServer(server_opt)
+    test_logger.info(f"Created forward server on port {ws_port} with token {token}")
+    try:
+        # Add forward token to server
+        server.AddForwardToken(token)
+        await asyncio.to_thread(
+            server.WaitReady, ctx=linksockslib.NewContext(), timeout=start_time_limit * linksockslib.Second()
+        )
+        yield server, ws_port, token
     except Exception as e:
         test_logger.error(f"Failed to create forward server: {e}")
         raise
+    finally:
+        server.Close()
 
 
 @contextlib.asynccontextmanager
@@ -47,29 +46,28 @@ async def forward_client(ws_port: int, token: str):
     """Create a forward client using the Go bindings"""
     import linksockslib
 
-    try:
-        socks_port = get_free_port()
-        assert socks_port
+    socks_port = get_free_port()
+    assert socks_port
 
-        # Create client using Go bindings
-        client_opt = linksockslib.DefaultClientOption()
-        client_opt.WithWSURL(f"ws://localhost:{ws_port}")
-        client_opt.WithSocksPort(socks_port)
-        client_opt.WithReconnectDelay(1 * linksockslib.Second())
-        client_opt.WithNoEnvProxy(True)
-        client = linksockslib.NewLinkSocksClient(token, client_opt)
-        try:
-            ctx = linksockslib.NewContext()
-            await asyncio.to_thread(
-                client.WaitReady, ctx=ctx, timeout=start_time_limit * linksockslib.Second()
-            )
-            test_logger.info(f"Created forward client connecting to ws://localhost:{ws_port}")
-            yield client, socks_port
-        finally:
-            client.Close()
+    # Create client using Go bindings
+    client_opt = linksockslib.DefaultClientOption()
+    client_opt.WithWSURL(f"ws://localhost:{ws_port}")
+    client_opt.WithSocksPort(socks_port)
+    client_opt.WithReconnectDelay(1 * linksockslib.Second())
+    client_opt.WithNoEnvProxy(True)
+    client = linksockslib.NewLinkSocksClient(token, client_opt)
+    try:
+        ctx = linksockslib.NewContext()
+        await asyncio.to_thread(
+            client.WaitReady, ctx=ctx, timeout=start_time_limit * linksockslib.Second()
+        )
+        test_logger.info(f"Created forward client connecting to ws://localhost:{ws_port}")
+        yield client, socks_port
     except Exception as e:
         test_logger.error(f"Failed to create forward client: {e}")
         raise
+    finally:
+        client.Close()
 
 
 @contextlib.asynccontextmanager
@@ -91,31 +89,30 @@ async def reverse_server(
     """Create a reverse server using the Go bindings"""
     import linksockslib
 
+    ws_port = ws_port or get_free_port()
+
+    # Create server
+    server_opt = linksockslib.DefaultServerOption()
+    server_opt.WithWSPort(ws_port)
+    server = linksockslib.NewLinkSocksServer(server_opt)
+
+    # Add reverse token to server
     try:
-        ws_port = ws_port or get_free_port()
-
-        # Create server
-        server_opt = linksockslib.DefaultServerOption()
-        server_opt.WithWSPort(ws_port)
-        server = linksockslib.NewLinkSocksServer(server_opt)
-
-        # Add reverse token to server
-        try:
-            reverse_opts = linksockslib.DefaultReverseTokenOptions()
-            reverse_opts.Token = token
-            result: linksockslib.ReverseTokenResult = server.AddReverseToken(reverse_opts)
-            socks_port = result.Port
-            test_logger.info(f"Created reverse server on ws_port={ws_port}, socks_port={socks_port}")
-            ctx = linksockslib.NewContext()
-            await asyncio.to_thread(
-                server.WaitReady, ctx=ctx, timeout=start_time_limit * linksockslib.Second()
-            )
-            yield server, ws_port, token, socks_port
-        finally:
-            server.Close()
+        reverse_opts = linksockslib.DefaultReverseTokenOptions()
+        reverse_opts.Token = token
+        result: linksockslib.ReverseTokenResult = server.AddReverseToken(reverse_opts)
+        socks_port = result.Port
+        test_logger.info(f"Created reverse server on ws_port={ws_port}, socks_port={socks_port}")
+        ctx = linksockslib.NewContext()
+        await asyncio.to_thread(
+            server.WaitReady, ctx=ctx, timeout=start_time_limit * linksockslib.Second()
+        )
+        yield server, ws_port, token, socks_port
     except Exception as e:
         test_logger.error(f"Failed to create reverse server: {e}")
         raise
+    finally:
+        server.Close()
 
 
 @contextlib.asynccontextmanager
@@ -123,24 +120,23 @@ async def reverse_client(ws_port: int, token: str):
     """Create a reverse client using the Go bindings"""
     import linksockslib
 
+    client_opt = linksockslib.DefaultClientOption()
+    client_opt.WithWSURL(f"ws://localhost:{ws_port}")
+    client_opt.WithReconnectDelay(1 * linksockslib.Second())
+    client_opt.WithReverse(True)
+    client_opt.WithNoEnvProxy(True)
+    client = linksockslib.NewLinkSocksClient(token, client_opt)
     try:
-        client_opt = linksockslib.DefaultClientOption()
-        client_opt.WithWSURL(f"ws://localhost:{ws_port}")
-        client_opt.WithReconnectDelay(1 * linksockslib.Second())
-        client_opt.WithReverse(True)
-        client_opt.WithNoEnvProxy(True)
-        client = linksockslib.NewLinkSocksClient(token, client_opt)
-        try:
-            ctx = linksockslib.NewContext()
-            await asyncio.to_thread(
-                client.WaitReady, ctx=ctx, timeout=start_time_limit * linksockslib.Second()
-            )
-            yield client
-        finally:
-            client.Close()
+        ctx = linksockslib.NewContext()
+        await asyncio.to_thread(
+            client.WaitReady, ctx=ctx, timeout=start_time_limit * linksockslib.Second()
+        )
+        yield client
     except Exception as e:
         test_logger.error(f"Failed to create reverse client: {e}")
         raise
+    finally:
+        client.Close()
 
 
 @contextlib.asynccontextmanager
@@ -376,26 +372,29 @@ async def reverse_server_with_auth(
     """Create a reverse server with SOCKS authentication"""
     import linksockslib
 
+    ws_port = ws_port or get_free_port()
+
+    # Create server
+    server_opt = linksockslib.DefaultServerOption()
+    server_opt.WithWSPort(ws_port)
+    server = linksockslib.NewLinkSocksServer(server_opt)
+
+    # Add reverse token with authentication
+    reverse_opts = linksockslib.DefaultReverseTokenOptions()
+    reverse_opts.Token = token
+    reverse_opts.Username = username
+    reverse_opts.Password = password
+    result: linksockslib.ReverseTokenResult = server.AddReverseToken(reverse_opts)
+    socks_port = result.Port
+
     try:
-        ws_port = ws_port or get_free_port()
-
-        # Create server
-        server_opt = linksockslib.DefaultServerOption()
-        server_opt.WithWSPort(ws_port)
-        server = linksockslib.NewLinkSocksServer(server_opt)
-
-        # Add reverse token with authentication
-        reverse_opts = linksockslib.DefaultReverseTokenOptions()
-        reverse_opts.Token = token
-        reverse_opts.Username = username
-        reverse_opts.Password = password
-        result: linksockslib.ReverseTokenResult = server.AddReverseToken(reverse_opts)
-        socks_port = result.Port
-
         await asyncio.to_thread(
             server.WaitReady, ctx=linksockslib.NewContext(), timeout=start_time_limit * linksockslib.Second()
         )
         yield server, ws_port, token, socks_port, username, password
+    except Exception as e:
+        test_logger.error(f"Failed to create reverse server with auth: {e}")
+        raise
     finally:
         server.Close()
 
@@ -434,21 +433,24 @@ async def forward_client_with_reconnect(ws_port: int, token: str, **kw):
     """Create a forward client with reconnection enabled"""
     import linksockslib
 
+    socks_port = get_free_port()
+
+    # Create client with reconnection
+    client_opt = linksockslib.DefaultClientOption()
+    client_opt.WithWSURL(f"ws://localhost:{ws_port}")
+    client_opt.WithSocksPort(socks_port)
+    client_opt.WithReconnectDelay(1 * linksockslib.Second())
+    client_opt.WithReconnect(True)
+    client = linksockslib.NewLinkSocksClient(token, client_opt)
+
     try:
-        socks_port = get_free_port()
-
-        # Create client with reconnection
-        client_opt = linksockslib.DefaultClientOption()
-        client_opt.WithWSURL(f"ws://localhost:{ws_port}")
-        client_opt.WithSocksPort(socks_port)
-        client_opt.WithReconnectDelay(1 * linksockslib.Second())
-        client_opt.WithReconnect(True)
-        client = linksockslib.NewLinkSocksClient(token, client_opt)
-
         await asyncio.to_thread(
             client.WaitReady, ctx=linksockslib.NewContext(), timeout=start_time_limit * linksockslib.Second()
         )
         yield client, socks_port
+    except Exception as e:
+        test_logger.error(f"Failed to create forward client with reconnect: {e}")
+        raise
     finally:
         client.Close()
 
@@ -519,27 +521,30 @@ async def reverse_server_with_connector(
     """Create a reverse server with connector token"""
     import linksockslib
 
+    ws_port = ws_port or get_free_port()
+
+    # Create server
+    server_opt = linksockslib.DefaultServerOption()
+    server_opt.WithWSPort(ws_port)
+    server = linksockslib.NewLinkSocksServer(server_opt)
+
+    # Add reverse token
+    reverse_opts = linksockslib.DefaultReverseTokenOptions()
+    reverse_opts.Token = token
+    result: linksockslib.ReverseTokenResult = server.AddReverseToken(reverse_opts)
+    socks_port = result.Port
+
+    # Add connector token
+    server.AddConnectorToken(connector_token, result.Token)
+
     try:
-        ws_port = ws_port or get_free_port()
-
-        # Create server
-        server_opt = linksockslib.DefaultServerOption()
-        server_opt.WithWSPort(ws_port)
-        server = linksockslib.NewLinkSocksServer(server_opt)
-
-        # Add reverse token
-        reverse_opts = linksockslib.DefaultReverseTokenOptions()
-        reverse_opts.Token = token
-        result: linksockslib.ReverseTokenResult = server.AddReverseToken(reverse_opts)
-        socks_port = result.Port
-
-        # Add connector token
-        server.AddConnectorToken(connector_token, result.Token)
-
         await asyncio.to_thread(
             server.WaitReady, ctx=linksockslib.NewContext(), timeout=start_time_limit * linksockslib.Second()
         )
         yield server, ws_port, result.Token, socks_port, connector_token
+    except Exception as e:
+        test_logger.error(f"Failed to create reverse server with connector: {e}")
+        raise
     finally:
         server.Close()
 
@@ -572,25 +577,28 @@ async def reverse_server_with_autonomy(
     """Create a reverse server with connector autonomy"""
     import linksockslib
 
+    ws_port = ws_port or get_free_port()
+
+    # Create server
+    server_opt = linksockslib.DefaultServerOption()
+    server_opt.WithWSPort(ws_port)
+    server = linksockslib.NewLinkSocksServer(server_opt)
+
+    # Add reverse token with autonomy
+    reverse_opts = linksockslib.DefaultReverseTokenOptions()
+    reverse_opts.Token = token
+    reverse_opts.AllowManageConnector = True
+    result: linksockslib.ReverseTokenResult = server.AddReverseToken(reverse_opts)
+    socks_port = result.Port
+
     try:
-        ws_port = ws_port or get_free_port()
-
-        # Create server
-        server_opt = linksockslib.DefaultServerOption()
-        server_opt.WithWSPort(ws_port)
-        server = linksockslib.NewLinkSocksServer(server_opt)
-
-        # Add reverse token with autonomy
-        reverse_opts = linksockslib.DefaultReverseTokenOptions()
-        reverse_opts.Token = token
-        reverse_opts.AllowManageConnector = True
-        result: linksockslib.ReverseTokenResult = server.AddReverseToken(reverse_opts)
-        socks_port = result.Port
-
         await asyncio.to_thread(
             server.WaitReady, ctx=linksockslib.NewContext(), timeout=start_time_limit * linksockslib.Second()
         )
         yield server, ws_port, result.Token, socks_port
+    except Exception as e:
+        test_logger.error(f"Failed to create reverse server with autonomy: {e}")
+        raise
     finally:
         server.Close()
 
@@ -625,21 +633,24 @@ async def forward_client_with_threads(ws_port: int, token: str, threads: int = 2
     """Create a forward client with multiple threads"""
     import linksockslib
 
+    socks_port = get_free_port()
+
+    # Create client with multiple threads
+    client_opt = linksockslib.DefaultClientOption()
+    client_opt.WithWSURL(f"ws://localhost:{ws_port}")
+    client_opt.WithSocksPort(socks_port)
+    client_opt.WithReconnectDelay(1 * linksockslib.Second())
+    client_opt.WithThreads(threads)
+    client = linksockslib.NewLinkSocksClient(token, client_opt)
+
     try:
-        socks_port = get_free_port()
-
-        # Create client with multiple threads
-        client_opt = linksockslib.DefaultClientOption()
-        client_opt.WithWSURL(f"ws://localhost:{ws_port}")
-        client_opt.WithSocksPort(socks_port)
-        client_opt.WithReconnectDelay(1 * linksockslib.Second())
-        client_opt.WithThreads(threads)
-        client = linksockslib.NewLinkSocksClient(token, client_opt)
-
         await asyncio.to_thread(
             client.WaitReady, ctx=linksockslib.NewContext(), timeout=start_time_limit * linksockslib.Second()
         )
         yield client, socks_port
+    except Exception as e:
+        test_logger.error(f"Failed to create forward client with threads: {e}")
+        raise
     finally:
         client.Close()
 
@@ -669,21 +680,24 @@ async def forward_server_fast_open(
     """Create a forward server with fast open mode"""
     import linksockslib
 
+    ws_port = ws_port or get_free_port()
+
+    # Create server with fast open mode
+    server_opt = linksockslib.DefaultServerOption()
+    server_opt.WithWSPort(ws_port)
+    server_opt.WithFastOpen(True)
+    server = linksockslib.NewLinkSocksServer(server_opt)
+
     try:
-        ws_port = ws_port or get_free_port()
-
-        # Create server with fast open mode
-        server_opt = linksockslib.DefaultServerOption()
-        server_opt.WithWSPort(ws_port)
-        server_opt.WithFastOpen(True)
-        server = linksockslib.NewLinkSocksServer(server_opt)
-
         # Add forward token
         server.AddForwardToken(token)
         await asyncio.to_thread(
             server.WaitReady, ctx=linksockslib.NewContext(), timeout=start_time_limit * linksockslib.Second()
         )
         yield server, ws_port, token
+    except Exception as e:
+        test_logger.error(f"Failed to create forward server with fast open: {e}")
+        raise
     finally:
         server.Close()
 
@@ -693,21 +707,24 @@ async def forward_client_fast_open(ws_port: int, token: str, **kw):
     """Create a forward client with fast open mode"""
     import linksockslib
 
+    socks_port = get_free_port()
+
+    # Create client with fast open mode
+    client_opt = linksockslib.DefaultClientOption()
+    client_opt.WithWSURL(f"ws://localhost:{ws_port}")
+    client_opt.WithSocksPort(socks_port)
+    client_opt.WithReconnectDelay(1 * linksockslib.Second())
+    client_opt.WithFastOpen(True)
+    client = linksockslib.NewLinkSocksClient(token, client_opt)
+
     try:
-        socks_port = get_free_port()
-
-        # Create client with fast open mode
-        client_opt = linksockslib.DefaultClientOption()
-        client_opt.WithWSURL(f"ws://localhost:{ws_port}")
-        client_opt.WithSocksPort(socks_port)
-        client_opt.WithReconnectDelay(1 * linksockslib.Second())
-        client_opt.WithFastOpen(True)
-        client = linksockslib.NewLinkSocksClient(token, client_opt)
-
         await asyncio.to_thread(
             client.WaitReady, ctx=linksockslib.NewContext(), timeout=start_time_limit * linksockslib.Second()
         )
         yield client, socks_port
+    except Exception as e:
+        test_logger.error(f"Failed to create forward client with fast open: {e}")
+        raise
     finally:
         client.Close()
 
@@ -721,25 +738,28 @@ async def reverse_server_fast_open(
     """Create a reverse server with fast open mode"""
     import linksockslib
 
+    ws_port = ws_port or get_free_port()
+
+    # Create server with fast open mode
+    server_opt = linksockslib.DefaultServerOption()
+    server_opt.WithWSPort(ws_port)
+    server_opt.WithFastOpen(True)
+    server = linksockslib.NewLinkSocksServer(server_opt)
+
+    # Add reverse token
+    reverse_opts = linksockslib.DefaultReverseTokenOptions()
+    reverse_opts.Token = token
+    result: linksockslib.ReverseTokenResult = server.AddReverseToken(reverse_opts)
+    socks_port = result.Port
+
     try:
-        ws_port = ws_port or get_free_port()
-
-        # Create server with fast open mode
-        server_opt = linksockslib.DefaultServerOption()
-        server_opt.WithWSPort(ws_port)
-        server_opt.WithFastOpen(True)
-        server = linksockslib.NewLinkSocksServer(server_opt)
-
-        # Add reverse token
-        reverse_opts = linksockslib.DefaultReverseTokenOptions()
-        reverse_opts.Token = token
-        result: linksockslib.ReverseTokenResult = server.AddReverseToken(reverse_opts)
-        socks_port = result.Port
-
         await asyncio.to_thread(
             server.WaitReady, ctx=linksockslib.NewContext(), timeout=start_time_limit * linksockslib.Second()
         )
         yield server, ws_port, result.Token, socks_port
+    except Exception as e:
+        test_logger.error(f"Failed to create reverse server with fast open: {e}")
+        raise
     finally:
         server.Close()
 
@@ -749,19 +769,22 @@ async def reverse_client_fast_open(ws_port: int, token: str, **kw):
     """Create a reverse client with fast open mode"""
     import linksockslib
 
-    try:
-        # Create client with fast open mode
-        client_opt = linksockslib.DefaultClientOption()
-        client_opt.WithWSURL(f"ws://localhost:{ws_port}")
-        client_opt.WithReconnectDelay(1 * linksockslib.Second())
-        client_opt.WithReverse(True)
-        client_opt.WithFastOpen(True)
-        client = linksockslib.NewLinkSocksClient(token, client_opt)
+    # Create client with fast open mode
+    client_opt = linksockslib.DefaultClientOption()
+    client_opt.WithWSURL(f"ws://localhost:{ws_port}")
+    client_opt.WithReconnectDelay(1 * linksockslib.Second())
+    client_opt.WithReverse(True)
+    client_opt.WithFastOpen(True)
+    client = linksockslib.NewLinkSocksClient(token, client_opt)
 
+    try:
         await asyncio.to_thread(
             client.WaitReady, ctx=linksockslib.NewContext(), timeout=start_time_limit * linksockslib.Second()
         )
         yield client
+    except Exception as e:
+        test_logger.error(f"Failed to create reverse client with fast open: {e}")
+        raise
     finally:
         client.Close()
 
