@@ -250,6 +250,31 @@ def install_gopy_and_tools():
     if not check_go_installation():
         raise RuntimeError("Go is not available after installation attempt")
     
+    # Helper to add Go bin dirs (GOBIN/GOPATH/bin) to PATH so "gopy" is discoverable
+    def _ensure_go_bins_on_path():
+        try:
+            gobin = run_command(["go", "env", "GOBIN"]) or ""
+        except Exception:
+            gobin = ""
+        try:
+            gopath = run_command(["go", "env", "GOPATH"]) or ""
+        except Exception:
+            gopath = ""
+
+        candidate_dirs = []
+        if gobin.strip():
+            candidate_dirs.append(Path(gobin.strip()))
+        if gopath.strip():
+            candidate_dirs.append(Path(gopath.strip()) / "bin")
+
+        current_path = os.environ.get("PATH", "")
+        updated_parts = [p for p in current_path.split(os.pathsep) if p]
+        for d in candidate_dirs:
+            d_str = str(d)
+            if d_str and d_str not in updated_parts:
+                updated_parts.insert(0, d_str)
+        os.environ["PATH"] = os.pathsep.join(updated_parts)
+
     # Install gopy
     try:
         run_command(["go", "install", "github.com/go-python/gopy@latest"])
@@ -258,6 +283,9 @@ def install_gopy_and_tools():
         print(f"Failed to install gopy: {e}")
         raise
     
+    # Ensure the freshly installed Go binaries are on PATH (especially on Windows)
+    _ensure_go_bins_on_path()
+
     # Install goimports
     try:
         run_command(["go", "install", "golang.org/x/tools/cmd/goimports@latest"])
@@ -293,17 +321,50 @@ def build_python_bindings():
         env = os.environ.copy()
         env["CGO_ENABLED"] = "1"
         
-        # Ensure PATH includes Go binary directory
+        # Ensure PATH includes Go binary directory (for temp install path)
         if _temp_go_dir:
             go_bin = Path(_temp_go_dir) / "go" / "bin"
             current_path = env.get("PATH", "")
             if str(go_bin) not in current_path:
                 env["PATH"] = f"{go_bin}{os.pathsep}{current_path}"
                 print(f"Updated PATH for gopy execution: {go_bin}")
+
+        # Also ensure GOBIN/GOPATH/bin are present for system Go installs
+        try:
+            gobin = run_command(["go", "env", "GOBIN"]) or ""
+        except Exception:
+            gobin = ""
+        try:
+            gopath = run_command(["go", "env", "GOPATH"]) or ""
+        except Exception:
+            gopath = ""
+        candidate_bins = []
+        if gobin.strip():
+            candidate_bins.append(Path(gobin.strip()))
+        if gopath.strip():
+            candidate_bins.append(Path(gopath.strip()) / "bin")
+        current_path = env.get("PATH", "")
+        for b in candidate_bins:
+            b_str = str(b)
+            if b_str and b_str not in current_path:
+                current_path = f"{b_str}{os.pathsep}{current_path}"
+        env["PATH"] = current_path
         
+        # Prefer absolute path to gopy if available
+        gopy_executable = shutil.which("gopy", path=env.get("PATH", ""))
+        if not gopy_executable:
+            # Try common locations
+            for b in candidate_bins:
+                candidate = b / ("gopy.exe" if platform.system().lower() == "windows" else "gopy")
+                if candidate.exists():
+                    gopy_executable = str(candidate)
+                    break
+        if not gopy_executable:
+            raise FileNotFoundError("gopy executable not found on PATH. Ensure GOBIN/GOPATH/bin is on PATH.")
+
         # Run gopy build from _bindings/python directory
         cmd = [
-            "gopy", "build",
+            gopy_executable, "build",
             f"-vm={sys.executable}",
             f"-output={linksocks_lib_dir}",
             "-name=linksockslib",
