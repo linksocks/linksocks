@@ -153,13 +153,19 @@ async def async_assert_udp_connection(udp_server, socks_port=None, socks_auth=No
             socket.inet_pton(socket.AF_INET6, host)
             family = socket.AF_INET6
         except OSError:
-            # Hostname - resolve to determine family
+            # Hostname - resolve to determine family, prefer IPv4 for CI stability
             try:
-                addr_info = socket.getaddrinfo(host, port, family=socket.AF_UNSPEC, type=socket.SOCK_DGRAM)
+                # Try IPv4 first for better CI compatibility
+                addr_info = socket.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_DGRAM)
                 if addr_info:
-                    family = addr_info[0][0]  # First result's family
+                    family = socket.AF_INET
                 else:
-                    family = socket.AF_INET  # Default to IPv4
+                    # Fall back to IPv6 if IPv4 is not available
+                    addr_info = socket.getaddrinfo(host, port, family=socket.AF_INET6, type=socket.SOCK_DGRAM)
+                    if addr_info:
+                        family = socket.AF_INET6
+                    else:
+                        family = socket.AF_INET  # Default to IPv4
             except socket.gaierror:
                 family = socket.AF_INET  # Default to IPv4 if resolution fails
 
@@ -230,12 +236,32 @@ async def async_assert_udp_connection(udp_server, socks_port=None, socks_auth=No
     relay_family = family
 
     if socks_port:
-        # Create TCP socket for SOCKS5 negotiation (IPv4 localhost)
-        tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        tcp_sock.setblocking(False)
+        # Create TCP socket for SOCKS5 negotiation
+        # Try IPv4 first, then IPv6 if that fails
+        tcp_sock = None
+        socks_connect_addr = None
+        
+        try:
+            # Try IPv4 first
+            tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            tcp_sock.setblocking(False)
+            socks_connect_addr = ("127.0.0.1", socks_port)
+            await loop.sock_connect(tcp_sock, socks_connect_addr)
+        except Exception:
+            # If IPv4 fails, try IPv6
+            if tcp_sock:
+                tcp_sock.close()
+            try:
+                tcp_sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+                tcp_sock.setblocking(False)
+                socks_connect_addr = ("::1", socks_port)
+                await loop.sock_connect(tcp_sock, socks_connect_addr)
+            except Exception as e:
+                if tcp_sock:
+                    tcp_sock.close()
+                raise RuntimeError(f"Failed to connect to SOCKS5 proxy on both IPv4 and IPv6: {e}")
 
         try:
-            await loop.sock_connect(tcp_sock, ("127.0.0.1", socks_port))
 
             # SOCKS5 handshake
             if socks_auth:
@@ -429,13 +455,19 @@ def assert_udp_connection(udp_server, socks_port=None, socks_auth=None):
             socket.inet_pton(socket.AF_INET6, host)
             family = socket.AF_INET6
         except OSError:
-            # Hostname - resolve to determine family
+            # Hostname - resolve to determine family, prefer IPv4 for CI stability
             try:
-                addr_info = socket.getaddrinfo(host, port, family=socket.AF_UNSPEC, type=socket.SOCK_DGRAM)
+                # Try IPv4 first for better CI compatibility
+                addr_info = socket.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_DGRAM)
                 if addr_info:
-                    family = addr_info[0][0]  # First result's family
+                    family = socket.AF_INET
                 else:
-                    family = socket.AF_INET  # Default to IPv4
+                    # Fall back to IPv6 if IPv4 is not available
+                    addr_info = socket.getaddrinfo(host, port, family=socket.AF_INET6, type=socket.SOCK_DGRAM)
+                    if addr_info:
+                        family = socket.AF_INET6
+                    else:
+                        family = socket.AF_INET  # Default to IPv4
             except socket.gaierror:
                 family = socket.AF_INET  # Default to IPv4 if resolution fails
 
