@@ -1,5 +1,8 @@
 # Gopy generated files
 linksockslib/
+linksocks_go/
+go.mod
+go.sum
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

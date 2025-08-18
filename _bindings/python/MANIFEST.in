@@ -1,2 +1,21 @@
-global-include *.so *.py *.pyd
-global-exclude build.py
+# Include Go source files in linksocks_go directory
+recursive-include linksocks_go *.go
+include go.mod
+include go.sum
+
+# Include build scripts
+include build_windows.py
+
+# Include documentation
+include README.md
+
+# Exclude unnecessary files
+global-exclude __pycache__
+global-exclude *.py[co]
+global-exclude .git*
+global-exclude *.so
+global-exclude *.dylib
+global-exclude *.dll
+
+# Exclude existing bindings directory to force rebuild
+prune linksockslib

@@ -28,19 +28,47 @@ jobs:
         run: |
           echo "sha=$(git rev-list -n 1 ${{ github.event.release.tag_name }})" >> $GITHUB_OUTPUT
 
-      - name: Download wheels from tag workflow
+      - name: Download Linux wheels from tag workflow
         uses: dawidd6/action-download-artifact@v11
         with:
           workflow: python-tests.yml
           workflow_conclusion: success
           commit: ${{ steps.tag_commit.outputs.sha }}
+          name: wheels-linux-x86_64
+          path: dist/
+          check_artifacts: true
+          if_no_artifact_found: error
+
+      - name: Download Linux ARM64 wheels from tag workflow
+        uses: dawidd6/action-download-artifact@v11
+        with:
+          workflow: python-tests.yml
+          workflow_conclusion: success
+          commit: ${{ steps.tag_commit.outputs.sha }}
+          name: wheels-linux-aarch64
+          path: dist/
+          check_artifacts: true
+          if_no_artifact_found: error
+
+      - name: Download source distribution from tag workflow
+        uses: dawidd6/action-download-artifact@v11
+        with:
+          workflow: python-tests.yml
+          workflow_conclusion: success
+          commit: ${{ steps.tag_commit.outputs.sha }}
+          name: source-dist
           path: dist/
           check_artifacts: true
           if_no_artifact_found: error
 
       - name: List distributions
         run: |
+          echo "=== Distribution files ==="
           ls -la dist/
+          echo "=== Wheel files ==="
+          find dist/ -name "*.whl" -exec ls -la {} \;
+          echo "=== Source distribution ==="
+          find dist/ -name "*.tar.gz" -exec ls -la {} \;
 
       - name: Publish distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
