@@ -547,7 +547,7 @@ setup(
     long_description_content_type="text/markdown",
     author="jackzzs",
     author_email="jackzzs@outlook.com",
-    url="https://github.com/zetxtech/linksocks",
+    url="https://github.com/linksocks/linksocks",
     license="MIT",
     
     # Package configuration
@@ -601,10 +601,10 @@ setup(
     
     # Project URLs
     project_urls={
-        "Bug Reports": "https://github.com/zetxtech/linksocks/issues",
-        "Source": "https://github.com/zetxtech/linksocks",
-        "Documentation": "https://github.com/zetxtech/linksocks#readme",
-        "Changelog": "https://github.com/zetxtech/linksocks/releases",
+        "Bug Reports": "https://github.com/linksocks/linksocks/issues",
+        "Source": "https://github.com/linksocks/linksocks",
+        "Documentation": "https://github.com/linksocks/linksocks#readme",
+        "Changelog": "https://github.com/linksocks/linksocks/releases",
     },
     
     # Binary distribution

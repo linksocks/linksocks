@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/linksocks/linksocks/linksocks"
 	"github.com/rs/zerolog"
-	"github.com/zetxtech/linksocks/linksocks"
 
 	"github.com/stretchr/testify/require"
 )

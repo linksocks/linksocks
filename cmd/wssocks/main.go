@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 
-	"github.com/zetxtech/linksocks/linksocks"
+	"github.com/linksocks/linksocks/linksocks"
 )
 
 func main() {

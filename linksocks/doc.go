@@ -6,7 +6,7 @@
 //
 // Basic usage:
 //
-//	import "github.com/zetxtech/linksocks/linksocks"
+//	import "github.com/linksocks/linksocks/linksocks"
 //
 //	// Create a server with default options
 //	server := linksocks.NewLinkSocksServer(linksocks.DefaultServerOption())

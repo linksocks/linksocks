@@ -40,7 +40,7 @@ python-bindings: python-clean
 	@orig="linksocks/_python.go"; tmp="linksocks/python.go"; rc=0; \
 	if [ -f "$$orig" ]; then cp "$$orig" "$$tmp"; fi; \
 	gopy build -vm=$(PYBIN) -output=$(PYTHON_OUTPUT_DIR)/linksockslib -name=linksockslib -no-make=true \
-		-build-tags=gopy github.com/zetxtech/linksocks/linksocks || rc=$$?; \
+		-build-tags=gopy github.com/linksocks/linksocks/linksocks || rc=$$?; \
 	echo "from .linksocks import *" > $(PYTHON_OUTPUT_DIR)/linksockslib/__init__.py; \
 	rm -f "$$tmp"; \
 	go mod tidy; \

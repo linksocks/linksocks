@@ -1,4 +1,4 @@
-module github.com/zetxtech/linksocks
+module github.com/linksocks/linksocks
 
 go 1.21
 

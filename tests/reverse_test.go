@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zetxtech/linksocks/linksocks"
+	"github.com/linksocks/linksocks/linksocks"
 
 	"github.com/stretchr/testify/require"
 )

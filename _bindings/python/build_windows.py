@@ -85,7 +85,7 @@ def main():
             "-name=linksockslib",
             "-no-make=true",
             "-build-tags=gopy",
-            "github.com/zetxtech/linksocks/linksocks"
+            "github.com/linksocks/linksocks/linksocks"
         ]
         
         print(f"Running: {' '.join(cmd)}")

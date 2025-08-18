@@ -1,4 +1,4 @@
-[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/zetxtech/linksocks/ci.yml?logo=github&label=Tests)](https://github.com/zetxtech/linksocks/actions) [![Codecov](https://img.shields.io/codecov/c/github/zetxtech/linksocks?logo=codecov&logoColor=white)](https://app.codecov.io/gh/zetxtech/linksocks/tree/main) [![Docker Pulls](https://img.shields.io/docker/pulls/jackzzs/linksocks?logo=docker&logoColor=white)](https://hub.docker.com/r/jackzzs/linksocks)
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/linksocks/linksocks/ci.yml?logo=github&label=Tests)](https://github.com/linksocks/linksocks/actions) [![Codecov](https://img.shields.io/codecov/c/github/linksocks/linksocks?logo=codecov&logoColor=white)](https://app.codecov.io/gh/linksocks/linksocks/tree/main) [![Docker Pulls](https://img.shields.io/docker/pulls/jackzzs/linksocks?logo=docker&logoColor=white)](https://hub.docker.com/r/jackzzs/linksocks)
 
 # LinkSocks
 
@@ -10,7 +10,7 @@ LinkSocks is a SOCKS proxy implementation over WebSocket protocol.
 
 This tool allows you to securely expose SOCKS proxy services under Web Application Firewall (WAF) protection (forward socks), or enable clients to connect and serve as SOCKS proxy servers when they don't have public network access (reverse socks).
 
-![Main Diagram](https://github.com/zetxtech/linksocks/raw/main/images/abstract.svg)
+![Main Diagram](https://github.com/linksocks/linksocks/raw/main/images/abstract.svg)
 
 For python version, please check [zetxtech/pylinksocks](https://github.com/zetxtech/pylinksocks). But note that the Python version typically has lower performance compared to this implementation.
 
@@ -96,10 +96,10 @@ In autonomy mode:
 LinkSocks can be installed by:
 
 ```bash
-go install github.com/zetxtech/linksocks/cmd/linksocks@latest
+go install github.com/linksocks/linksocks/cmd/linksocks@latest
 ```
 
-You can also download pre-built binaries for your architecture from the [releases page](https://github.com/zetxtech/linksocks/releases).
+You can also download pre-built binaries for your architecture from the [releases page](https://github.com/linksocks/linksocks/releases).
 
 LinkSocks is also available via Docker:
 
@@ -109,9 +109,9 @@ docker run --rm -it jackzzs/linksocks --help
 
 ## Cloudflare Worker
 
-LinkSocks server can be hosted on Cloudflare Worker, see: [zetxtech/linksocks.js](https://github.com/zetxtech/linksocks.js)
+LinkSocks server can be hosted on Cloudflare Worker, see: [linksocks/linksocks.js](https://github.com/linksocks/linksocks.js)
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/zetxtech/linksocks.js)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/linksocks/linksocks.js)
 
 The linksocks.js version is a lite version and does not contain API functionality.
 

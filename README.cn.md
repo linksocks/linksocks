@@ -1,4 +1,4 @@
-[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/zetxtech/linksocks/ci.yml?logo=github&label=Tests)](https://github.com/zetxtech/linksocks/actions) [![Codecov](https://img.shields.io/codecov/c/github/zetxtech/linksocks?logo=codecov&logoColor=white)](https://app.codecov.io/gh/zetxtech/linksocks/tree/main) [![Docker Pulls](https://img.shields.io/docker/pulls/jackzzs/linksocks?logo=docker&logoColor=white)](https://hub.docker.com/r/jackzzs/linksocks)
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/linksocks/linksocks/ci.yml?logo=github&label=Tests)](https://github.com/linksocks/linksocks/actions) [![Codecov](https://img.shields.io/codecov/c/github/linksocks/linksocks?logo=codecov&logoColor=white)](https://app.codecov.io/gh/linksocks/linksocks/tree/main) [![Docker Pulls](https://img.shields.io/docker/pulls/jackzzs/linksocks?logo=docker&logoColor=white)](https://hub.docker.com/r/jackzzs/linksocks)
 
 # LinkSocks
 
@@ -10,7 +10,7 @@ LinkSocks 是一个基于 WebSocket 协议的跨网络跨机器 SOCKS 代理实�
 
 LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCKS 代理服务（正向代理模式），或使没有公网 IP 的客户端连接并作为 SOCKS 代理服务器（反向代理模式）。
 
-![架构图](https://github.com/zetxtech/linksocks/raw/main/images/abstract.svg)
+![架构图](https://github.com/linksocks/linksocks/raw/main/images/abstract.svg)
 
 如需 Python 版本，请查看 [zetxtech/pylinksocks](https://github.com/zetxtech/pylinksocks)。但请注意，Python 版本的性能通常低于 Go 语言实现版本。
 
@@ -96,10 +96,10 @@ linksocks provider -t example_token -c example_connector_token
 安装 LinkSocks：
 
 ```bash
-go install github.com/zetxtech/linksocks/cmd/linksocks@latest
+go install github.com/linksocks/linksocks/cmd/linksocks@latest
 ```
 
-您也可以从[发布页面](https://github.com/zetxtech/linksocks/releases)下载适合您系统架构的预编译二进制文件。
+您也可以从[发布页面](https://github.com/linksocks/linksocks/releases)下载适合您系统架构的预编译二进制文件。
 
 LinkSocks 也提供 Docker 镜像：
 
@@ -109,9 +109,9 @@ docker run --rm -it jackzzs/linksocks --help
 
 ## Cloudflare Worker
 
-LinkSocks 服务端可以部署在 Cloudflare Worker 上，详见：[zetxtech/linksocks.js](https://github.com/zetxtech/linksocks.js)
+LinkSocks 服务端可以部署在 Cloudflare Worker 上，详见：[linksocks/linksocks.js](https://github.com/linksocks/linksocks.js)
 
-[![部署到 Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/zetxtech/linksocks.js)
+[![部署到 Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/linksocks/linksocks.js)
 
 linksocks.js 版本是一个轻量级版本，不包含 API 功能。
 
