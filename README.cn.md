@@ -12,8 +12,6 @@ LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCK
 
 ![架构图](https://github.com/linksocks/linksocks/raw/main/images/abstract.svg)
 
-如需 Python 版本，请查看 [zetxtech/pylinksocks](https://github.com/zetxtech/pylinksocks)。但请注意，Python 版本的性能通常低于 Go 语言实现版本。
-
 ## 特性
 
 1. 支持命令行使用、API 服务器和库集成

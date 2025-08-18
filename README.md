@@ -12,8 +12,6 @@ This tool allows you to securely expose SOCKS proxy services under Web Applicati
 
 ![Main Diagram](https://github.com/linksocks/linksocks/raw/main/images/abstract.svg)
 
-For python version, please check [zetxtech/pylinksocks](https://github.com/zetxtech/pylinksocks). But note that the Python version typically has lower performance compared to this implementation.
-
 ## Features
 
 1. Supporting command-line usage, API server, and library integration.
