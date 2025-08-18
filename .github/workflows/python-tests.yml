@@ -89,7 +89,7 @@ jobs:
           Write-Host "Generating Python bindings with gopy (Windows)..."
           
           # Use the simple Windows build script for Python 3.13 compatibility
-          python _bindings/python/build_windows_simple.py
+          python _bindings/python/build_windows.py
           if ($LASTEXITCODE -ne 0) { 
             Write-Host "Build script failed with exit code $LASTEXITCODE"
             exit $LASTEXITCODE 
@@ -191,7 +191,7 @@ jobs:
   build_windows:
     if: startsWith(github.ref, 'refs/tags/')
     name: Windows Cp39+ x86_64
-    runs-on: windows-2019
+    runs-on: windows-2022
 
     steps:
       - uses: actions/checkout@v4
@@ -216,7 +216,7 @@ jobs:
           CIBW_ENVIRONMENT: >
             GOARCH=amd64
             CGO_ENABLED=1
-          CIBW_BEFORE_BUILD_WINDOWS: python _bindings/python/build_windows_simple.py
+          CIBW_BEFORE_BUILD_WINDOWS: python _bindings/python/build_windows.py
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
