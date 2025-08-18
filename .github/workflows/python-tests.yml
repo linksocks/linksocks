@@ -103,61 +103,6 @@ jobs:
         working-directory: _bindings/python
         run: pytest -v -n auto
 
-  build_macos:
-    if: startsWith(github.ref, 'refs/tags/')
-    name: MacOS ${{ matrix.os_version }} Cp3${{ matrix.python3_version }} ${{ matrix.arch_cibw_go[0] }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os_version: [ 11, 12 ]
-        python3_version: [ 9, 10, 11, 12, 13 ]
-        arch_cibw_go:
-          - [ "x86_64", "amd64" ]
-          - [ "arm64", "arm64" ]
-        exclude:
-          - python3_version: 9
-            arch_cibw_go: [ "arm64", "arm64"]
-    runs-on: macos-${{ matrix.os_version }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set Up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          check-latest: true
-
-      - name: Install Gopy
-        run: go install github.com/go-python/gopy@latest
-
-      - name: Install Goimports
-        run: go install golang.org/x/tools/cmd/goimports@latest
-
-      - name: Install Python 3.${{ matrix.python3_version }} 
-        run: |
-          brew install python@3.${{ matrix.python3_version }}
-          ln -s /usr/local/opt/python@3.${{ matrix.python3_version }}/bin/python3.${{ matrix.python3_version }}  /usr/local/bin/python_for_build
-          /usr/local/bin/python_for_build --version
-
-      - name: Install Cibuildwheel and Pybindgen
-        run: /usr/local/bin/python_for_build -m pip install cibuildwheel pybindgen
-
-      - name: Build Wheels
-        run: /usr/local/bin/python_for_build -m cibuildwheel --output-dir wheelhouse
-        env:
-          CIBW_ARCHS: ${{ matrix.arch_cibw_go[0] }}
-          PYTHON_BINARY_PATH: /usr/local/bin/python_for_build
-          CIBW_BUILD: "cp3${{ matrix.python3_version }}-*"
-          CIBW_ENVIRONMENT: >
-            PATH=$PATH:/usr/local/go/bin
-            GOARCH=${{ matrix.arch_cibw_go[1] }}
-            CGO_ENABLED=1
-          
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-macos-${{ matrix.os_version }}-cp3${{ matrix.python3_version }}-${{ matrix.arch_cibw_go[0] }}
-          path: ./wheelhouse/*.whl
-
   build_linux_x86_64:
     if: startsWith(github.ref, 'refs/tags/')
     name: Linux Cp39+ x86_64 (manylinux)
@@ -224,4 +169,57 @@ jobs:
           name: wheels-windows-x86_64
           path: ./wheelhouse/*.whl
 
+  build_macos:
+    if: startsWith(github.ref, 'refs/tags/')
+    name: MacOS ${{ matrix.os_version }} Cp3${{ matrix.python3_version }} ${{ matrix.arch_cibw_go[0] }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os_version: [ 11, 12 ]
+        python3_version: [ 9, 10, 11, 12, 13 ]
+        arch_cibw_go:
+          - [ "x86_64", "amd64" ]
+          - [ "arm64", "arm64" ]
+        exclude:
+          - python3_version: 9
+            arch_cibw_go: [ "arm64", "arm64"]
+    runs-on: macos-${{ matrix.os_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set Up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
 
+      - name: Install Gopy
+        run: go install github.com/go-python/gopy@latest
+
+      - name: Install Goimports
+        run: go install golang.org/x/tools/cmd/goimports@latest
+
+      - name: Install Python 3.${{ matrix.python3_version }} 
+        run: |
+          brew install python@3.${{ matrix.python3_version }}
+          ln -s /usr/local/opt/python@3.${{ matrix.python3_version }}/bin/python3.${{ matrix.python3_version }}  /usr/local/bin/python_for_build
+          /usr/local/bin/python_for_build --version
+
+      - name: Install Cibuildwheel and Pybindgen
+        run: /usr/local/bin/python_for_build -m pip install cibuildwheel pybindgen
+
+      - name: Build Wheels
+        run: /usr/local/bin/python_for_build -m cibuildwheel --output-dir wheelhouse
+        env:
+          CIBW_ARCHS: ${{ matrix.arch_cibw_go[0] }}
+          PYTHON_BINARY_PATH: /usr/local/bin/python_for_build
+          CIBW_BUILD: "cp3${{ matrix.python3_version }}-*"
+          CIBW_ENVIRONMENT: >
+            PATH=$PATH:/usr/local/go/bin
+            GOARCH=${{ matrix.arch_cibw_go[1] }}
+            CGO_ENABLED=1
+          
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos-${{ matrix.os_version }}-cp3${{ matrix.python3_version }}-${{ matrix.arch_cibw_go[0] }}
+          path: ./wheelhouse/*.whl
