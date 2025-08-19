@@ -1,0 +1,17 @@
+{
+  "name": "linksocks-docs",
+  "version": "1.0.0",
+  "description": "LinkSocks Documentation",
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "vitepress": "^1.0.0"
+  },
+  "dependencies": {
+    "vitepress-plugin-pagefind": "^0.4.14"
+  }
+}

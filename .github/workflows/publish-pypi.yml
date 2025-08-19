@@ -61,13 +61,24 @@ jobs:
           check_artifacts: false
           if_no_artifact_found: ignore
 
-      - name: Download macOS wheels
+      - name: Download macOS x64 wheels
         uses: dawidd6/action-download-artifact@v11
         with:
           workflow: python-tests.yml
           workflow_conclusion: success
           commit: ${{ steps.tag_commit.outputs.sha }}
-          name: wheels-macos
+          name: wheels-macos-x64
+          path: dist/
+          check_artifacts: false
+          if_no_artifact_found: ignore
+
+      - name: Download macOS arm64 wheels
+        uses: dawidd6/action-download-artifact@v11
+        with:
+          workflow: python-tests.yml
+          workflow_conclusion: success
+          commit: ${{ steps.tag_commit.outputs.sha }}
+          name: wheels-macos-arm64
           path: dist/
           check_artifacts: false
           if_no_artifact_found: ignore
@@ -98,3 +109,4 @@ jobs:
           packages-dir: dist/
           verify-metadata: true
           verbose: true
+          skip-existing: true
