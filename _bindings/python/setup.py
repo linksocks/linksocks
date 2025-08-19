@@ -344,7 +344,12 @@ def install_go():
                 zip_ref.extractall(temp_dir_path)
         else:
             with tarfile.open(go_archive, 'r:gz') as tar_ref:
-                tar_ref.extractall(temp_dir_path)
+                try:
+                    # Python 3.12+ supports the 'filter' argument; Python 3.14 defaults to filtering.
+                    # Use 'data' for safety and cross-version consistency; fall back if unsupported.
+                    tar_ref.extractall(temp_dir_path, filter='data')
+                except TypeError:
+                    tar_ref.extractall(temp_dir_path)
         
         # Go is extracted to temp_dir/go/
         go_root = temp_dir_path / "go"
@@ -929,7 +934,8 @@ def configure_python_env(target_python: str, env: dict) -> dict:
         print(f"Warning: failed to configure platform CGO flags: {cfg_err}")
         return env
 
-# (test_bindings hook removed per request)
+# Ensure placeholder package exists BEFORE calling setup() so find_packages() sees it
+ensure_placeholder_linksockslib()
 
 setup(
     name="linksocks",
