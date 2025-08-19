@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import platform
 import tempfile
+import importlib.machinery
 import tarfile
 import zipfile
 from pathlib import Path
@@ -80,16 +81,48 @@ def prepare_go_sources():
     print(f"Go sources prepared in {go_src_dir}")
     return go_src_dir
 
+def _expected_binary_names() -> list[str]:
+    """Return candidate filenames for the extension for the current interpreter/platform."""
+    candidates: list[str] = []
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+        # e.g. ['.cpython-311-x86_64-linux-gnu.so', '.so']
+        candidates.append(f"_linksockslib{suffix}")
+    # Also include conservative fallbacks by version tag just in case
+    pyver = f"{sys.version_info.major}{sys.version_info.minor}"
+    candidates.append(f"_linksockslib.cpython-{pyver}.so")
+    candidates.append(f"_linksockslib.cp{pyver}.pyd")
+    return candidates
+
+
 def is_linksockslib_built(lib_dir: Path) -> bool:
-    """Determine if linksockslib contains real built artifacts (not just placeholder)."""
+    """Determine if linksockslib contains a native artifact compatible with this Python."""
     if not lib_dir.exists():
         return False
-    # Native extensions produced by gopy
-    native_patterns = ["_linksockslib.*.so", "_linksockslib.*.pyd", "_linksockslib.*.dll", "_linksockslib.*.dylib"]
-    for pattern in native_patterns:
-        if any(lib_dir.glob(pattern)):
+    for name in _expected_binary_names():
+        if (lib_dir / name).exists():
             return True
     return False
+
+
+def prune_foreign_binaries(lib_dir: Path) -> None:
+    """Remove artifacts that are not compatible with the current interpreter.
+
+    This prevents wheels for one Python version from accidentally bundling
+    binaries produced for a different version/ABI.
+    """
+    if not lib_dir.exists():
+        return
+    keep_names = set(_expected_binary_names())
+    for p in lib_dir.iterdir():
+        if not p.is_file():
+            continue
+        if p.name.startswith("_linksockslib") and p.suffix in {".so", ".pyd", ".dll", ".dylib"}:
+            if p.name not in keep_names:
+                try:
+                    p.unlink()
+                    print(f"Pruned foreign binary: {p}")
+                except Exception as e:
+                    print(f"Warning: failed to remove {p}: {e}")
 
 def run_command(cmd, cwd=None, env=None):
     """Run a command and return the result."""
@@ -370,6 +403,8 @@ def build_python_bindings():
         run_command(["go", "mod", "tidy"], cwd=here)
         
         print("Python bindings built successfully")
+        # After a successful build, prune any binaries not matching current ABI
+        prune_foreign_binaries(linksocks_lib_dir)
         
     finally:
         # Clean up temporary python.go file
@@ -394,7 +429,7 @@ def ensure_python_bindings():
     local_go_src_dir = here / "linksocks_go"
     local_go_mod = here / "go.mod"
     
-    # Decide purely based on whether real bindings exist
+    # Decide based on whether a binding for THIS interpreter exists
     if not is_linksockslib_built(linksocks_lib_dir):
         print("linksockslib not built or only placeholder found, building Python bindings...")
         
@@ -452,6 +487,8 @@ def ensure_python_bindings():
         if not is_linksockslib_built(linksocks_lib_dir):
             raise RuntimeError("Failed to build Python bindings (artifacts missing)")
     else:
+        # Ensure we only ship binaries compatible with this interpreter
+        prune_foreign_binaries(linksocks_lib_dir)
         print(f"Found existing built linksockslib at {linksocks_lib_dir}")
 
 def test_bindings():
@@ -565,6 +602,8 @@ class BuildPyEnsureBindings(_build_py):
             if os.environ.get("SETUPTOOLS_BUILD_META", ""):  # PEP 517 builds
                 raise
             raise
+        # Just in case, prune leftovers again before packaging
+        prune_foreign_binaries(here / "linksockslib")
         super().run()
 
 
