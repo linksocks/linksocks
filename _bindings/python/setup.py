@@ -28,6 +28,34 @@ from typing import Optional
 # Get the current directory
 here = Path(__file__).parent.absolute()
 
+# Global variables
+_temp_go_dir = None
+_temp_py_venv_dir = None
+
+# Platform-specific configurations
+install_requires = [
+    "setuptools>=40.0",
+    "click>=8.0",
+    "loguru",
+    "rich",
+]
+
+# Development dependencies
+extras_require = {
+    "dev": [
+        "pytest>=6.0",
+        "pytest-cov>=2.10",
+        "pytest-mock>=3.0",
+        "pytest-xdist",
+        "black>=21.0",
+        "flake8>=3.8",
+        "mypy>=0.800",
+        "httpx[socks]",
+        "requests",
+        "pysocks",
+    ],
+}
+
 def ensure_placeholder_linksockslib():
     """Ensure a placeholder Python package exists so find_packages() includes it.
     The actual native bindings will be generated later during the build step.
@@ -161,11 +189,7 @@ def download_file(url, destination):
     print(f"Downloading {url} to {destination}")
     urlretrieve(url, destination)
 
-# Global variable to store temporary Go installation
-_temp_go_dir = None
-
-# Global variable to store temporary Python virtual environment
-_temp_py_venv_dir = None
+# (globals moved to top)
 
 def _venv_scripts_dir(venv_dir: Path) -> Path:
     system = platform.system().lower()
@@ -455,6 +479,10 @@ def build_python_bindings(vm_python: Optional[str] = None):
         # Set up environment
         env = os.environ.copy()
         env["CGO_ENABLED"] = "1"
+        # Determine target Python now so we can configure CGO flags appropriately
+        target_vm = vm_python or sys.executable
+        # Configure platform-specific CGO flags based on the target interpreter
+        env = configure_python_env(target_vm, env)
         
         # Ensure PATH includes Go binary directory (for temp install path)
         if _temp_go_dir:
@@ -498,7 +526,6 @@ def build_python_bindings(vm_python: Optional[str] = None):
             raise FileNotFoundError("gopy executable not found on PATH. Ensure GOBIN/GOPATH/bin is on PATH.")
 
         # Run gopy build from _bindings/python directory
-        target_vm = vm_python or sys.executable
         cmd = [
             gopy_executable, "build",
             f"-vm={target_vm}",
@@ -747,35 +774,86 @@ class BinaryDistribution(setuptools.Distribution):
     def has_ext_modules(_):
         return True
 
-def configure_windows_python_env():
-    """Configure CGO flags for Windows across supported Python versions."""
-    import platform
-    import sys
-    from pathlib import Path
+def configure_python_env(target_python: str, env: dict) -> dict:
+    """Configure CGO flags for the current platform using the target Python interpreter.
 
-    if platform.system() == "Windows":
-        py_version = f"{sys.version_info.major}{sys.version_info.minor}"
-        py_dir = Path(sys.executable).parent
-        include_dir = py_dir / "include"
-        libs_dir = py_dir / "libs"
+    On Windows: use the current interpreter layout for include/libs.
+    On Linux: query sysconfig from the target interpreter for include/lib dirs and libs.
+    On macOS: rely on default search paths (users can override via env if needed).
+    """
+    system_name = platform.system().lower()
+    try:
+        if system_name == "windows":
+            py_version = f"{sys.version_info.major}{sys.version_info.minor}"
+            py_dir = Path(sys.executable).parent
+            include_dir = py_dir / "include"
+            libs_dir = py_dir / "libs"
 
-        os.environ["CGO_ENABLED"] = "1"
+            env["CGO_ENABLED"] = "1"
+            cflags = []
+            if include_dir.exists():
+                cflags.append(f"-I{include_dir}")
+            if env.get("CGO_CFLAGS"):
+                cflags.append(env["CGO_CFLAGS"])
+            env["CGO_CFLAGS"] = " ".join(cflags).strip()
 
-        if include_dir.exists():
-            os.environ["CGO_CFLAGS"] = f"-I{include_dir}"
-            print(f"Configured CGO_CFLAGS for Windows: {os.environ['CGO_CFLAGS']}")
+            ldflags = []
+            if libs_dir.exists():
+                ldflags.append(f"-L{libs_dir}")
+            ldflags.append(f"-lpython{py_version}")
+            if env.get("CGO_LDFLAGS"):
+                ldflags.append(env["CGO_LDFLAGS"])
+            env["CGO_LDFLAGS"] = " ".join(ldflags).strip()
+            return env
 
-        if libs_dir.exists():
-            os.environ["CGO_LDFLAGS"] = f"-L{libs_dir} -lpython{py_version}"
-            print(f"Configured CGO_LDFLAGS for Windows: {os.environ['CGO_LDFLAGS']}")
+        if system_name == "linux":
+            py_include = run_command([
+                str(target_python),
+                "-c",
+                "import sysconfig;print(sysconfig.get_paths()['include'])",
+            ])
+            py_libdir = run_command([
+                str(target_python),
+                "-c",
+                "import sysconfig;print(sysconfig.get_config_var('LIBDIR') or sysconfig.get_config_var('LIBPL') or '')",
+            ])
+            py_ver = run_command([
+                str(target_python),
+                "-c",
+                "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+            ])
+            extra_libs = run_command([
+                str(target_python),
+                "-c",
+                "import sysconfig;print(((sysconfig.get_config_var('LIBS') or '') + ' ' + (sysconfig.get_config_var('SYSLIBS') or '')).strip())",
+            ])
 
-# Configure Windows Python environment if needed
-configure_windows_python_env()
+            cflags_parts = []
+            if py_include.strip():
+                cflags_parts.append(f"-I{py_include.strip()}")
+            if env.get("CGO_CFLAGS"):
+                cflags_parts.append(env["CGO_CFLAGS"])
+            env["CGO_CFLAGS"] = " ".join(part for part in cflags_parts if part).strip()
 
-# Test bindings if requested via environment variable
-if os.environ.get('LINKSOCKS_TEST_BINDINGS', '').lower() in ('1', 'true', 'yes'):
-    print("\nTesting Python bindings...")
-    test_bindings()
+            ldflags_parts = []
+            if py_libdir.strip():
+                ldflags_parts.append(f"-L{py_libdir.strip()}")
+                ldflags_parts.append(f"-Wl,-rpath,{py_libdir.strip()}")
+            ldflags_parts.append(f"-lpython{py_ver.strip()}")
+            if extra_libs.strip():
+                ldflags_parts.append(extra_libs.strip())
+            if env.get("CGO_LDFLAGS"):
+                ldflags_parts.append(env["CGO_LDFLAGS"])
+            env["CGO_LDFLAGS"] = " ".join(part for part in ldflags_parts if part).strip()
+            return env
+
+        # macOS or others: leave as-is; users can override via env if needed
+        return env
+    except Exception as cfg_err:
+        print(f"Warning: failed to configure platform CGO flags: {cfg_err}")
+        return env
+
+# (test_bindings hook removed per request)
 
 setup(
     name="linksocks",
