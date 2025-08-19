@@ -822,6 +822,8 @@ def configure_python_env(target_python: str, env: dict) -> dict:
             library_name = run_command([str(target_python), "-c", "import sysconfig;print(sysconfig.get_config_var('LIBRARY') or '')"]) or ""
             ldlibrary_name = run_command([str(target_python), "-c", "import sysconfig;print(sysconfig.get_config_var('LDLIBRARY') or '')"]) or ""
             extra_libs = run_command([str(target_python), "-c", "import sysconfig;print(((sysconfig.get_config_var('LIBS') or '') + ' ' + (sysconfig.get_config_var('SYSLIBS') or '')).strip())"]) or ""
+            prefix = run_command([str(target_python), "-c", "import sysconfig;print(sysconfig.get_config_var('prefix') or '')"]) or ""
+            base_prefix = run_command([str(target_python), "-c", "import sys;print(getattr(sys,'base_prefix', '') or '')"]) or ""
 
             # Log detected Python and paths
             print(f"Target Python: {py_exec}")
@@ -831,6 +833,8 @@ def configure_python_env(target_python: str, env: dict) -> dict:
             print(f"sysconfig LDVERSION: {ldversion}")
             print(f"sysconfig LIBRARY: {library_name}")
             print(f"sysconfig LDLIBRARY: {ldlibrary_name}")
+            print(f"sysconfig prefix: {prefix}")
+            print(f"sys.base_prefix: {base_prefix}")
 
             # Compose CFLAGS
             cflags_parts = []
@@ -841,7 +845,16 @@ def configure_python_env(target_python: str, env: dict) -> dict:
             env["CGO_CFLAGS"] = " ".join(part for part in cflags_parts if part).strip()
 
             # Try to locate a concrete libpython file (shared or static)
+            # Candidate library directories
             candidate_dirs = [p for p in [libdir.strip(), libpl.strip()] if p]
+            # Add common prefix-based lib directories
+            for root in [prefix.strip(), base_prefix.strip(), str(Path(py_include).parents[2]) if py_include else ""]:
+                if root:
+                    for sub in ("lib", "libs", "lib64"):
+                        d = str(Path(root) / sub)
+                        if d not in candidate_dirs:
+                            candidate_dirs.append(d)
+            print(f"Candidate lib dirs: {candidate_dirs}")
             candidate_names = []
             if ldlibrary_name.strip():
                 candidate_names.append(ldlibrary_name.strip())
@@ -867,6 +880,32 @@ def configure_python_env(target_python: str, env: dict) -> dict:
                 if resolved_libpython:
                     break
 
+            # If still not resolved, search for any libpython*.so* or .a under candidate dirs
+            if not resolved_libpython:
+                for d in candidate_dirs:
+                    try:
+                        matches = list(Path(d).glob("libpython*.a")) + list(Path(d).glob("libpython*.so*"))
+                        # Prefer static archive if available
+                        matches.sort(key=lambda x: (0 if x.suffix == ".a" else 1, -len(str(x))))
+                        if matches:
+                            resolved_libpython = str(matches[0])
+                            break
+                    except Exception:
+                        continue
+
+            # As another fallback, try python-config for this version
+            py_ver_short = run_command([str(target_python), "-c", "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')"]) or ""
+            py_config_flags = ""
+            if py_ver_short:
+                py_config_name = f"python{py_ver_short}-config"
+                py_config_path = shutil.which(py_config_name)
+                if py_config_path:
+                    try:
+                        py_config_flags = run_command([py_config_path, "--ldflags", "--embed"]) or run_command([py_config_path, "--ldflags"]) or ""
+                        print(f"{py_config_name} flags: {py_config_flags}")
+                    except Exception as _:
+                        pass
+
             ldflags_parts = []
             # Add lib directories and rpath if any known
             for d in candidate_dirs:
@@ -878,12 +917,13 @@ def configure_python_env(target_python: str, env: dict) -> dict:
                 ldflags_parts.append(resolved_libpython)
             else:
                 # Fallback to -lpythonX.Y if we couldn't resolve a file
-                py_ver = run_command([str(target_python), "-c", "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')"]) or ""
-                if py_ver.strip():
-                    ldflags_parts.append(f"-lpython{py_ver.strip()}")
+                if py_ver_short.strip():
+                    ldflags_parts.append(f"-lpython{py_ver_short.strip()}")
 
             if extra_libs.strip():
                 ldflags_parts.append(extra_libs.strip())
+            if py_config_flags.strip():
+                ldflags_parts.append(py_config_flags.strip())
             if env.get("CGO_LDFLAGS"):
                 ldflags_parts.append(env["CGO_LDFLAGS"])
             env["CGO_LDFLAGS"] = " ".join(part for part in ldflags_parts if part).strip()
