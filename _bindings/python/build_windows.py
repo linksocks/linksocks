@@ -93,11 +93,6 @@ def main():
         
         if result.returncode == 0:
             print("[SUCCESS] Gopy build completed successfully!")
-            
-            init_file = output_dir / "__init__.py"
-            init_file.write_text("from .linksocks import *\n")
-            print(f"[OK] Created {init_file}")
-            
             return 0
         else:
             print(f"[ERROR] Gopy build failed with return code {result.returncode}")

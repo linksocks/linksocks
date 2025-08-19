@@ -12,7 +12,7 @@ import logging
 from typing import Any, Optional
 
 # Underlying Go bindings module (generated)
-import linksockslib  # type: ignore
+from linksockslib import linksocks  # type: ignore
 
 from ._base import (
     _SnakePassthrough,
@@ -73,7 +73,7 @@ class Server(_SnakePassthrough):
             upstream_username: Username for upstream proxy authentication
             upstream_password: Password for upstream proxy authentication
         """
-        opt = linksockslib.DefaultServerOption()
+        opt = linksocks.DefaultServerOption()
         if logger is None:
             logger = _logger
         # Use buffer-based logger system
@@ -104,7 +104,7 @@ class Server(_SnakePassthrough):
         if upstream_username or upstream_password:
             opt.WithUpstreamAuth(upstream_username or "", upstream_password or "")
 
-        self._raw = linksockslib.NewLinkSocksServer(opt)
+        self._raw = linksocks.NewLinkSocksServer(opt)
         self._ctx = None
 
     @property
@@ -155,7 +155,7 @@ class Server(_SnakePassthrough):
         Returns:
             Result containing the token and assigned port
         """
-        opts = linksockslib.DefaultReverseTokenOptions()
+        opts = linksocks.DefaultReverseTokenOptions()
         if token:
             opts.Token = token
         if port is not None:
@@ -190,7 +190,7 @@ class Server(_SnakePassthrough):
         Returns:
             Result containing the token and assigned port
         """
-        opts = linksockslib.DefaultReverseTokenOptions()
+        opts = linksocks.DefaultReverseTokenOptions()
         if token:
             opts.Token = token
         if port is not None:
@@ -257,7 +257,7 @@ class Server(_SnakePassthrough):
             timeout: Maximum time to wait, no timeout if None
         """
         if not self._ctx:
-            self._ctx = linksockslib.NewContextWithCancel()
+            self._ctx = linksocks.NewContextWithCancel()
         timeout = _to_duration(timeout) if timeout is not None else 0
         self._raw.WaitReady(ctx=self._ctx.Context(), timeout=timeout)
 
@@ -268,7 +268,7 @@ class Server(_SnakePassthrough):
             timeout: Maximum time to wait, no timeout if None
         """
         if not self._ctx:
-            self._ctx = linksockslib.NewContextWithCancel()
+            self._ctx = linksocks.NewContextWithCancel()
         timeout = _to_duration(timeout) if timeout is not None else 0
         try:
             return await asyncio.to_thread(self._raw.WaitReady, ctx=self._ctx.Context(), timeout=timeout)

@@ -16,7 +16,7 @@ from datetime import timedelta
 from typing import Any, Callable, Dict, Iterable, Optional, Tuple, Union, List
 
 # Underlying Go bindings module (generated)
-import linksockslib  # type: ignore
+from linksockslib import linksocks # type: ignore
 
 _logger = logging.getLogger(__name__)
 
@@ -52,12 +52,12 @@ def _to_duration(value: Optional[DurationLike]) -> Any:
         return 0
     if isinstance(value, timedelta):
         seconds = value.total_seconds()
-        return seconds * linksockslib.Second()
+        return seconds * linksocks.Second()
     if isinstance(value, (int, float)):
-        return value * linksockslib.Second()
+        return value * linksocks.Second()
     if isinstance(value, str):
         try:
-            return linksockslib.ParseDuration(value)
+            return linksocks.ParseDuration(value)
         except Exception as exc:
             raise ValueError(f"Invalid duration string: {value}") from exc
     raise TypeError(f"Unsupported duration type: {type(value)!r}")
@@ -113,7 +113,7 @@ def _start_log_listener() -> None:
         # Drain loop: wait for entries with timeout to allow graceful shutdown
         while _listener_active:
             try:
-                entries = linksockslib.WaitForLogEntries(2000)  # wait up to 2s
+                entries = linksocks.WaitForLogEntries(2000)  # wait up to 2s
             except Exception:
                 # Backoff on unexpected errors to avoid busy loop
                 time.sleep(0.2)
@@ -152,7 +152,7 @@ def _stop_log_listener() -> None:
     _listener_active = False
     try:
         # Unblock WaitForLogEntries callers
-        linksockslib.CancelLogWaiters()
+        linksocks.CancelLogWaiters()
     except Exception:
         pass
 
@@ -169,17 +169,17 @@ class BufferZerologLogger:
         # Prefer Go logger with explicit ID so we can map entries back
         try:
             # Newer binding that tags entries with our provided ID
-            self.go_logger = linksockslib.NewLoggerWithID(self.logger_id)
+            self.go_logger = linksocks.NewLoggerWithID(self.logger_id)
         except Exception:
             # Fallback to older API; if present, still try callback path
             try:
                 def log_callback(line: str) -> None:
                     _emit_go_log(py_logger, line)
 
-                self.go_logger = linksockslib.NewLogger(log_callback)
+                self.go_logger = linksocks.NewLogger(log_callback)
             except Exception:
                 # As a last resort, create a default Go logger
-                self.go_logger = linksockslib.NewLoggerWithID(self.logger_id)  # may still raise; surface to caller
+                self.go_logger = linksocks.NewLoggerWithID(self.logger_id)  # may still raise; surface to caller
         _logger_registry[logger_id] = py_logger
     
     def cleanup(self):

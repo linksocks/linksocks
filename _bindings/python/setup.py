@@ -85,19 +85,10 @@ def is_linksockslib_built(lib_dir: Path) -> bool:
     if not lib_dir.exists():
         return False
     # Native extensions produced by gopy
-    native_patterns = ["linksocks.*.so", "linksocks.*.pyd", "*.dll", "*.dylib"]
+    native_patterns = ["_linksockslib.*.so", "_linksockslib.*.pyd", "_linksockslib.*.dll", "_linksockslib.*.dylib"]
     for pattern in native_patterns:
         if any(lib_dir.glob(pattern)):
             return True
-    # Heuristic: a non-placeholder __init__.py that imports the wrapper
-    init_file = lib_dir / "__init__.py"
-    if init_file.exists():
-        try:
-            content = init_file.read_text(encoding="utf-8", errors="ignore")
-            if "from .linksocks import *" in content:
-                return True
-        except Exception:
-            pass
     return False
 
 def run_command(cmd, cwd=None, env=None):
@@ -374,12 +365,6 @@ def build_python_bindings():
         ]
         
         run_command(cmd, cwd=here, env=env)
-        
-        # Create __init__.py
-        init_file = linksocks_lib_dir / "__init__.py"
-        with open(init_file, "w") as f:
-            f.write("from .linksocks import *\n")
-        print(f"Created {init_file}")
         
         # Clean up go.mod
         run_command(["go", "mod", "tidy"], cwd=here)
