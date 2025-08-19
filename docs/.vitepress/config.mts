@@ -1,33 +1,19 @@
 import { defineConfig } from 'vitepress'
-import {
-  pagefindPlugin,
-  chineseSearchOptimize,
-} from 'vitepress-plugin-pagefind';
 
 export default defineConfig({
   title: 'LinkSocks',
   description: 'SOCKS5 over WebSocket proxy tool',
   cleanUrls: true,
   head: [['link', { rel: 'icon', href: '/favicon.ico' }]],
-  // vite: {
-  //   plugins: [
-  //     pagefindPlugin({
-  //       customSearchQuery: chineseSearchOptimize,
-  //       btnPlaceholder: '搜索',
-  //       placeholder: '搜索文档',
-  //       emptyText: '空空如也',
-  //       heading: '共: {{searchResult}} 条结果',
-  //       excludeSelector: ['img', 'a.header-anchor'],
-  //     }),
-  //   ],
-  // },
   themeConfig: {
     logo: '/logo.png',
     nav: [
       { text: 'Guide', link: '/guide/' },
       { text: 'GitHub', link: 'https://github.com/linksocks/linksocks' }
     ],
-
+    search: {
+      provider: 'local'
+    },
     sidebar: [
       {
         text: 'Getting Started',
@@ -65,16 +51,6 @@ export default defineConfig({
         ]
       }
     ],
-
-    search: {
-      provider: 'algolia',
-      options: {
-        appId: '7VHPI8DCJ2',
-        apiKey: '8f024abcbc01889032c46e2082967075',
-        indexName: 'linksocks',
-      },
-    },
-
     socialLinks: [
       { icon: 'github', link: 'https://github.com/linksocks/linksocks' }
     ],
