@@ -4,6 +4,8 @@
 
 LinkSocks 是一个基于 WebSocket 协议的跨网络跨机器 SOCKS 代理实现。
 
+📖 **文档**: https://libsocks-docs.zetx.tech/
+
 [English README](README.md)
 
 ## 概述
@@ -27,83 +29,83 @@ LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCK
 2. 使用客户端代理绕过验证码
 3. 通过 CDN 网络实现安全的内网穿透
 
-## 使用方法
+## 快速开始
 
-### 命令行工具
-
-正向代理模式：
+### 正向代理
 
 ```bash
-# 服务端（WebSockets 监听 8765 端口，作为网络提供方）
+# 服务端：在 8765 端口启动 WebSocket 服务
 linksocks server -t example_token
 
-# 客户端（SOCKS5 监听 9870 端口）
-linksocks client -t example_token -u http://localhost:8765 -p 9870
+# 客户端：连接到服务端并在 9870 端口提供 SOCKS5 代理
+linksocks client -t example_token -u ws://localhost:8765 -p 9870
+
+# 测试代理
+curl --socks5 127.0.0.1:9870 http://httpbin.org/ip
 ```
 
-反向代理模式（使用 `-r` 参数）：
+### 反向代理
 
 ```bash
-# 服务端（WebSockets 监听 8765 端口，SOCKS 监听 9870 端口）
-linksocks server -t example_token -p 9870 -r
+# 服务端：在 9870 端口启动 SOCKS5 代理服务
+linksocks server -t example_token -r -p 9870
 
-# 客户端（作为网络提供方）
-linksocks client -t example_token -u http://localhost:8765 -r
+# 客户端：作为网络提供方连接
+linksocks client -t example_token -u ws://localhost:8765 -r
+
+# 测试代理
+curl --socks5 127.0.0.1:9870 http://httpbin.org/ip
 ```
 
-代理模式（使用 `-c` 参数指定连接器令牌）：
+### 代理模式
 
 ```bash
-# 服务端（WebSockets 监听 8765 端口，SOCKS 监听 9870 端口）
-linksocks server -t example_token -c example_connector_token -p 9870 -r
+# 服务端：使用提供方和连接器令牌启动服务
+linksocks server -t provider_token -c connector_token -p 9870 -r
 
-# 客户端（作为网络提供方）
-linksocks provider -t example_token -u http://localhost:8765
+# 提供方：作为网络提供方连接
+linksocks provider -t provider_token -u ws://localhost:8765
 
-# 连接器（SOCKS5 监听 1180 端口）
-linksocks connector -t example_connector_token -u http://localhost:8765 -p 1180
+# 连接器：连接并使用代理
+linksocks connector -t connector_token -u ws://localhost:8765 -p 1180
+
+# 测试代理
+curl --socks5 127.0.0.1:1180 http://httpbin.org/ip
 ```
 
-您也可以使用我们的公共演示服务器：
+### 自主模式
 
 ```bash
-# 客户端（作为网络提供方）
-linksocks provider -t any_token -u https://linksocks.zetx.tech -c any_connector_token
+# 服务端：以自主模式启动服务
+linksocks server -t provider_token -r -a
 
-# 连接器（SOCKS5 监听 1180 端口）
-linksocks connector -t any_connector_token -u https://linksocks.zetx.tech -p 1180
+# 提供方：提供方设置自己的连接器令牌
+linksocks provider -t provider_token -c my_connector_token -u ws://localhost:8765
+
+# 连接器：使用特定的连接器令牌访问此提供方
+linksocks connector -t my_connector_token -u ws://localhost:8765 -p 1180
 ```
-
-自主代理模式（使用 `-a` 参数）：
-
-```bash
-# 服务端（WebSocket 监听 8765 端口，自主模式）
-linksocks server -r -t example_token -a
-
-# 客户端（作为网络提供方，启动时设置连接器令牌）
-linksocks provider -t example_token -c example_connector_token
-```
-
-在自主模式下：
-1. 服务端的 SOCKS 代理不会启动监听
-2. 反向客户端可以指定自己的连接器令牌
-3. 负载均衡被禁用 - 每个连接器的请求只会路由到其对应的反向客户端
 
 ## 安装
 
-安装 LinkSocks：
-
+### Golang 版本
 ```bash
 go install github.com/linksocks/linksocks/cmd/linksocks@latest
 ```
 
-您也可以从[发布页面](https://github.com/linksocks/linksocks/releases)下载适合您系统架构的预编译二进制文件。
+或从[发布页面](https://github.com/linksocks/linksocks/releases)下载预编译二进制文件。
 
-LinkSocks 也提供 Docker 镜像：
-
+### Docker
 ```bash
 docker run --rm -it jackzzs/linksocks --help
 ```
+
+### Python 版本
+```bash
+pip install linksocks
+```
+
+> Python 版本是 Golang 实现的封装。详见：[Python 绑定](https://libsocks-docs.zetx.tech/python/)
 
 ## Cloudflare Worker
 
@@ -115,75 +117,14 @@ linksocks.js 版本是一个轻量级版本，不包含 API 功能。
 
 ## API 服务
 
-使用 `--api-key` 参数启用时，LinkSocks 服务端提供 HTTP API：
+LinkSocks 服务端提供用于动态令牌管理的 HTTP API：
 
 ```bash
 # 启用 API 功能启动服务端
 linksocks server --api-key your_api_key
 ```
 
-### API 接口
-
-所有 API 请求需要在请求头中包含 `X-API-Key` 字段及您配置的 API 密钥。
-
-#### 获取服务器状态
-
-```
-GET /api/status
-```
-
-返回服务器版本以及所有令牌的类型和活跃客户端数量列表。
-
-#### 添加正向令牌
-
-```
-POST /api/token
-Content-Type: application/json
-
-{
-    "type": "forward",
-    "token": "new_token"  // 可选：若不提供则自动生成
-}
-```
-
-添加新的正向代理令牌。
-
-#### 添加反向令牌
-
-```
-POST /api/token
-Content-Type: application/json
-
-{
-    "type": "reverse",
-    "token": "new_token",  // 可选：若不提供则自动生成
-    "port": 9870,          // 可选：若不提供则自动分配
-    "username": "user",    // 可选：SOCKS 身份验证
-    "password": "pass"     // 可选：SOCKS 身份验证
-}
-```
-
-添加带有指定 SOCKS 设置的新反向代理令牌。
-
-#### 删除令牌
-
-```
-DELETE /api/token/{token}
-```
-
-或
-
-```
-DELETE /api/token
-
-Content-Type: application/json
-
-{
-    "token": "token_to_delete"
-}
-```
-
-删除指定的令牌。
+详细的 API 使用说明和示例，请参见：[HTTP API](https://libsocks-docs.zetx.tech/guide/http-api)
 
 ## 许可证
 
