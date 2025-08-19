@@ -23,6 +23,7 @@ from setuptools.command.sdist import sdist as _sdist
 from setuptools.command.build_py import build_py as _build_py
 from setuptools.command.develop import develop as _develop
 from setuptools.command.install import install as _install
+from typing import Optional
 
 # Get the current directory
 here = Path(__file__).parent.absolute()
@@ -424,7 +425,7 @@ def install_gopy_and_tools():
         print(f"Failed to install goimports: {e}")
         raise
 
-def build_python_bindings(vm_python: str | None = None):
+def build_python_bindings(vm_python: Optional[str] = None):
     """Build Python bindings using gopy.
 
     vm_python: Optional path to the Python interpreter to target (e.g., from a venv).
