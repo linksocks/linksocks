@@ -9,18 +9,18 @@ export default defineConfig({
   description: 'SOCKS5 over WebSocket proxy tool',
   cleanUrls: true,
   head: [['link', { rel: 'icon', href: '/favicon.ico' }]],
-  vite: {
-    plugins: [
-      pagefindPlugin({
-        customSearchQuery: chineseSearchOptimize,
-        btnPlaceholder: '搜索',
-        placeholder: '搜索文档',
-        emptyText: '空空如也',
-        heading: '共: {{searchResult}} 条结果',
-        excludeSelector: ['img', 'a.header-anchor'],
-      }),
-    ],
-  },
+  // vite: {
+  //   plugins: [
+  //     pagefindPlugin({
+  //       customSearchQuery: chineseSearchOptimize,
+  //       btnPlaceholder: '搜索',
+  //       placeholder: '搜索文档',
+  //       emptyText: '空空如也',
+  //       heading: '共: {{searchResult}} 条结果',
+  //       excludeSelector: ['img', 'a.header-anchor'],
+  //     }),
+  //   ],
+  // },
   themeConfig: {
     logo: '/logo.png',
     nav: [
