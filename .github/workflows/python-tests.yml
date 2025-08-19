@@ -112,18 +112,18 @@ jobs:
               \$PY -m pip install -U pip build auditwheel; \
               cd _bindings/python; \
               \$PY -m build --wheel --outdir /project/wheelhouse_raw/; \
-              mkdir -p /project/wheelhouse_repaired/; \
+              mkdir -p /project/wheelhouse_manylinux/; \
               auditwheel show /project/wheelhouse_raw/*.whl || true; \
-              auditwheel repair --plat \"${PLAT}\" /project/wheelhouse_raw/*.whl -w /project/wheelhouse_repaired/"
+              auditwheel repair --plat \"${PLAT}\" /project/wheelhouse_raw/*.whl -w /project/wheelhouse_manylinux/"
 
           echo "=== Wheels after repair ==="
-          ls -la wheelhouse_repaired || true
+          ls -la wheelhouse_manylinux || true
 
       - name: Upload Artifacts (per Python)
         uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-x64-py${{ matrix.python }}
-          path: ./wheelhouse_repaired/*.whl
+          path: ./wheelhouse_manylinux/*.whl
 
       - name: Start tmate session (manual, on failure)
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.enable_tmate }}

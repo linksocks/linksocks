@@ -489,6 +489,8 @@ def build_python_bindings(vm_python: Optional[str] = None):
         # Set up environment
         env = os.environ.copy()
         env["CGO_ENABLED"] = "1"
+        # Allow any LDFLAGS through cgo validation
+        env["CGO_LDFLAGS_ALLOW"] = ".*"
         # Determine target Python now so we can configure CGO flags appropriately
         target_vm = vm_python or sys.executable
         # Configure platform-specific CGO flags based on the target interpreter
@@ -540,6 +542,7 @@ def build_python_bindings(vm_python: Optional[str] = None):
         print(f"Using PATH: {env.get('PATH','')}")
         print(f"Using CGO_CFLAGS: {env.get('CGO_CFLAGS','')}")
         print(f"Using CGO_LDFLAGS: {env.get('CGO_LDFLAGS','')}")
+        print(f"Using CGO_LDFLAGS_ALLOW: {env.get('CGO_LDFLAGS_ALLOW','')}")
 
         # Run gopy build from _bindings/python directory
         cmd = [
@@ -548,7 +551,6 @@ def build_python_bindings(vm_python: Optional[str] = None):
             f"-output={linksocks_lib_dir}",
             "-name=linksockslib",
             "-no-make=true",
-            "-build-tags=gopy",
             "-dynamic-link=true",
             "./linksocks_go"  # Use linksocks_go directory
         ]
