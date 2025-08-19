@@ -32,6 +32,11 @@ here = Path(__file__).parent.absolute()
 _temp_go_dir = None
 _temp_py_venv_dir = None
 
+# Ensure Go builds do not require VCS (git) metadata; avoids errors on minimal images
+current_goflags = os.environ.get("GOFLAGS", "").strip()
+if "-buildvcs=false" not in current_goflags:
+    os.environ["GOFLAGS"] = (current_goflags + (" " if current_goflags else "") + "-buildvcs=false").strip()
+
 # Platform-specific configurations
 install_requires = [
     "setuptools>=40.0",
@@ -621,7 +626,7 @@ def ensure_python_bindings():
             run_command(pip_cmd + ["install", "--upgrade", "pip"])
             run_command(pip_cmd + ["install", "pybindgen", "wheel", "setuptools"])
 
-            # Build bindings targeting the venv's Python (ensures correct headers/libs)
+            # Build bindings targeting the venv's Python
             build_python_bindings(vm_python=str(venv_python))
             
         except Exception as e:
@@ -898,28 +903,22 @@ def configure_python_env(target_python: str, env: dict) -> dict:
                 # gopy will add -lpythonX.Y anyway, but we can also add the explicit path
                 ldflags_parts.append(resolved_shared_lib)
             else:
-                # No shared library found - this will likely fail during linking
-                print("WARNING: No shared libpython (.so) found. gopy requires a shared library.")
+                # No shared library found. Attempt to proceed by linking with -lpythonX.Y
+                print("WARNING: No shared libpython (.so) found. Falling back to -lpythonX.Y")
                 print(f"Searched in: {candidate_dirs}")
                 print(f"Looked for: {candidate_names}")
-                
-                # Try to find any libpython.so via ldconfig
-                try:
-                    ldconfig_result = run_command(["ldconfig", "-p"])
-                    python_libs = [line for line in ldconfig_result.split('\n') if 'libpython' in line and '.so' in line]
-                    if python_libs:
-                        print(f"Found via ldconfig: {python_libs}")
-                except Exception:
-                    pass
-                
-                # Let gopy try with -lpythonX.Y anyway (will likely fail)
                 py_ver_fallback = run_command([str(target_python), "-c", "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')"]) or ""
                 if py_ver_fallback.strip():
-                    print(f"Falling back to -lpython{py_ver_fallback.strip()} (may fail)")
                     ldflags_parts.append(f"-lpython{py_ver_fallback.strip()}")
 
             if extra_libs.strip():
-                ldflags_parts.append(extra_libs.strip())
+                # Filter out any accidental "-lpython*" from sysconfig flags on Linux
+                filtered = " ".join(
+                    part for part in extra_libs.strip().split()
+                    if not part.startswith("-lpython")
+                ).strip()
+                if filtered:
+                    ldflags_parts.append(filtered)
             if env.get("CGO_LDFLAGS"):
                 ldflags_parts.append(env["CGO_LDFLAGS"])
             env["CGO_LDFLAGS"] = " ".join(part for part in ldflags_parts if part).strip()

@@ -14,6 +14,7 @@ RUN go mod download
 COPY . .
 
 # Build the binary
+ENV GOFLAGS=-buildvcs=false
 RUN CGO_ENABLED=0 go build -o linksocks ./cmd/linksocks
 
 # Final stage

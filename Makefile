@@ -19,7 +19,7 @@ help:
 
 # Go targets
 build:
-	go build -o bin/linksocks cmd/linksocks/main.go
+	GOFLAGS="${GOFLAGS} -buildvcs=false" go build -o bin/linksocks cmd/linksocks/main.go
 
 test:
 	go test -v -race -coverprofile="coverage.txt" -covermode=atomic -coverpkg="./linksocks" "./linksocks" "./tests"
