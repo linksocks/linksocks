@@ -96,17 +96,8 @@ jobs:
           CPY="cp${PYNODOT}-cp${PYNODOT}"
           echo "Using CPython tag: ${CPY}"
 
-          # Select image/plat. manylinux2014 for <=3.12, manylinux_2_28 for 3.13+
-          case "${PY_MAJOR_MINOR}" in
-            3.13)
-              IMAGE="quay.io/pypa/manylinux_2_28_x86_64"
-              PLAT="manylinux_2_28_x86_64"
-              ;;
-            *)
-              IMAGE="quay.io/pypa/manylinux2014_x86_64"
-              PLAT="manylinux2014_x86_64"
-              ;;
-          esac
+          IMAGE="quay.io/pypa/manylinux2014_x86_64"
+          PLAT="manylinux2014_x86_64"
           echo "Image=${IMAGE}, PLAT=${PLAT}"
 
           # Run build + auditwheel inside container

@@ -549,6 +549,7 @@ def build_python_bindings(vm_python: Optional[str] = None):
             "-name=linksockslib",
             "-no-make=true",
             "-build-tags=gopy",
+            "-dynamic-link=true",
             "./linksocks_go"  # Use linksocks_go directory
         ]
         
