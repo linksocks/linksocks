@@ -551,9 +551,13 @@ def build_python_bindings(vm_python: Optional[str] = None):
             f"-output={linksocks_lib_dir}",
             "-name=linksockslib",
             "-no-make=true",
-            "-dynamic-link=true",
-            "./linksocks_go"  # Use linksocks_go directory
         ]
+        
+        # Only enable dynamic-link on Linux
+        if platform.system().lower() == "linux":
+            cmd.append("-dynamic-link=true")
+        
+        cmd.append("./linksocks_go")  # Use linksocks_go directory
         
         run_command(cmd, cwd=here, env=env)
         
