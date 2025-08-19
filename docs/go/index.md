@@ -143,4 +143,3 @@ Environment variables are optional and minimal. See CLI Reference for details.
 
 - [Library API](./library.md) - Go library API reference
 - [Examples](./examples.md) - Practical code examples
-- [CLI Reference](./cli.md) - Full CLI usage and flags

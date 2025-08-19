@@ -20,7 +20,7 @@ pip install linksocks
 ```
 
 ::: info
-The python version is a wrapper of the Golang implementation. See: [Python Bindings](/python)
+The python version is a wrapper of the Golang implementation. See: [Python Bindings](/python/)
 :::
 
 ## Forward Proxy

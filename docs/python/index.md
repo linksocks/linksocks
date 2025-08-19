@@ -75,7 +75,5 @@ asyncio.run(reverse_proxy_example())
 
 ## Next Steps
 
-- [Installation](./installation.md) - Detailed installation instructions
 - [Server API](./server.md) - Complete Server class reference
 - [Client API](./client.md) - Complete Client class reference
-- [Examples](./examples.md) - More usage examples
