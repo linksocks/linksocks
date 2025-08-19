@@ -72,10 +72,12 @@ jobs:
 
   build_linux_wheels:
     if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.build_linux_wheels) }}
-    name: Linux wheels (Ubuntu matrix)
-    runs-on: ubuntu-latest
+    name: Linux wheels (x64/arm64)
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-22.04-arm64' || 'ubuntu-22.04' }}
     strategy:
+      fail-fast: false
       matrix:
+        arch: [x64, arm64]
         python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
 
     steps:
@@ -85,6 +87,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+
+      - name: Clean previous build artifacts
+        working-directory: _bindings/python
+        run: rm -rf linksockslib build dist || true
 
       - name: Show Python and lib info
         run: |
@@ -98,11 +104,51 @@ jobs:
           python -m pip install --upgrade pip build
           python -m build --wheel --outdir ../../wheelhouse/
 
-      - name: Upload Artifacts
+      - name: Upload Artifacts (per Python)
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-linux-${{ matrix.python }}
+          name: wheels-linux-${{ matrix.arch }}-py${{ matrix.python }}
           path: ./wheelhouse/*.whl
+
+      - name: Start tmate session (manual, on failure)
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.enable_tmate }}
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+
+  package_linux_wheels:
+    if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.build_linux_wheels) }}
+    name: Package Linux wheels per arch
+    needs: build_linux_wheels
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download x64 wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-linux-x64-*
+          merge-multiple: true
+          path: ./pack/wheels-linux-x64
+
+      - name: Download arm64 wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-linux-arm64-*
+          merge-multiple: true
+          path: ./pack/wheels-linux-arm64
+
+      - name: Upload combined x64 wheels
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-x64
+          path: ./pack/wheels-linux-x64/**
+
+      - name: Upload combined arm64 wheels
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-arm64
+          path: ./pack/wheels-linux-arm64/**
 
       - name: Start tmate session (manual, on failure)
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.enable_tmate }}
