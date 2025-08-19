@@ -163,6 +163,74 @@ def download_file(url, destination):
 # Global variable to store temporary Go installation
 _temp_go_dir = None
 
+# Global variable to store temporary Python virtual environment
+_temp_py_venv_dir = None
+
+def _venv_scripts_dir(venv_dir: Path) -> Path:
+    system = platform.system().lower()
+    if system == "windows":
+        return venv_dir / "Scripts"
+    return venv_dir / "bin"
+
+def create_temp_virtualenv() -> tuple[Path, Path]:
+    """Create a temporary Python virtual environment and return (venv_dir, python_exe)."""
+    global _temp_py_venv_dir
+    _temp_py_venv_dir = Path(tempfile.mkdtemp(prefix="linksocks_pyvenv_"))
+    venv_dir = _temp_py_venv_dir / "venv"
+    try:
+        # Prefer stdlib venv
+        run_command([sys.executable, "-m", "venv", str(venv_dir)])
+    except Exception:
+        # Fallback: install and use virtualenv from PyPI
+        try:
+            pip_cmd = get_pip_invocation()
+            run_command(pip_cmd + ["install", "--upgrade", "pip"])
+            run_command(pip_cmd + ["install", "virtualenv"])
+            run_command([sys.executable, "-m", "virtualenv", str(venv_dir)])
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to create a virtual environment using both venv and virtualenv: {e}"
+            )
+    scripts_dir = _venv_scripts_dir(venv_dir)
+    python_exe = scripts_dir / ("python.exe" if platform.system().lower() == "windows" else "python")
+    return venv_dir, python_exe
+
+def ensure_pip_for_python(python_executable: Path) -> list[str]:
+    """Ensure pip is available for the given Python interpreter and return invocation list.
+
+    It tries `-m pip`, bootstraps via `ensurepip` if necessary, and falls back to pip executables
+    within the venv's scripts directory if present.
+    """
+    # Try module form
+    try:
+        run_command([str(python_executable), "-m", "pip", "--version"])
+        return [str(python_executable), "-m", "pip"]
+    except Exception:
+        pass
+
+    # Bootstrap via ensurepip
+    try:
+        run_command([str(python_executable), "-m", "ensurepip", "--upgrade"])
+        run_command([str(python_executable), "-m", "pip", "--version"])
+        return [str(python_executable), "-m", "pip"]
+    except Exception:
+        pass
+
+    # Fallback to pip executable in the same venv
+    scripts_dir = Path(python_executable).parent
+    for candidate in ("pip3", "pip"):
+        pip_exe = scripts_dir / (candidate + (".exe" if platform.system().lower() == "windows" else ""))
+        if pip_exe.exists():
+            try:
+                run_command([str(pip_exe), "--version"])
+                return [str(pip_exe)]
+            except Exception:
+                continue
+
+    raise RuntimeError(
+        f"pip is not available for interpreter {python_executable} and could not be bootstrapped via ensurepip."
+    )
+
 def get_pip_invocation() -> list[str]:
     """Return a command list to invoke pip reliably in diverse environments.
 
@@ -356,8 +424,12 @@ def install_gopy_and_tools():
         print(f"Failed to install goimports: {e}")
         raise
 
-def build_python_bindings():
-    """Build Python bindings using gopy."""
+def build_python_bindings(vm_python: str | None = None):
+    """Build Python bindings using gopy.
+
+    vm_python: Optional path to the Python interpreter to target (e.g., from a venv).
+    If not provided, defaults to the current interpreter.
+    """
     print("Building Python bindings with gopy...")
     
     # Prepare Go sources first
@@ -425,9 +497,10 @@ def build_python_bindings():
             raise FileNotFoundError("gopy executable not found on PATH. Ensure GOBIN/GOPATH/bin is on PATH.")
 
         # Run gopy build from _bindings/python directory
+        target_vm = vm_python or sys.executable
         cmd = [
             gopy_executable, "build",
-            f"-vm={sys.executable}",
+            f"-vm={target_vm}",
             f"-output={linksocks_lib_dir}",
             "-name=linksockslib",
             "-no-make=true",
@@ -502,12 +575,15 @@ def ensure_python_bindings():
             # Install gopy and tools
             install_gopy_and_tools()
             
-            # Install Python dependencies for building (fail hard on error)
-            pip_cmd = get_pip_invocation()
+            # Create an isolated temporary virtual environment for Python-side build deps
+            venv_dir, venv_python = create_temp_virtualenv()
+            pip_cmd = ensure_pip_for_python(venv_python)
+            # Upgrade pip in the venv and install build deps strictly inside the venv
+            run_command(pip_cmd + ["install", "--upgrade", "pip"])
             run_command(pip_cmd + ["install", "pybindgen", "wheel", "setuptools"])
-            
-            # Build bindings
-            build_python_bindings()
+
+            # Build bindings targeting the venv's Python (ensures correct headers/libs)
+            build_python_bindings(vm_python=str(venv_python))
             
         except Exception as e:
             print(f"Failed to build Python bindings: {e}")
@@ -519,6 +595,12 @@ def ensure_python_bindings():
         finally:
             # Clean up temporary Go installation
             cleanup_temp_go()
+            # Clean up temporary Python virtual environment
+            try:
+                if _temp_py_venv_dir and Path(_temp_py_venv_dir).exists():
+                    shutil.rmtree(_temp_py_venv_dir)
+            except Exception as e:
+                print(f"Warning: Failed to clean up temporary Python venv: {e}")
         
         if not is_linksockslib_built(linksocks_lib_dir):
             raise RuntimeError("Failed to build Python bindings (artifacts missing)")
