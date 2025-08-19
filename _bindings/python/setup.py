@@ -163,6 +163,44 @@ def download_file(url, destination):
 # Global variable to store temporary Go installation
 _temp_go_dir = None
 
+def get_pip_invocation() -> list[str]:
+    """Return a command list to invoke pip reliably in diverse environments.
+
+    Strategy:
+    1) Prefer `sys.executable -m pip` if available
+    2) If missing, bootstrap via `ensurepip` and retry
+    3) Fallback to a `pip` executable on PATH (pip3, then pip)
+    """
+    # 1) Try module form first
+    try:
+        run_command([sys.executable, "-m", "pip", "--version"])
+        return [sys.executable, "-m", "pip"]
+    except Exception:
+        pass
+
+    # 2) Try bootstrapping pip via ensurepip
+    try:
+        run_command([sys.executable, "-m", "ensurepip", "--upgrade"])
+        run_command([sys.executable, "-m", "pip", "--version"])
+        return [sys.executable, "-m", "pip"]
+    except Exception:
+        pass
+
+    # 3) Fallback to a pip executable on PATH
+    for candidate in ("pip3", "pip"):
+        pip_exe = shutil.which(candidate)
+        if pip_exe:
+            try:
+                run_command([pip_exe, "--version"])
+                return [pip_exe]
+            except Exception:
+                continue
+
+    raise RuntimeError(
+        "pip is not available and could not be bootstrapped via ensurepip. "
+        "Please ensure pip is installed for this Python interpreter."
+    )
+
 def install_go():
     """Download and install Go if not available."""
     global _temp_go_dir
@@ -464,11 +502,9 @@ def ensure_python_bindings():
             # Install gopy and tools
             install_gopy_and_tools()
             
-            # Install Python dependencies for building
-            try:
-                run_command([sys.executable, "-m", "pip", "install", "pybindgen", "wheel", "setuptools"])
-            except subprocess.CalledProcessError:
-                print("Warning: Failed to install some Python build dependencies")
+            # Install Python dependencies for building (fail hard on error)
+            pip_cmd = get_pip_invocation()
+            run_command(pip_cmd + ["install", "pybindgen", "wheel", "setuptools"])
             
             # Build bindings
             build_python_bindings()
