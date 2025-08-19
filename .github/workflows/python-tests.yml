@@ -67,66 +67,64 @@ jobs:
 
   build_linux_wheels:
     if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.build_linux_wheels) }}
-    name: Linux Cp39+ ${{ matrix.arch }} (manylinux)
+    name: Linux wheels (Ubuntu matrix)
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [x86_64, aarch64]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up QEMU (for ARM64)
-        if: matrix.arch == 'aarch64'
-        uses: docker/setup-qemu-action@v3
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
         with:
-          platforms: arm64
+          python-version: ${{ matrix.python }}
 
-      - name: Build Wheels
+      - name: Show Python and lib info
+        run: |
+          python --version
+          python -c "import sysconfig, sys; print('LIBDIR:', sysconfig.get_config_var('LIBDIR')); print('LDLIBRARY:', sysconfig.get_config_var('LDLIBRARY')); print('prefix:', sysconfig.get_config_var('prefix'))"
+          ldconfig -p | grep python || true
+
+      - name: Build wheel
+        working-directory: _bindings/python
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir ../../wheelhouse/
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-${{ matrix.python }}
+          path: ./wheelhouse/*.whl
+
+      - name: Start tmate session (manual, on failure)
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.enable_tmate }}
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+
+  build_macos_wheels:
+    if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch') }}
+    name: macOS wheels (cibuildwheel)
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Wheels (cibuildwheel)
         uses: pypa/cibuildwheel@v2.16.5
         with:
           package-dir: _bindings/python
           output-dir: wheelhouse
         env:
           CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-* cp313-*"
-          CIBW_SKIP: "*-musllinux_*"
-          CIBW_ARCHS: "${{ matrix.arch }}"
           CIBW_BUILD_VERBOSITY: 1
-          CIBW_BEFORE_BUILD_LINUX: |
-            rm -rf linksockslib
-            
-            # Check current Python configuration
-            echo "=== Python Configuration ==="
-            python --version
-            python -c "
-            import sysconfig, sys
-            print(f'Python {sys.version_info.major}.{sys.version_info.minor}')
-            print(f'LIBDIR: {sysconfig.get_config_var(\"LIBDIR\")}')
-            print(f'LDLIBRARY: {sysconfig.get_config_var(\"LDLIBRARY\")}')
-            print(f'LIBRARY: {sysconfig.get_config_var(\"LIBRARY\")}')
-            print(f'prefix: {sysconfig.get_config_var(\"prefix\")}')
-            "
-            
-            # Find all Python library files
-            echo "=== Available Python Libraries ==="
-            find /opt/_internal -name "libpython*" -type f 2>/dev/null | head -20 || true
-            find /usr/lib* -name "libpython*" -type f 2>/dev/null | head -20 || true
-            
-            # Check what's in ldconfig
-            echo "=== ldconfig Python entries ==="
-            ldconfig -p | grep python || echo "No python libraries found in ldconfig"
-            
-            # Show directory contents
-            LIBDIR=$(python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR') or '')")
-            if [ -n "$LIBDIR" ] && [ -d "$LIBDIR" ]; then
-              echo "=== Contents of $LIBDIR ==="
-              ls -la "$LIBDIR"/libpython* 2>/dev/null || echo "No libpython* files in $LIBDIR"
-            fi
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-linux-${{ matrix.arch }}
+          name: wheels-macos
           path: ./wheelhouse/*.whl
 
       - name: Start tmate session (manual, on failure)
