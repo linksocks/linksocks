@@ -857,15 +857,30 @@ def configure_python_env(target_python: str, env: dict) -> dict:
                     f"libpython{ldversion}m.a",
                 ])
 
-            resolved_libpython = ""
+            resolved_shared_lib = ""
+            # First check if LDLIBRARY/LIBRARY points to a .so
             for d in candidate_dirs:
                 for name in candidate_names:
-                    p = Path(d) / name
-                    if p.exists():
-                        resolved_libpython = str(p)
-                        break
-                if resolved_libpython:
+                    if name.endswith(".so") or ".so." in name:
+                        p = Path(d) / name
+                        if p.exists():
+                            resolved_shared_lib = str(p)
+                            break
+                if resolved_shared_lib:
                     break
+
+            # If still not resolved, search for any libpython*.so* under candidate dirs
+            if not resolved_shared_lib:
+                for d in candidate_dirs:
+                    try:
+                        matches = list(Path(d).glob("libpython*.so*"))
+                        # Prefer versioned soname
+                        matches.sort(key=lambda x: (0 if ".so." in x.name else 1, -len(str(x))))
+                        if matches:
+                            resolved_shared_lib = str(matches[0])
+                            break
+                    except Exception:
+                        continue
 
             ldflags_parts = []
             # Add lib directories and rpath if any known
@@ -873,14 +888,30 @@ def configure_python_env(target_python: str, env: dict) -> dict:
                 ldflags_parts.append(f"-L{d}")
                 ldflags_parts.append(f"-Wl,-rpath,{d}")
 
-            if resolved_libpython:
-                print(f"Resolved libpython: {resolved_libpython}")
-                ldflags_parts.append(resolved_libpython)
+            if resolved_shared_lib:
+                print(f"Found shared libpython: {resolved_shared_lib}")
+                # gopy will add -lpythonX.Y anyway, but we can also add the explicit path
+                ldflags_parts.append(resolved_shared_lib)
             else:
-                # Fallback to -lpythonX.Y if we couldn't resolve a file
-                py_ver = run_command([str(target_python), "-c", "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')"]) or ""
-                if py_ver.strip():
-                    ldflags_parts.append(f"-lpython{py_ver.strip()}")
+                # No shared library found - this will likely fail during linking
+                print("WARNING: No shared libpython (.so) found. gopy requires a shared library.")
+                print(f"Searched in: {candidate_dirs}")
+                print(f"Looked for: {candidate_names}")
+                
+                # Try to find any libpython.so via ldconfig
+                try:
+                    ldconfig_result = run_command(["ldconfig", "-p"])
+                    python_libs = [line for line in ldconfig_result.split('\n') if 'libpython' in line and '.so' in line]
+                    if python_libs:
+                        print(f"Found via ldconfig: {python_libs}")
+                except Exception:
+                    pass
+                
+                # Let gopy try with -lpythonX.Y anyway (will likely fail)
+                py_ver_fallback = run_command([str(target_python), "-c", "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')"]) or ""
+                if py_ver_fallback.strip():
+                    print(f"Falling back to -lpython{py_ver_fallback.strip()} (may fail)")
+                    ldflags_parts.append(f"-lpython{py_ver_fallback.strip()}")
 
             if extra_libs.strip():
                 ldflags_parts.append(extra_libs.strip())

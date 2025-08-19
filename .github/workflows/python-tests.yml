@@ -92,7 +92,36 @@ jobs:
           CIBW_SKIP: "*-musllinux_*"
           CIBW_ARCHS: "${{ matrix.arch }}"
           CIBW_BUILD_VERBOSITY: 1
-          CIBW_BEFORE_BUILD_LINUX: "rm -rf linksockslib"
+          CIBW_BEFORE_BUILD_LINUX: |
+            rm -rf linksockslib
+            
+            # Check current Python configuration
+            echo "=== Python Configuration ==="
+            python --version
+            python -c "
+            import sysconfig, sys
+            print(f'Python {sys.version_info.major}.{sys.version_info.minor}')
+            print(f'LIBDIR: {sysconfig.get_config_var(\"LIBDIR\")}')
+            print(f'LDLIBRARY: {sysconfig.get_config_var(\"LDLIBRARY\")}')
+            print(f'LIBRARY: {sysconfig.get_config_var(\"LIBRARY\")}')
+            print(f'prefix: {sysconfig.get_config_var(\"prefix\")}')
+            "
+            
+            # Find all Python library files
+            echo "=== Available Python Libraries ==="
+            find /opt/_internal -name "libpython*" -type f 2>/dev/null | head -20 || true
+            find /usr/lib* -name "libpython*" -type f 2>/dev/null | head -20 || true
+            
+            # Check what's in ldconfig
+            echo "=== ldconfig Python entries ==="
+            ldconfig -p | grep python || echo "No python libraries found in ldconfig"
+            
+            # Show directory contents
+            LIBDIR=$(python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR') or '')")
+            if [ -n "$LIBDIR" ] && [ -d "$LIBDIR" ]; then
+              echo "=== Contents of $LIBDIR ==="
+              ls -la "$LIBDIR"/libpython* 2>/dev/null || echo "No libpython* files in $LIBDIR"
+            fi
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
