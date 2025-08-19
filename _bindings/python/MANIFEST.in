@@ -3,9 +3,6 @@ recursive-include linksocks_go *.go
 include go.mod
 include go.sum
 
-# Include build scripts
-include build_windows.py
-
 # Include documentation
 include README.md
 
