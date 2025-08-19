@@ -5,6 +5,12 @@ on:
     branches: ["**"]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      enable_tmate:
+        description: "Enable tmate debug session on failure"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   tests:
@@ -42,6 +48,12 @@ jobs:
       - name: Run Pytest
         working-directory: _bindings/python
         run: pytest -v -n auto
+
+      - name: Start tmate session (manual, on failure)
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.enable_tmate }}
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
 
   build_linux_wheels:
     if: startsWith(github.ref, 'refs/tags/')
