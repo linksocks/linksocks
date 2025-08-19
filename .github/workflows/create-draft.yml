@@ -45,8 +45,6 @@ jobs:
           ## What's Changed
           
           $CHANGELOG
-          
-          **Full Changelog**: https://github.com/linksocks/linksocks/compare/$PREV_TAG...${{ steps.tag_info.outputs.tag_name }}
           EOF
           
           # Output for use in release
