@@ -525,6 +525,12 @@ def build_python_bindings(vm_python: Optional[str] = None):
         if not gopy_executable:
             raise FileNotFoundError("gopy executable not found on PATH. Ensure GOBIN/GOPATH/bin is on PATH.")
 
+        # Log environment before build for diagnostics
+        print(f"Using gopy: {gopy_executable}")
+        print(f"Using PATH: {env.get('PATH','')}")
+        print(f"Using CGO_CFLAGS: {env.get('CGO_CFLAGS','')}")
+        print(f"Using CGO_LDFLAGS: {env.get('CGO_LDFLAGS','')}")
+
         # Run gopy build from _bindings/python directory
         cmd = [
             gopy_executable, "build",
@@ -807,27 +813,26 @@ def configure_python_env(target_python: str, env: dict) -> dict:
             return env
 
         if system_name == "linux":
-            py_include = run_command([
-                str(target_python),
-                "-c",
-                "import sysconfig;print(sysconfig.get_paths()['include'])",
-            ])
-            py_libdir = run_command([
-                str(target_python),
-                "-c",
-                "import sysconfig;print(sysconfig.get_config_var('LIBDIR') or sysconfig.get_config_var('LIBPL') or '')",
-            ])
-            py_ver = run_command([
-                str(target_python),
-                "-c",
-                "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')",
-            ])
-            extra_libs = run_command([
-                str(target_python),
-                "-c",
-                "import sysconfig;print(((sysconfig.get_config_var('LIBS') or '') + ' ' + (sysconfig.get_config_var('SYSLIBS') or '')).strip())",
-            ])
+            # Collect sysconfig details from the target Python
+            py_exec = run_command([str(target_python), "-c", "import sys;print(sys.executable)"])
+            py_include = run_command([str(target_python), "-c", "import sysconfig;print(sysconfig.get_paths()['include'])"]) or ""
+            libdir = run_command([str(target_python), "-c", "import sysconfig;print(sysconfig.get_config_var('LIBDIR') or '')"]) or ""
+            libpl = run_command([str(target_python), "-c", "import sysconfig;print(sysconfig.get_config_var('LIBPL') or '')"]) or ""
+            ldversion = run_command([str(target_python), "-c", "import sysconfig,sys;print(sysconfig.get_config_var('LDVERSION') or f'{sys.version_info.major}.{sys.version_info.minor}')"]) or ""
+            library_name = run_command([str(target_python), "-c", "import sysconfig;print(sysconfig.get_config_var('LIBRARY') or '')"]) or ""
+            ldlibrary_name = run_command([str(target_python), "-c", "import sysconfig;print(sysconfig.get_config_var('LDLIBRARY') or '')"]) or ""
+            extra_libs = run_command([str(target_python), "-c", "import sysconfig;print(((sysconfig.get_config_var('LIBS') or '') + ' ' + (sysconfig.get_config_var('SYSLIBS') or '')).strip())"]) or ""
 
+            # Log detected Python and paths
+            print(f"Target Python: {py_exec}")
+            print(f"sysconfig include: {py_include}")
+            print(f"sysconfig LIBDIR: {libdir}")
+            print(f"sysconfig LIBPL: {libpl}")
+            print(f"sysconfig LDVERSION: {ldversion}")
+            print(f"sysconfig LIBRARY: {library_name}")
+            print(f"sysconfig LDLIBRARY: {ldlibrary_name}")
+
+            # Compose CFLAGS
             cflags_parts = []
             if py_include.strip():
                 cflags_parts.append(f"-I{py_include.strip()}")
@@ -835,16 +840,56 @@ def configure_python_env(target_python: str, env: dict) -> dict:
                 cflags_parts.append(env["CGO_CFLAGS"])
             env["CGO_CFLAGS"] = " ".join(part for part in cflags_parts if part).strip()
 
+            # Try to locate a concrete libpython file (shared or static)
+            candidate_dirs = [p for p in [libdir.strip(), libpl.strip()] if p]
+            candidate_names = []
+            if ldlibrary_name.strip():
+                candidate_names.append(ldlibrary_name.strip())
+            if library_name.strip():
+                candidate_names.append(library_name.strip())
+            # Common fallbacks
+            if ldversion.strip():
+                candidate_names.extend([
+                    f"libpython{ldversion}.so",
+                    f"libpython{ldversion}.so.1.0",
+                    f"libpython{ldversion}m.so",
+                    f"libpython{ldversion}.a",
+                    f"libpython{ldversion}m.a",
+                ])
+
+            resolved_libpython = ""
+            for d in candidate_dirs:
+                for name in candidate_names:
+                    p = Path(d) / name
+                    if p.exists():
+                        resolved_libpython = str(p)
+                        break
+                if resolved_libpython:
+                    break
+
             ldflags_parts = []
-            if py_libdir.strip():
-                ldflags_parts.append(f"-L{py_libdir.strip()}")
-                ldflags_parts.append(f"-Wl,-rpath,{py_libdir.strip()}")
-            ldflags_parts.append(f"-lpython{py_ver.strip()}")
+            # Add lib directories and rpath if any known
+            for d in candidate_dirs:
+                ldflags_parts.append(f"-L{d}")
+                ldflags_parts.append(f"-Wl,-rpath,{d}")
+
+            if resolved_libpython:
+                print(f"Resolved libpython: {resolved_libpython}")
+                ldflags_parts.append(resolved_libpython)
+            else:
+                # Fallback to -lpythonX.Y if we couldn't resolve a file
+                py_ver = run_command([str(target_python), "-c", "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')"]) or ""
+                if py_ver.strip():
+                    ldflags_parts.append(f"-lpython{py_ver.strip()}")
+
             if extra_libs.strip():
                 ldflags_parts.append(extra_libs.strip())
             if env.get("CGO_LDFLAGS"):
                 ldflags_parts.append(env["CGO_LDFLAGS"])
             env["CGO_LDFLAGS"] = " ".join(part for part in ldflags_parts if part).strip()
+
+            print(f"Final CGO_CFLAGS (Linux): {env.get('CGO_CFLAGS','')}")
+            print(f"Final CGO_LDFLAGS (Linux): {env.get('CGO_LDFLAGS','')}")
             return env
 
         # macOS or others: leave as-is; users can override via env if needed
