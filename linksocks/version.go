@@ -3,6 +3,6 @@ package linksocks
 import "runtime"
 
 var (
-	Version  = "v3.0.7"
+	Version  = "v3.0.8"
 	Platform = runtime.GOOS + "/" + runtime.GOARCH
 )
