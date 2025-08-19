@@ -493,6 +493,8 @@ def build_python_bindings(vm_python: Optional[str] = None):
         env["CGO_LDFLAGS_ALLOW"] = ".*"
         # Determine target Python now so we can configure CGO flags appropriately
         target_vm = vm_python or sys.executable
+        # Configure platform-specific CGO flags based on the target interpreter
+        env = configure_python_env(target_vm, env)
         
         # Ensure PATH includes Go binary directory (for temp install path)
         if _temp_go_dir:
@@ -790,6 +792,40 @@ class InstallEnsureBindings(_install):
 class BinaryDistribution(setuptools.Distribution):
     def has_ext_modules(_):
         return True
+
+def configure_python_env(target_python: str, env: dict) -> dict:
+    """Configure CGO flags for the current platform using the target Python interpreter.
+
+    On Windows: use the current interpreter layout for include/libs.
+    """
+    system_name = platform.system().lower()
+    try:
+        if system_name == "windows":
+            py_version = f"{sys.version_info.major}{sys.version_info.minor}"
+            py_dir = Path(sys.executable).parent
+            include_dir = py_dir / "include"
+            libs_dir = py_dir / "libs"
+
+            env["CGO_ENABLED"] = "1"
+            cflags = []
+            if include_dir.exists():
+                cflags.append(f"-I{include_dir}")
+            if env.get("CGO_CFLAGS"):
+                cflags.append(env["CGO_CFLAGS"])
+            env["CGO_CFLAGS"] = " ".join(cflags).strip()
+
+            ldflags = []
+            if libs_dir.exists():
+                ldflags.append(f"-L{libs_dir}")
+            ldflags.append(f"-lpython{py_version}")
+            if env.get("CGO_LDFLAGS"):
+                ldflags.append(env["CGO_LDFLAGS"])
+            env["CGO_LDFLAGS"] = " ".join(ldflags).strip()
+            return env
+        return env
+    except Exception as cfg_err:
+        print(f"Warning: failed to configure platform CGO flags: {cfg_err}")
+        return env
 
 # Ensure placeholder package exists BEFORE calling setup() so find_packages() sees it
 ensure_placeholder_linksockslib()
