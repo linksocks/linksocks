@@ -66,6 +66,15 @@ export default defineConfig({
       }
     ],
 
+    search: {
+      provider: 'algolia',
+      options: {
+        appId: '7VHPI8DCJ2',
+        apiKey: '8f024abcbc01889032c46e2082967075',
+        indexName: 'linksocks',
+      },
+    },
+
     socialLinks: [
       { icon: 'github', link: 'https://github.com/linksocks/linksocks' }
     ],
