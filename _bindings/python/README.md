@@ -49,25 +49,18 @@ import asyncio
 from linksocks import Server, Client
 
 async def main():
-    # Create and start server
-    server = Server(ws_port=8765)
-    server.add_forward_token("my_secret_token")
-    
-    # Create and start client
-    client = Client("my_secret_token", ws_url="ws://localhost:8765", socks_port=9870)
-    
-    # Use as async context managers
-    async with server, client:
-        await asyncio.gather(
-            server.async_wait_ready(),
-            client.async_wait_ready()
-        )
-        print("✅ Forward proxy ready!")
-        print("🌐 SOCKS5 proxy: 127.0.0.1:9870")
-        print("🔧 Test: curl --socks5 127.0.0.1:9870 http://httpbin.org/ip")
+    # Create server and client with async context managers
+    async with Server(ws_port=8765) as server:
+        # Add forward token asynchronously
+        token = await server.async_add_forward_token()
         
-        # Keep running
-        await asyncio.sleep(3600)
+        async with Client(token, ws_url="ws://localhost:8765", socks_port=9870, no_env_proxy=True) as client:
+            print("✅ Forward proxy ready!")
+            print("🌐 SOCKS5 proxy: 127.0.0.1:9870")
+            print("🔧 Test: curl --socks5 127.0.0.1:9870 http://httpbin.org/ip")
+            
+            # Keep running
+            await asyncio.sleep(3600)
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -80,25 +73,20 @@ import asyncio
 from linksocks import Server, Client
 
 async def main():
-    # Create server in reverse mode
-    server = Server(ws_port=8765, socks_host="127.0.0.1")
-    result = server.add_reverse_token(port=9870)
-    print(f"🔑 Reverse token: {result.token}")
-    
-    # Create client in reverse mode
-    client = Client(result.token, ws_url="ws://localhost:8765", reverse=True)
-    
-    async with server, client:
-        await asyncio.gather(
-            server.async_wait_ready(),
-            client.async_wait_ready()
-        )
-        print("✅ Reverse proxy ready!")
-        print(f"🌐 SOCKS5 proxy: 127.0.0.1:{result.port}")
-        print("🔧 Test: curl --socks5 127.0.0.1:9870 http://httpbin.org/ip")
+    # Create server and client with async context managers
+    async with Server(ws_port=8765) as server:
+        # Add reverse token (port is auto-allocated)
+        result = server.add_reverse_token()
+        print(f"🔑 Reverse token: {result.token}")
+        print(f"🌐 SOCKS5 proxy will be available on: 127.0.0.1:{result.port}")
         
-        # Keep running
-        await asyncio.sleep(3600)
+        # Create client in reverse mode
+        async with Client(result.token, ws_url="ws://localhost:8765", reverse=True, no_env_proxy=True) as client:
+            print("✅ Reverse proxy ready!")
+            print(f"🔧 Test: curl --socks5 127.0.0.1:{result.port} http://httpbin.org/ip")
+            
+            # Keep running
+            await asyncio.sleep(3600)
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -132,8 +120,11 @@ server = Server(
 #### Token Management
 
 ```python
-# Add forward proxy token
+# Add forward proxy token (synchronous)
 token = server.add_forward_token("custom_token")  # or auto-generate with None
+
+# Add forward proxy token (asynchronous - recommended)
+token = await server.async_add_forward_token("custom_token")
 
 # Add reverse proxy token
 result = server.add_reverse_token(
@@ -155,20 +146,19 @@ success = server.remove_token("token_to_remove")
 #### Running the Server
 
 ```python
-# Asynchronous (recommended)
+# Asynchronous (recommended) - automatically waits for ready
 async with server:
-    await server.async_wait_ready()
-    print("Server is ready!")
+    print("Server is ready!")  # No need for async_wait_ready()
     # Server runs while in context
 
-# Synchronous
+# Synchronous - requires manual wait
 server.wait_ready()  # Blocks until ready
 # Server runs in background
 server.close()  # Clean shutdown
 
-# With timeout
+# Manual wait with timeout (only needed for synchronous usage)
 server.wait_ready(timeout=30.0)  # 30 second timeout
-await server.async_wait_ready(timeout="30s")  # Go duration string
+await server.async_wait_ready(timeout="30s")  # Go duration string (rarely needed)
 ```
 
 ### Client Class
@@ -205,14 +195,13 @@ client = Client(
 #### Running the Client
 
 ```python
-# Asynchronous (recommended)
+# Asynchronous (recommended) - automatically waits for ready
 async with client:
-    await client.async_wait_ready()
     print(f"Client ready! SOCKS5 port: {client.socks_port}")
     print(f"Connected: {client.is_connected}")
     # Client runs while in context
 
-# Synchronous
+# Synchronous - requires manual wait
 client.wait_ready()
 print(f"Connected: {client.is_connected}")
 client.close()  # Clean shutdown
@@ -257,30 +246,23 @@ from linksocks import Server, Client
 
 async def agent_proxy():
     # Server with connector autonomy enabled
-    server = Server(ws_port=8765)
-    result = server.add_reverse_token(
-        port=9870, 
-        allow_manage_connector=True
-    )
-    
-    # Provider client (provides network access)
-    provider = Client(result.token, ws_url="ws://localhost:8765", reverse=True)
-    
-    async with server, provider:
-        await asyncio.gather(
-            server.async_wait_ready(),
-            provider.async_wait_ready()
-        )
-        print("✅ Agent proxy server and provider ready!")
+    async with Server(ws_port=8765) as server:
+        result = server.add_reverse_token(allow_manage_connector=True)
+        print(f"🔑 Provider token: {result.token}")
+        print(f"🌐 SOCKS5 proxy will be available on: 127.0.0.1:{result.port}")
         
-        # Provider can manage its own connectors
-        connector_token = await provider.async_add_connector("my_connector")
-        print(f"🔑 Connector token: {connector_token}")
-        
-        # Now external connectors can use this token
-        print("🔧 Start connector: linksocks connector -t", connector_token, "-u ws://localhost:8765 -p 1180")
-        
-        await asyncio.sleep(3600)
+        # Provider client (provides network access)
+        async with Client(result.token, ws_url="ws://localhost:8765", reverse=True, no_env_proxy=True) as provider:
+            print("✅ Agent proxy server and provider ready!")
+            
+            # Provider can manage its own connectors
+            connector_token = await provider.async_add_connector("my_connector")
+            print(f"🔑 Connector token: {connector_token}")
+            
+            # Now external connectors can use this token
+            print(f"🔧 Start connector: linksocks connector -t {connector_token} -u ws://localhost:8765 -p 1180")
+            
+            await asyncio.sleep(3600)
 
 asyncio.run(agent_proxy())
 ```
@@ -300,13 +282,12 @@ async def robust_client():
         ws_url="ws://server:8765",
         reconnect=True,
         reconnect_delay=5.0,
+        no_env_proxy=True,
         logger=logger
     )
     
     try:
         async with client:
-            # Wait for connection with timeout
-            await client.async_wait_ready(timeout=30.0)
             logger.info("✅ Client connected successfully")
             
             # Monitor connection status
@@ -338,7 +319,6 @@ async def api_server_example():
     server = Server(ws_port=8765, api_key="secret_api_key")
     
     async with server:
-        await server.async_wait_ready()
         print("✅ Server with API ready!")
         
         # Use HTTP API to manage tokens
@@ -379,10 +359,11 @@ def create_proxy_pair(token: str, port: Optional[int] = None) -> tuple[Server, C
     server = Server(ws_port=8765)
     server.add_forward_token(token)
     
-    client = Client(token, ws_url="ws://localhost:8765", socks_port=port or 9870)
+    client = Client(token, ws_url="ws://localhost:8765", socks_port=port or 9870, no_env_proxy=True)
     return server, client
 
 # ReverseTokenResult is a dataclass
+server = Server(ws_port=8765)
 result: ReverseTokenResult = server.add_reverse_token()
 print(f"Token: {result.token}, Port: {result.port}")
 ```
@@ -438,7 +419,7 @@ We welcome contributions! Please see the main [LinkSocks repository](https://git
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](../../LICENSE) file for details.
+This project is licensed under the MIT License.
 
 ## Links
 
