@@ -30,6 +30,7 @@ export default defineConfig({
           { text: 'Authentication', link: '/guide/authentication' },
           { text: 'Load Balancing', link: '/guide/load-balancing' },
           { text: 'Fast Open', link: '/guide/fast-open' },
+          { text: 'Message Protocol', link: '/guide/message-protocol' },
           { text: 'HTTP API', link: '/guide/http-api' }
         ]
       },

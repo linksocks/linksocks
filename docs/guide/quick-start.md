@@ -118,6 +118,25 @@ linksocks provider -t provider_token -c my_connector_token -u ws://localhost:876
 linksocks connector -t my_connector_token -u ws://localhost:8765 -p 1180
 ```
 
+### Use Our Public Server
+
+You can use our public LinkSocks server at `linksocks.zetx.tech` for intranet penetration:
+
+**Step 1: On machine A (inside the network you want to access)**
+```bash
+linksocks provider -t any_token -u wss://linksocks.zetx.tech -c your_token
+```
+
+**Step 2: On machine B (where you want to access the network)**
+```bash
+linksocks connector -t your_token -u wss://linksocks.zetx.tech -p 1080
+```
+
+**Test the connection:**
+```bash
+curl --socks5 127.0.0.1:1080 http://httpbin.org/ip
+```
+
 ## Server Deployed on Cloudflare Workers
 
 Deploy LinkSocks server on Cloudflare Workers for serverless operation:

@@ -12,7 +12,7 @@ LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCK
 
 ![架构图](https://github.com/linksocks/linksocks/raw/main/images/abstract.svg)
 
-📖 **文档**: https://libsocks-docs.zetx.tech/
+📖 **文档**: https://linksocks-docs.zetx.tech/
 
 ## 特性
 
@@ -105,7 +105,7 @@ docker run --rm -it jackzzs/linksocks --help
 pip install linksocks
 ```
 
-> Python 版本是 Golang 实现的封装。详见：[Python 绑定](https://libsocks-docs.zetx.tech/python/)
+> Python 版本是 Golang 实现的封装。详见：[Python 绑定](https://linksocks-docs.zetx.tech/python/)
 
 ## Cloudflare Worker
 
@@ -124,7 +124,7 @@ LinkSocks 服务端提供用于动态令牌管理的 HTTP API：
 linksocks server --api-key your_api_key
 ```
 
-详细的 API 使用说明和示例，请参见：[HTTP API](https://libsocks-docs.zetx.tech/guide/http-api)
+详细的 API 使用说明和示例，请参见：[HTTP API](https://linksocks-docs.zetx.tech/guide/http-api)
 
 ## 许可证
 

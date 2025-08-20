@@ -12,7 +12,7 @@ This tool allows you to securely expose SOCKS proxy services under Web Applicati
 
 ![Main Diagram](https://github.com/linksocks/linksocks/raw/main/images/abstract.svg)
 
-📖 **Documentation**: https://libsocks-docs.zetx.tech/
+📖 **Documentation**: https://linksocks-docs.zetx.tech/
 
 ## Features
 
@@ -86,6 +86,8 @@ linksocks provider -t provider_token -c my_connector_token -u ws://localhost:876
 linksocks connector -t my_connector_token -u ws://localhost:8765 -p 1180
 ```
 
+You can also use our public server (for autonomy mode proxy) at `ws://linksocks.zetx.tech`.
+
 ## Installation
 
 ### Golang Version
@@ -105,11 +107,11 @@ docker run --rm -it jackzzs/linksocks --help
 pip install linksocks
 ```
 
-> The python version is a wrapper of the Golang implementation. See: [Python Bindings](https://libsocks-docs.zetx.tech/python/)
+> The python version is a wrapper of the Golang implementation. See: [Python Bindings](https://linksocks-docs.zetx.tech/python/)
 
 ## Cloudflare Worker
 
-LinkSocks server can be hosted on Cloudflare Worker, see: [linksocks/linksocks.js](https://github.com/linksocks/linksocks.js)
+LinkSocks server (for autonomy mode proxy) can be hosted on Cloudflare Worker, see: [linksocks/linksocks.js](https://github.com/linksocks/linksocks.js)
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/linksocks/linksocks.js)
 
@@ -124,7 +126,7 @@ LinkSocks server provides an HTTP API for dynamic token management:
 linksocks server --api-key your_api_key
 ```
 
-For detailed API usage and examples, see: [HTTP API](https://libsocks-docs.zetx.tech/guide/http-api)
+For detailed API usage and examples, see: [HTTP API](https://linksocks-docs.zetx.tech/guide/http-api)
 
 ## License
 
