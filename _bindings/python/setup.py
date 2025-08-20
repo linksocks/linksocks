@@ -836,7 +836,7 @@ ensure_placeholder_linksockslib()
 
 setup(
     name="linksocks",
-    version="1.7.0",
+    version="1.7.1",
     description="Python bindings for LinkSocks - SOCKS proxy over WebSocket",
     long_description=get_long_description(),
     long_description_content_type="text/markdown",
