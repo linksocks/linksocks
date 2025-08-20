@@ -4,15 +4,15 @@
 
 LinkSocks 是一个基于 WebSocket 协议的跨网络跨机器 SOCKS 代理实现。
 
-📖 **文档**: https://libsocks-docs.zetx.tech/
-
-[English README](README.md)
+[English README / 英文文档](README.md)
 
 ## 概述
 
 LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCKS 代理服务（正向代理模式），或使没有公网 IP 的客户端连接并作为 SOCKS 代理服务器（反向代理模式）。
 
 ![架构图](https://github.com/linksocks/linksocks/raw/main/images/abstract.svg)
+
+📖 **文档**: https://libsocks-docs.zetx.tech/
 
 ## 特性
 

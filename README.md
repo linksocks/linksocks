@@ -4,8 +4,6 @@
 
 LinkSocks is a SOCKS proxy implementation over WebSocket protocol.
 
-📖 **Documentation**: https://libsocks-docs.zetx.tech/
-
 [中文文档 / Chinese README](README.cn.md)
 
 ## Overview
@@ -13,6 +11,8 @@ LinkSocks is a SOCKS proxy implementation over WebSocket protocol.
 This tool allows you to securely expose SOCKS proxy services under Web Application Firewall (WAF) protection (forward socks), or enable clients to connect and serve as SOCKS proxy servers when they don't have public network access (reverse socks).
 
 ![Main Diagram](https://github.com/linksocks/linksocks/raw/main/images/abstract.svg)
+
+📖 **Documentation**: https://libsocks-docs.zetx.tech/
 
 ## Features
 
