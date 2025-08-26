@@ -123,7 +123,9 @@ docker run --rm -it jackzzs/linksocks --help
 pip install linksocks
 ```
 
-> The python version is a wrapper of the Golang implementation. See: [Python Bindings](https://linksocks-docs.zetx.tech/python/)
+> The python version is a wrapper of the Golang implementation. See: [Python Bindings](https://linksocks-docs.zetx.tech/python/).
+>
+> A pure python version with basic support is also available . See [Pywssocks](https://github.com/linksocks/pywssocks).
 
 ## Cloudflare Worker
 
