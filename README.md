@@ -86,7 +86,23 @@ linksocks provider -t provider_token -c my_connector_token -u ws://localhost:876
 linksocks connector -t my_connector_token -u ws://localhost:8765 -p 1180
 ```
 
-You can also use our public server (for autonomy mode proxy) at `ws://linksocks.zetx.tech`.
+You can also use our public server (for autonomy mode proxy) at `ws://l.zetx.tech`:
+
+```bash
+# Provider Side: Provider sets its own connector token
+linksocks provider -t provider_token -c my_connector_token -u ws://l.zetx.tech
+
+# Connector Side: Use the specific connector token to access this provider
+linksocks connector -t my_connector_token -u ws://l.zetx.tech -p 1180
+```
+
+If you are using the public server, please use a complex token, as anyone holding the token can connect to your service.
+
+Use the following linux command to generate a complex token:
+
+```bash
+openssl rand -hex 16
+```
 
 ## Installation
 
