@@ -16,12 +16,13 @@ This tool allows you to securely expose SOCKS proxy services under Web Applicati
 
 ## Features
 
-1. Supporting command-line usage, API server, and library integration.
-2. Forward, reverse and agent proxy modes.
-3. Round-robin load balancing for reverse proxy.
-4. SOCKS proxy authentication support.
-5. IPv6 over SOCKS5 support.
-6. UDP over SOCKS5 support.
+1. Forward, reverse and agent proxy modes.
+2. Round-robin load balancing for reverse proxy.
+3. SOCKS proxy authentication support.
+4. IPv6 & UDP over SOCKS5 support.
+5. Robust code driven by comprehensive tests.
+6. Command-line usage, API server, and library integration.
+7. Serverless relay server supported by Cloudflare Worker.
 
 ## Potential Applications
 
