@@ -91,7 +91,7 @@ You can also use our public server (for autonomy mode proxy) at `ws://l.zetx.tec
 
 ```bash
 # Provider Side: Provider sets its own connector token
-linksocks provider -t 0 -c my_connector_token -u ws://l.zetx.tech
+linksocks provider -c my_connector_token -u ws://l.zetx.tech
 
 # Connector Side: Use the specific connector token to access this provider
 linksocks connector -t my_connector_token -u ws://l.zetx.tech -p 1180
