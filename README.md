@@ -12,7 +12,7 @@ This tool allows you to securely expose SOCKS proxy services under Web Applicati
 
 ![Main Diagram](https://github.com/linksocks/linksocks/raw/main/images/abstract.svg)
 
-📖 **Documentation**: https://linksocks-docs.zetx.tech/
+📖 **Documentation**: [https://linksocks.github.io](https://linksocks.github.io)
 
 ## Features
 
