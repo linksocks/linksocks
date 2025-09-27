@@ -124,7 +124,7 @@ docker run --rm -it jackzzs/linksocks --help
 pip install linksocks
 ```
 
-> The python version is a wrapper of the Golang implementation. See: [Python Bindings](https://linksocks-docs.zetx.tech/python/).
+> The python version is a wrapper of the Golang implementation. See: [Python Bindings](https://linksocks.github.io/python).
 >
 > A pure python version with basic support is also available . See [Pywssocks](https://github.com/linksocks/pywssocks).
 
@@ -145,7 +145,7 @@ LinkSocks server provides an HTTP API for dynamic token management:
 linksocks server --api-key your_api_key
 ```
 
-For detailed API usage and examples, see: [HTTP API](https://linksocks-docs.zetx.tech/guide/http-api)
+For detailed API usage and examples, see: [HTTP API](https://linksocks.github.io/guide/http-api)
 
 ## License
 
