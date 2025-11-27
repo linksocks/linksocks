@@ -491,9 +491,6 @@ def build_python_bindings(vm_python: Optional[str] = None):
         env["CGO_ENABLED"] = "1"
         # Allow any LDFLAGS through cgo validation
         env["CGO_LDFLAGS_ALLOW"] = ".*"
-        # Add -std=gnu17 flag to fix GCC 15 C23 bool type conflict
-        current_cflags = env.get("CGO_CFLAGS", "")
-        env["CGO_CFLAGS"] = f"{current_cflags} -std=gnu17".strip()
         # Determine target Python now so we can configure CGO flags appropriately
         target_vm = vm_python or sys.executable
         # Configure platform-specific CGO flags based on the target interpreter
@@ -563,6 +560,18 @@ def build_python_bindings(vm_python: Optional[str] = None):
         cmd.append("./linksocks_go")  # Use linksocks_go directory
         
         run_command(cmd, cwd=here, env=env)
+        
+        # Fix GCC 15 C23 bool conflict in generated linksockslib.go
+        # Wrap bool typedef with C23 version check to avoid conflict with built-in bool type (https://github.com/go-python/gopy/pull/379/files)
+        linksockslib_go = linksocks_lib_dir / "linksockslib.go"
+        if linksockslib_go.exists():
+            content = linksockslib_go.read_text()
+            if "typedef uint8_t bool;" in content:
+                old_typedef = "typedef uint8_t bool;"
+                new_typedef = "#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L\ntypedef uint8_t bool;\n#endif"""
+                content = content.replace(old_typedef, new_typedef)
+                linksockslib_go.write_text(content)
+                print(f"Fixed C23 bool conflict in {linksockslib_go}")
         
         # Clean up go.mod
         run_command(["go", "mod", "tidy"], cwd=here)
