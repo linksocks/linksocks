@@ -491,6 +491,9 @@ def build_python_bindings(vm_python: Optional[str] = None):
         env["CGO_ENABLED"] = "1"
         # Allow any LDFLAGS through cgo validation
         env["CGO_LDFLAGS_ALLOW"] = ".*"
+        # Add -std=gnu17 flag to fix GCC 15 C23 bool type conflict
+        current_cflags = env.get("CGO_CFLAGS", "")
+        env["CGO_CFLAGS"] = f"{current_cflags} -std=gnu17".strip()
         # Determine target Python now so we can configure CGO flags appropriately
         target_vm = vm_python or sys.executable
         # Configure platform-specific CGO flags based on the target interpreter
