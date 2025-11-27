@@ -568,7 +568,7 @@ def build_python_bindings(vm_python: Optional[str] = None):
             content = linksockslib_go.read_text()
             if "typedef uint8_t bool;" in content:
                 old_typedef = "typedef uint8_t bool;"
-                new_typedef = "#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L\ntypedef uint8_t bool;\n#endif"""
+                new_typedef = "#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L\ntypedef uint8_t bool;\n#endif"
                 content = content.replace(old_typedef, new_typedef)
                 linksockslib_go.write_text(content)
                 print(f"Fixed C23 bool conflict in {linksockslib_go}")
