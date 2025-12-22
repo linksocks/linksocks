@@ -9,6 +9,10 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const (
+	SocketCleanupDelay = 30 * time.Second // Delay before closing unused sockets
+)
+
 // SocketManager manages socket lifecycle and reuse
 type SocketManager struct {
 	mu      sync.RWMutex
@@ -73,7 +77,7 @@ func (sm *SocketManager) ReleaseListener(port int) {
 	sock.refCount--
 	if sock.refCount <= 0 {
 		// Start delayed cleanup
-		sock.closeTimer = time.AfterFunc(30*time.Second, func() {
+		sock.closeTimer = time.AfterFunc(SocketCleanupDelay, func() {
 			sm.mu.Lock()
 			defer sm.mu.Unlock()
 

@@ -22,6 +22,10 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const (
+	MaxRedirects = 5 // Maximum number of WebSocket redirects to follow
+)
+
 // nonRetriableError represents an error that should not be retried
 type nonRetriableError struct {
 	msg string
@@ -535,7 +539,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 	var ws *websocket.Conn
 	var resp *http.Response
 	currentURL := wsURLWithParams
-	redirectsLeft := 5 // Maximum number of redirects to follow
+	redirectsLeft := MaxRedirects
 
 	for redirectsLeft >= 0 {
 		ws, resp, err = dialer.Dial(currentURL, nil)

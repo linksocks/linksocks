@@ -501,7 +501,25 @@ func (s *LinkSocksServer) RemoveToken(token string) bool {
 		// Remove all connector tokens using this reverse token
 		for connectorToken, rt := range s.connectorTokens {
 			if rt == token {
-				s.RemoveToken(connectorToken)
+				s.connCache.mu.Lock()
+				if ids, exists := s.connCache.tokenCache[connectorToken]; exists {
+					for _, id := range ids {
+						delete(s.connCache.channelIDToClient, id)
+						delete(s.connCache.channelIDToConnector, id)
+					}
+					delete(s.connCache.tokenCache, connectorToken)
+				}
+				s.connCache.mu.Unlock()
+
+				if clients, ok := s.tokenClients[connectorToken]; ok {
+					for _, client := range clients {
+						client.Conn.Close()
+						delete(s.clients, client.ID)
+					}
+					delete(s.tokenClients, connectorToken)
+				}
+				delete(s.connectorTokens, connectorToken)
+				s.log.Info().Str("token", connectorToken).Msg("Connector token removed")
 			}
 		}
 

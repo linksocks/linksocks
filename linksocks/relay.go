@@ -173,7 +173,8 @@ type Relay struct {
 	option               *RelayOption
 	done                 chan struct{}
 	connectionSuccessMap sync.Map
-	bufferPool           sync.Pool // Buffer pool for reusing byte slices
+	bufferPool           sync.Pool      // Buffer pool for reusing byte slices
+	cleanupQueue         chan uuid.UUID // Channel for delayed cleanup tasks
 }
 
 // NewRelay creates a new Relay instance
@@ -183,9 +184,10 @@ func NewRelay(logger zerolog.Logger, option *RelayOption) *Relay {
 	}
 
 	r := &Relay{
-		log:    logger,
-		option: option,
-		done:   make(chan struct{}),
+		log:          logger,
+		option:       option,
+		done:         make(chan struct{}),
+		cleanupQueue: make(chan uuid.UUID, 1000),
 		bufferPool: sync.Pool{
 			New: func() interface{} {
 				b := make([]byte, option.BufferSize)
@@ -195,6 +197,10 @@ func NewRelay(logger zerolog.Logger, option *RelayOption) *Relay {
 	}
 
 	go r.channelCleaner()
+	// Start cleanup workers
+	for i := 0; i < 4; i++ {
+		go r.cleanupWorker()
+	}
 
 	return r
 }
@@ -1560,27 +1566,47 @@ func (r *Relay) determineCompression(dataSize int) byte {
 
 // disconnectChannel handles cleanup of channel resources
 func (r *Relay) disconnectChannel(channelID uuid.UUID) {
-	// Gracefully tear down after a short delay to allow any in-flight data
-	// to be forwarded from WebSocket to SOCKS before cancellation.
-	go func() {
-		r.log.Trace().Str("channel_id", channelID.String()).Msg("Disconnecting channel")
-		time.Sleep(5 * time.Second)
-		if cancelVal, ok := r.tcpChannels.LoadAndDelete(channelID); ok {
-			if cancel, ok := cancelVal.(context.CancelFunc); ok {
-				cancel()
-			}
+	// Queue the channel for delayed cleanup
+	select {
+	case r.cleanupQueue <- channelID:
+		r.log.Trace().Str("channel_id", channelID.String()).Msg("Queued channel for cleanup")
+	default:
+		// Queue full, cleanup synchronously in a goroutine as fallback
+		go r.doCleanup(channelID)
+	}
+}
+
+// cleanupWorker processes cleanup tasks from the queue
+func (r *Relay) cleanupWorker() {
+	for {
+		select {
+		case <-r.done:
+			return
+		case channelID := <-r.cleanupQueue:
+			r.doCleanup(channelID)
 		}
-		if cancelVal, ok := r.udpChannels.LoadAndDelete(channelID); ok {
-			if cancel, ok := cancelVal.(context.CancelFunc); ok {
-				cancel()
-			}
+	}
+}
+
+// doCleanup performs the actual cleanup with delay
+func (r *Relay) doCleanup(channelID uuid.UUID) {
+	r.log.Trace().Str("channel_id", channelID.String()).Msg("Disconnecting channel")
+	time.Sleep(5 * time.Second)
+	if cancelVal, ok := r.tcpChannels.LoadAndDelete(channelID); ok {
+		if cancel, ok := cancelVal.(context.CancelFunc); ok {
+			cancel()
 		}
-		r.messageQueues.Delete(channelID)
-		r.udpClientAddrs.Delete(channelID)
-		r.connectionSuccessMap.Delete(channelID)
-		r.lastActivity.Delete(channelID)
-		r.log.Trace().Str("channel_id", channelID.String()).Msg("Disconnected channel")
-	}()
+	}
+	if cancelVal, ok := r.udpChannels.LoadAndDelete(channelID); ok {
+		if cancel, ok := cancelVal.(context.CancelFunc); ok {
+			cancel()
+		}
+	}
+	r.messageQueues.Delete(channelID)
+	r.udpClientAddrs.Delete(channelID)
+	r.connectionSuccessMap.Delete(channelID)
+	r.lastActivity.Delete(channelID)
+	r.log.Trace().Str("channel_id", channelID.String()).Msg("Disconnected channel")
 }
 
 // SetConnectionSuccess sets the connection success status for a channel

@@ -7,7 +7,7 @@ import (
 
 // PortPool is a thread-safe port pool for managing available network ports
 type PortPool struct {
-	portPool  map[int]bool // all available ports
+	ports     []int        // all available ports as slice for random access
 	usedPorts map[int]bool // ports currently in use
 	mutex     sync.Mutex   // for protecting concurrent access
 }
@@ -15,30 +15,23 @@ type PortPool struct {
 // NewPortPool creates a new port pool from a slice of ports
 func NewPortPool(ports []int) *PortPool {
 	pool := &PortPool{
-		portPool:  make(map[int]bool),
+		ports:     make([]int, len(ports)),
 		usedPorts: make(map[int]bool),
 	}
-
-	// Initialize available port pool
-	for _, port := range ports {
-		pool.portPool[port] = true
-	}
-
+	copy(pool.ports, ports)
 	return pool
 }
 
 // NewPortPoolFromRange creates a new port pool from a range of ports
 func NewPortPoolFromRange(start, end int) *PortPool {
+	size := end - start + 1
 	pool := &PortPool{
-		portPool:  make(map[int]bool),
+		ports:     make([]int, size),
 		usedPorts: make(map[int]bool),
 	}
-
-	// Initialize available port pool from range
-	for port := start; port <= end; port++ {
-		pool.portPool[port] = true
+	for i := 0; i < size; i++ {
+		pool.ports[i] = start + i
 	}
-
 	return pool
 }
 
@@ -48,7 +41,7 @@ func (p *PortPool) Get(requestedPort int) int {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
-	// If a specific port is requested
+	// If a specific port is requested (allow any port, not just those in pool)
 	if requestedPort != 0 {
 		if !p.usedPorts[requestedPort] {
 			p.usedPorts[requestedPort] = true
@@ -57,22 +50,24 @@ func (p *PortPool) Get(requestedPort int) int {
 		return 0
 	}
 
-	// Randomly allocate an available port
-	availablePorts := make([]int, 0)
-	for port := range p.portPool {
-		if !p.usedPorts[port] {
-			availablePorts = append(availablePorts, port)
-		}
-	}
-
-	if len(availablePorts) == 0 {
+	// Randomly select and test ports
+	poolSize := len(p.ports)
+	if poolSize == 0 {
 		return 0
 	}
 
-	// Randomly select a port
-	selectedPort := availablePorts[rand.Intn(len(availablePorts))]
-	p.usedPorts[selectedPort] = true
-	return selectedPort
+	// Try random ports up to poolSize times to find an available one
+	startIdx := rand.Intn(poolSize)
+	for i := 0; i < poolSize; i++ {
+		idx := (startIdx + i) % poolSize
+		port := p.ports[idx]
+		if !p.usedPorts[port] {
+			p.usedPorts[port] = true
+			return port
+		}
+	}
+
+	return 0
 }
 
 // Put returns a port back to the pool

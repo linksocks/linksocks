@@ -1,6 +1,7 @@
 package linksocks
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -69,7 +70,7 @@ type ReverseTokenStatus struct {
 // checkAPIKey verifies the API key in the request header
 func (h *APIHandler) checkAPIKey(w http.ResponseWriter, r *http.Request) bool {
 	providedKey := r.Header.Get("X-API-Key")
-	if providedKey != h.apiKey {
+	if subtle.ConstantTimeCompare([]byte(providedKey), []byte(h.apiKey)) != 1 {
 		w.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(w).Encode(TokenResponse{
 			Success: false,

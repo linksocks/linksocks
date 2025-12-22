@@ -11,6 +11,10 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const (
+	MaxWebSocketMessageSize = 32 * 1024 * 1024 // 32MB max message size
+)
+
 // WSConn wraps a websocket.Conn with mutex protection
 type WSConn struct {
 	conn *websocket.Conn
@@ -73,7 +77,7 @@ func NewWSConn(conn *websocket.Conn, label string, logger zerolog.Logger) *WSCon
 	}
 
 	// Set read limit
-	conn.SetReadLimit(32 * 1024 * 1024) // 32MB max message size
+	conn.SetReadLimit(MaxWebSocketMessageSize)
 
 	// Set pong handler to measure RTT
 	conn.SetPongHandler(func(string) error {
