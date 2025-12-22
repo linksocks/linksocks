@@ -29,6 +29,8 @@ LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCK
 2. 使用客户端代理绕过验证码
 3. 通过 CDN 网络实现安全的内网穿透
 
+作为一个好的案例, 请参考 [LinkTerm](https://github.com/linksocks/linkterm) 和 [Cloudflyer](https://github.com/cloudflyer-project/cloudflyer) 项目.
+
 ## 快速开始
 
 ### 正向代理
