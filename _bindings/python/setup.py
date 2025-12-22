@@ -858,9 +858,10 @@ def configure_python_env(target_python: str, env: dict) -> dict:
             print(f"Windows CGO config: py_version={py_version}, include={include_dir}, libs={libs_dir}")
 
             env["CGO_ENABLED"] = "1"
-            cflags = []
             # Use C17 standard to avoid C23 bool conflict (gopy generates "typedef uint8_t bool;")
-            cflags.append("-std=gnu17")
+            # Set CC to include -std=gnu17 because gopy's build.py rewrites CGO_CFLAGS internally
+            env["CC"] = "gcc -std=gnu17"
+            cflags = []
             if include_dir.exists():
                 cflags.append(f"-I{include_dir}")
             if env.get("CGO_CFLAGS"):
