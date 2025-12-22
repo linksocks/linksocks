@@ -876,6 +876,11 @@ def configure_python_env(target_python: str, env: dict) -> dict:
                 ldflags.append(env["CGO_LDFLAGS"])
             env["CGO_LDFLAGS"] = " ".join(ldflags).strip()
             return env
+        elif system_name == "darwin":
+            # macOS 15+ clang treats -Ofast as deprecated error
+            # gopy's build.py rewrites CGO_CFLAGS internally, so we pass the flag via CC instead
+            env["CC"] = "clang -Wno-deprecated"
+            return env
         return env
     except Exception as cfg_err:
         print(f"Warning: failed to configure platform CGO flags: {cfg_err}")
