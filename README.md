@@ -30,6 +30,8 @@ This tool allows you to securely expose SOCKS proxy services under Web Applicati
 2. Bypassing CAPTCHA using client-side proxies.
 3. Secure intranet penetration, using CDN network.
 
+As great examples, see these projects: [LinkTerm](https://github.com/linksocks/linkterm) and [Cloudflyer](https://github.com/cloudflyer-project/cloudflyer).
+
 ## Quick Start
 
 ### Forward Proxy
