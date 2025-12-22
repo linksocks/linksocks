@@ -230,7 +230,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-13, macos-14]
+        os: [macos-15-intel, macos-14]
         python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
@@ -256,7 +256,7 @@ jobs:
       - name: Upload Artifacts (per Python)
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-macos-${{ matrix.os == 'macos-13' && 'x64' || 'arm64' }}-py${{ matrix.python }}
+          name: wheels-macos-${{ matrix.os == 'macos-15-intel' && 'x64' || 'arm64' }}-py${{ matrix.python }}
           path: ./wheelhouse/*.whl
 
       - name: Start tmate session (manual, on failure)
