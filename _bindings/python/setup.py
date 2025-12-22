@@ -859,6 +859,8 @@ def configure_python_env(target_python: str, env: dict) -> dict:
 
             env["CGO_ENABLED"] = "1"
             cflags = []
+            # Use C17 standard to avoid C23 bool conflict (gopy generates "typedef uint8_t bool;")
+            cflags.append("-std=gnu17")
             if include_dir.exists():
                 cflags.append(f"-I{include_dir}")
             if env.get("CGO_CFLAGS"):
