@@ -812,15 +812,50 @@ class BinaryDistribution(setuptools.Distribution):
 def configure_python_env(target_python: str, env: dict) -> dict:
     """Configure CGO flags for the current platform using the target Python interpreter.
 
-    On Windows: use the current interpreter layout for include/libs.
+    On Windows: use the target interpreter layout for include/libs.
     """
     system_name = platform.system().lower()
     try:
         if system_name == "windows":
-            py_version = f"{sys.version_info.major}{sys.version_info.minor}"
-            py_dir = Path(sys.executable).parent
+            # Use target_python to determine paths, not sys.executable
+            target_py = Path(target_python)
+            py_dir = target_py.parent
+            
+            # Get version from target Python, not current interpreter
+            try:
+                version_output = subprocess.run(
+                    [str(target_py), "-c", "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')"],
+                    capture_output=True, text=True, check=True
+                ).stdout.strip()
+                py_version = version_output
+            except Exception:
+                # Fallback to current interpreter version
+                py_version = f"{sys.version_info.major}{sys.version_info.minor}"
+            
+            # On Windows with venv, Python.exe is in Scripts/, but include/libs are in the base Python install
+            # Try to find the real Python installation
             include_dir = py_dir / "include"
             libs_dir = py_dir / "libs"
+            
+            # If not found, check parent (for venv where python is in Scripts/)
+            if not include_dir.exists() or not libs_dir.exists():
+                # Try the venv's base Python (pyvenv.cfg points to it)
+                pyvenv_cfg = py_dir.parent / "pyvenv.cfg"
+                if pyvenv_cfg.exists():
+                    try:
+                        cfg_text = pyvenv_cfg.read_text()
+                        for line in cfg_text.splitlines():
+                            if line.startswith("home"):
+                                base_path = Path(line.split("=", 1)[1].strip())
+                                if (base_path / "include").exists():
+                                    include_dir = base_path / "include"
+                                if (base_path / "libs").exists():
+                                    libs_dir = base_path / "libs"
+                                break
+                    except Exception:
+                        pass
+            
+            print(f"Windows CGO config: py_version={py_version}, include={include_dir}, libs={libs_dir}")
 
             env["CGO_ENABLED"] = "1"
             cflags = []
