@@ -34,7 +34,7 @@ DataMessage:
     [if UDP: AddrLen(1) + Addr(N) + Port(2) + TargetAddrLen(1) + TargetAddr(N) + TargetPort(2)]
 
 DisconnectMessage:
-    Version(1) + Type(1) + ChannelID(16)
+    Version(1) + Type(1) + ChannelID(16) + [ErrorLen(1) + Error(N) if HasError]
 
 ConnectorMessage:
     Version(1) + Type(1) + ChannelID(16) + TokenLen(1) + Token(N) + Operation(1)
@@ -44,8 +44,11 @@ ConnectorResponseMessage:
     [if !Success: ErrorLen(1) + Error(N)] +
     [if Success && HasToken: TokenLen(1) + Token(N)]
 
-ServerMessage:
-    Version(1) + Type(1) + DataLen(4) + Data(N)
+LogMessage:
+    Version(1) + Type(1) + DataLen(4) + JSON{"level": string, "msg": string}
+
+PartnersMessage:
+    Version(1) + Type(1) + DataLen(4) + JSON{"count": int}
 */
 
 const (
