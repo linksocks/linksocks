@@ -94,7 +94,7 @@ func (cli *CLI) initCommands() {
 		cmd.Flags().BoolP("no-reconnect", "R", false, "Stop when the server disconnects")
 		cmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
 		cmd.Flags().IntP("threads", "T", 1, "Number of threads for data transfer")
-		cmd.Flags().StringP("upstream-proxy", "x", "", "Upstream SOCKS5 proxy (e.g., socks5://user:pass@127.0.0.1:9870)")
+		cmd.Flags().StringP("upstream-proxy", "x", "", "Upstream proxy (e.g., socks5://user:pass@127.0.0.1:1080 or http://user:pass@127.0.0.1:8080)")
 		cmd.Flags().BoolP("fast-open", "f", false, "Assume connection success and allow data transfer immediately")
 		cmd.Flags().BoolP("no-env-proxy", "E", false, "Ignore proxy settings from environment variables when connecting to the websocket server")
 
@@ -124,7 +124,7 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().BoolP("socks-nowait", "i", false, "Start the SOCKS server immediately")
 	serverCmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
 	serverCmd.Flags().StringP("api-key", "k", "", "Enable HTTP API with specified key")
-	serverCmd.Flags().StringP("upstream-proxy", "x", "", "Upstream SOCKS5 proxy (e.g., socks5://user:pass@127.0.0.1:9870)")
+	serverCmd.Flags().StringP("upstream-proxy", "x", "", "Upstream proxy (e.g., socks5://user:pass@127.0.0.1:1080 or http://user:pass@127.0.0.1:8080)")
 	serverCmd.Flags().BoolP("fast-open", "f", false, "Assume connection success and allow data transfer immediately")
 
 	// Update usage to show environment variables
@@ -136,19 +136,24 @@ func (cli *CLI) initCommands() {
 	cli.rootCmd.AddCommand(clientCmd, connectorCmd, providerCmd, serverCmd, versionCmd)
 }
 
-// parseSocksProxy parses a SOCKS5 proxy URL and returns address, username, and password
-func parseSocksProxy(proxyURL string) (address, username, password string, err error) {
+// parseProxy parses a proxy URL and returns address, username, password, and proxy type
+func parseProxy(proxyURL string) (address, username, password string, proxyType ProxyType, err error) {
 	if proxyURL == "" {
-		return "", "", "", nil
+		return "", "", "", ProxyTypeNone, nil
 	}
 
 	u, err := url.Parse(proxyURL)
 	if err != nil {
-		return "", "", "", fmt.Errorf("invalid proxy URL: %w", err)
+		return "", "", "", ProxyTypeNone, fmt.Errorf("invalid proxy URL: %w", err)
 	}
 
-	if u.Scheme != "socks5" {
-		return "", "", "", fmt.Errorf("unsupported proxy scheme: %s", u.Scheme)
+	switch u.Scheme {
+	case "socks5":
+		proxyType = ProxyTypeSocks5
+	case "http", "https":
+		proxyType = ProxyTypeHTTP
+	default:
+		return "", "", "", ProxyTypeNone, fmt.Errorf("unsupported proxy scheme: %s (supported: socks5, http)", u.Scheme)
 	}
 
 	// Get authentication info
@@ -160,10 +165,14 @@ func parseSocksProxy(proxyURL string) (address, username, password string, err e
 	// Rebuild address (without auth info)
 	address = fmt.Sprintf("%s:%s", u.Hostname(), u.Port())
 	if u.Port() == "" {
-		address = fmt.Sprintf("%s:9870", u.Hostname()) // Default SOCKS5 port
+		if proxyType == ProxyTypeSocks5 {
+			address = fmt.Sprintf("%s:1080", u.Hostname()) // Default SOCKS5 port
+		} else {
+			address = fmt.Sprintf("%s:8080", u.Hostname()) // Default HTTP proxy port
+		}
 	}
 
-	return address, username, password, nil
+	return address, username, password, proxyType, nil
 }
 
 func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
@@ -196,9 +205,14 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	noEnvProxy, _ := cmd.Flags().GetBool("no-env-proxy")
 
 	// Parse proxy URL
-	proxyAddr, proxyUser, proxyPass, err := parseSocksProxy(upstreamProxy)
+	proxyAddr, proxyUser, proxyPass, proxyType, err := parseProxy(upstreamProxy)
 	if err != nil {
 		return err
+	}
+
+	// Warn about UDP not being supported with HTTP proxy
+	if proxyType == ProxyTypeHTTP {
+		fmt.Fprintln(os.Stderr, "Warning: HTTP proxy does not support UDP forwarding")
 	}
 
 	// Setup logging
@@ -219,7 +233,8 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	// Add new options
 	if proxyAddr != "" {
 		clientOpt.WithUpstreamProxy(proxyAddr).
-			WithUpstreamAuth(proxyUser, proxyPass)
+			WithUpstreamAuth(proxyUser, proxyPass).
+			WithUpstreamProxyType(proxyType)
 	}
 	if fastOpen {
 		clientOpt.WithFastOpen(true)
@@ -302,9 +317,14 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 	fastOpen, _ := cmd.Flags().GetBool("fast-open")
 
 	// Parse proxy URL
-	proxyAddr, proxyUser, proxyPass, err := parseSocksProxy(upstreamProxy)
+	proxyAddr, proxyUser, proxyPass, proxyType, err := parseProxy(upstreamProxy)
 	if err != nil {
 		return err
+	}
+
+	// Warn about UDP not being supported with HTTP proxy
+	if proxyType == ProxyTypeHTTP {
+		fmt.Fprintln(os.Stderr, "Warning: HTTP proxy does not support UDP forwarding")
 	}
 
 	// Setup logging
@@ -321,7 +341,8 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 	// Add new options
 	if proxyAddr != "" {
 		serverOpt.WithUpstreamProxy(proxyAddr).
-			WithUpstreamAuth(proxyUser, proxyPass)
+			WithUpstreamAuth(proxyUser, proxyPass).
+			WithUpstreamProxyType(proxyType)
 	}
 	if fastOpen {
 		serverOpt.WithFastOpen(true)

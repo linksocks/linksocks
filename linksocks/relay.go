@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +33,15 @@ const (
 	DefaultCompressionThreshold = 512 * 1024
 )
 
+// ProxyType represents the type of upstream proxy
+type ProxyType string
+
+const (
+	ProxyTypeNone   ProxyType = ""
+	ProxyTypeSocks5 ProxyType = "socks5"
+	ProxyTypeHTTP   ProxyType = "http"
+)
+
 // RelayOption contains configuration options for Relay
 type RelayOption struct {
 	// BufferSize controls the size of reusable buffers
@@ -43,10 +53,11 @@ type RelayOption struct {
 	// When false, assumes connection success immediately
 	FastOpen bool
 
-	// Upstream SOCKS5 proxy configuration
-	UpstreamProxy    string // Format: host:port
-	UpstreamUsername string
-	UpstreamPassword string
+	// Upstream proxy configuration
+	UpstreamProxy     string // Format: host:port
+	UpstreamUsername  string
+	UpstreamPassword  string
+	UpstreamProxyType ProxyType // socks5 or http
 
 	// Adaptive batching configuration
 	EnableDynamicBatching bool
@@ -100,13 +111,19 @@ func (o *RelayOption) WithFastOpen(fastOpen bool) *RelayOption {
 	return o
 }
 
-// WithUpstreamProxy sets the upstream SOCKS5 proxy
+// WithUpstreamProxy sets the upstream proxy address
 func (o *RelayOption) WithUpstreamProxy(proxy string) *RelayOption {
 	o.UpstreamProxy = proxy
 	return o
 }
 
-// WithUpstreamAuth sets the upstream SOCKS5 proxy authentication
+// WithUpstreamProxyType sets the upstream proxy type (socks5 or http)
+func (o *RelayOption) WithUpstreamProxyType(proxyType ProxyType) *RelayOption {
+	o.UpstreamProxyType = proxyType
+	return o
+}
+
+// WithUpstreamAuth sets the upstream proxy authentication
 func (o *RelayOption) WithUpstreamAuth(username, password string) *RelayOption {
 	o.UpstreamUsername = username
 	o.UpstreamPassword = password
@@ -335,9 +352,13 @@ func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request Con
 	var conn net.Conn
 	var err error
 
-	// Use upstream SOCKS5 proxy if configured
+	// Use upstream proxy if configured
 	if r.option.UpstreamProxy != "" {
-		conn, err = r.dialViaSocks5(targetAddr)
+		if r.option.UpstreamProxyType == ProxyTypeHTTP {
+			conn, err = r.dialViaHTTP(targetAddr)
+		} else {
+			conn, err = r.dialViaSocks5(targetAddr)
+		}
 	} else {
 		conn, err = net.DialTimeout("tcp", targetAddr, r.option.ConnectTimeout)
 	}
@@ -546,6 +567,76 @@ func (r *Relay) socks5Connect(conn net.Conn, targetAddr string) error {
 	}
 
 	return err
+}
+
+// dialViaHTTP establishes a connection through an HTTP CONNECT proxy
+func (r *Relay) dialViaHTTP(targetAddr string) (net.Conn, error) {
+	// Connect to HTTP proxy
+	proxyConn, err := net.DialTimeout("tcp", r.option.UpstreamProxy, r.option.ConnectTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("connect to proxy error: %w", err)
+	}
+
+	// Build CONNECT request
+	connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n", targetAddr, targetAddr)
+
+	// Add proxy authentication if provided
+	if r.option.UpstreamUsername != "" && r.option.UpstreamPassword != "" {
+		auth := r.option.UpstreamUsername + ":" + r.option.UpstreamPassword
+		encoded := base64Encode([]byte(auth))
+		connectReq += fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", encoded)
+	}
+
+	connectReq += "\r\n"
+
+	// Send CONNECT request
+	if _, err := proxyConn.Write([]byte(connectReq)); err != nil {
+		proxyConn.Close()
+		return nil, fmt.Errorf("write CONNECT request error: %w", err)
+	}
+
+	// Read response
+	response := make([]byte, 1024)
+	n, err := proxyConn.Read(response)
+	if err != nil {
+		proxyConn.Close()
+		return nil, fmt.Errorf("read CONNECT response error: %w", err)
+	}
+
+	// Parse response status
+	responseStr := string(response[:n])
+	if !strings.Contains(responseStr, "200") {
+		proxyConn.Close()
+		// Extract status line for error message
+		statusLine := strings.Split(responseStr, "\r\n")[0]
+		return nil, fmt.Errorf("HTTP CONNECT failed: %s", statusLine)
+	}
+
+	return proxyConn, nil
+}
+
+// base64Encode encodes data to base64 string
+func base64Encode(data []byte) string {
+	const base64Chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	result := make([]byte, 0, (len(data)+2)/3*4)
+
+	for i := 0; i < len(data); i += 3 {
+		var n uint32
+		remaining := len(data) - i
+
+		if remaining >= 3 {
+			n = uint32(data[i])<<16 | uint32(data[i+1])<<8 | uint32(data[i+2])
+			result = append(result, base64Chars[n>>18&0x3F], base64Chars[n>>12&0x3F], base64Chars[n>>6&0x3F], base64Chars[n&0x3F])
+		} else if remaining == 2 {
+			n = uint32(data[i])<<16 | uint32(data[i+1])<<8
+			result = append(result, base64Chars[n>>18&0x3F], base64Chars[n>>12&0x3F], base64Chars[n>>6&0x3F], '=')
+		} else {
+			n = uint32(data[i]) << 16
+			result = append(result, base64Chars[n>>18&0x3F], base64Chars[n>>12&0x3F], '=', '=')
+		}
+	}
+
+	return string(result)
 }
 
 // HandleUDPConnection handles UDP network connection

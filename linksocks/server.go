@@ -100,20 +100,21 @@ func newConnectorCache() *connectorCache {
 
 // ServerOption represents configuration options for LinkSocksServer
 type ServerOption struct {
-	WSHost           string
-	WSPort           int
-	SocksHost        string
-	PortPool         *PortPool
-	SocksWaitClient  bool
-	Logger           zerolog.Logger
-	BufferSize       int
-	APIKey           string
-	ChannelTimeout   time.Duration
-	ConnectTimeout   time.Duration
-	FastOpen         bool
-	UpstreamProxy    string
-	UpstreamUsername string
-	UpstreamPassword string
+	WSHost            string
+	WSPort            int
+	SocksHost         string
+	PortPool          *PortPool
+	SocksWaitClient   bool
+	Logger            zerolog.Logger
+	BufferSize        int
+	APIKey            string
+	ChannelTimeout    time.Duration
+	ConnectTimeout    time.Duration
+	FastOpen          bool
+	UpstreamProxy     string
+	UpstreamUsername  string
+	UpstreamPassword  string
+	UpstreamProxyType ProxyType
 }
 
 // DefaultServerOption returns default server options
@@ -202,13 +203,19 @@ func (o *ServerOption) WithFastOpen(fastOpen bool) *ServerOption {
 	return o
 }
 
-// WithUpstreamProxy sets the upstream SOCKS5 proxy
+// WithUpstreamProxy sets the upstream proxy address
 func (o *ServerOption) WithUpstreamProxy(proxy string) *ServerOption {
 	o.UpstreamProxy = proxy
 	return o
 }
 
-// WithUpstreamAuth sets the upstream SOCKS5 proxy authentication
+// WithUpstreamProxyType sets the upstream proxy type (socks5 or http)
+func (o *ServerOption) WithUpstreamProxyType(proxyType ProxyType) *ServerOption {
+	o.UpstreamProxyType = proxyType
+	return o
+}
+
+// WithUpstreamAuth sets the upstream proxy authentication
 func (o *ServerOption) WithUpstreamAuth(username, password string) *ServerOption {
 	o.UpstreamUsername = username
 	o.UpstreamPassword = password
@@ -227,7 +234,8 @@ func NewLinkSocksServer(opt *ServerOption) *LinkSocksServer {
 		WithConnectTimeout(opt.ConnectTimeout).
 		WithFastOpen(opt.FastOpen).
 		WithUpstreamProxy(opt.UpstreamProxy).
-		WithUpstreamAuth(opt.UpstreamUsername, opt.UpstreamPassword)
+		WithUpstreamAuth(opt.UpstreamUsername, opt.UpstreamPassword).
+		WithUpstreamProxyType(opt.UpstreamProxyType)
 
 	s := &LinkSocksServer{
 		relay:           NewRelay(opt.Logger, relayOpt),

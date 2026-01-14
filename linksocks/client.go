@@ -75,25 +75,26 @@ type LinkSocksClient struct {
 
 // ClientOption represents configuration options for LinkSocksClient
 type ClientOption struct {
-	WSURL            string
-	Reverse          bool
-	SocksHost        string
-	SocksPort        int
-	SocksUsername    string
-	SocksPassword    string
-	SocksWaitServer  bool
-	Reconnect        bool
-	ReconnectDelay   time.Duration
-	Logger           zerolog.Logger
-	BufferSize       int
-	ChannelTimeout   time.Duration
-	ConnectTimeout   time.Duration
-	Threads          int
-	FastOpen         bool
-	UpstreamProxy    string
-	UpstreamUsername string
-	UpstreamPassword string
-	NoEnvProxy       bool // Ignore environment proxy settings
+	WSURL             string
+	Reverse           bool
+	SocksHost         string
+	SocksPort         int
+	SocksUsername     string
+	SocksPassword     string
+	SocksWaitServer   bool
+	Reconnect         bool
+	ReconnectDelay    time.Duration
+	Logger            zerolog.Logger
+	BufferSize        int
+	ChannelTimeout    time.Duration
+	ConnectTimeout    time.Duration
+	Threads           int
+	FastOpen          bool
+	UpstreamProxy     string
+	UpstreamUsername  string
+	UpstreamPassword  string
+	UpstreamProxyType ProxyType
+	NoEnvProxy        bool // Ignore environment proxy settings
 }
 
 // DefaultClientOption returns default client options
@@ -209,13 +210,19 @@ func (o *ClientOption) WithFastOpen(fastOpen bool) *ClientOption {
 	return o
 }
 
-// WithUpstreamProxy sets the upstream SOCKS5 proxy
+// WithUpstreamProxy sets the upstream proxy address
 func (o *ClientOption) WithUpstreamProxy(proxy string) *ClientOption {
 	o.UpstreamProxy = proxy
 	return o
 }
 
-// WithUpstreamAuth sets the upstream SOCKS5 proxy authentication
+// WithUpstreamProxyType sets the upstream proxy type (socks5 or http)
+func (o *ClientOption) WithUpstreamProxyType(proxyType ProxyType) *ClientOption {
+	o.UpstreamProxyType = proxyType
+	return o
+}
+
+// WithUpstreamAuth sets the upstream proxy authentication
 func (o *ClientOption) WithUpstreamAuth(username, password string) *ClientOption {
 	o.UpstreamUsername = username
 	o.UpstreamPassword = password
@@ -264,7 +271,8 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 		WithConnectTimeout(opt.ConnectTimeout).
 		WithFastOpen(opt.FastOpen).
 		WithUpstreamProxy(opt.UpstreamProxy).
-		WithUpstreamAuth(opt.UpstreamUsername, opt.UpstreamPassword)
+		WithUpstreamAuth(opt.UpstreamUsername, opt.UpstreamPassword).
+		WithUpstreamProxyType(opt.UpstreamProxyType)
 
 	client := &LinkSocksClient{
 		instanceID:      uuid.New(),
