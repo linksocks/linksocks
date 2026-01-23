@@ -47,14 +47,16 @@ def _to_duration(value: Optional[DurationLike]) -> Any:
     - int/float -> seconds (supports fractions)
     - timedelta -> total seconds
     - str -> parsed by Go (e.g., "1.5s", "300ms")
+    
+    Returns an int since Go's time.Duration is int64.
     """
     if value is None:
         return 0
     if isinstance(value, timedelta):
         seconds = value.total_seconds()
-        return seconds * linksocks.Second()
+        return int(seconds * linksocks.Second())
     if isinstance(value, (int, float)):
-        return value * linksocks.Second()
+        return int(value * linksocks.Second())
     if isinstance(value, str):
         try:
             return linksocks.ParseDuration(value)
