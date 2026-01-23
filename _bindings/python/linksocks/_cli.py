@@ -253,24 +253,36 @@ def server(
 
 def create_provider_command():
     """Create provider command as alias for client -r."""
-    def provider_wrapper(*args, **kwargs):
+    # Filter out the --reverse option since provider always uses reverse mode
+    provider_params = [p for p in client.params if p.name != 'reverse']
+    
+    @click.pass_context
+    def provider_wrapper(ctx, **kwargs):
         kwargs['reverse'] = True
-        return client(*args, **kwargs)
+        return ctx.invoke(client.callback, **kwargs)
     
     return click.Command(
         name="provider",
         callback=provider_wrapper,
-        params=client.params.copy(),
+        params=provider_params,
         help="Start reverse SOCKS5 proxy client (alias for 'client -r')"
     )
 
 
 def create_connector_command():
     """Create connector command as alias for client."""
+    # Filter out the --reverse option since connector never uses reverse mode
+    connector_params = [p for p in client.params if p.name != 'reverse']
+    
+    @click.pass_context
+    def connector_wrapper(ctx, **kwargs):
+        kwargs['reverse'] = False
+        return ctx.invoke(client.callback, **kwargs)
+    
     return click.Command(
         name="connector",
-        callback=client,
-        params=client.params.copy(),
+        callback=connector_wrapper,
+        params=connector_params,
         help="Start SOCKS5 proxy client (alias for 'client')"
     )
 
