@@ -70,6 +70,10 @@ type LinkSocksServer struct {
 
 	// Error channel
 	errors chan error // Channel for errors
+
+	// Start/ready guards (important for language bindings calling WaitReady repeatedly)
+	startOnce sync.Once
+	readyOnce sync.Once
 }
 
 type clientInfo struct {
@@ -260,10 +264,21 @@ func NewLinkSocksServer(opt *ServerOption) *LinkSocksServer {
 		apiKey:          opt.APIKey,
 		internalTokens:  make(map[string][]string),
 		sha256TokenMap:  make(map[string]string),
-		errors:          make(chan error, 1),
+		errors:          make(chan error, 16),
 	}
 
 	return s
+}
+
+func (s *LinkSocksServer) reportError(err error) {
+	if err == nil {
+		return
+	}
+	select {
+	case s.errors <- err:
+	default:
+		// Best-effort: never block background goroutines.
+	}
 }
 
 // generateRandomToken generates a random token string
@@ -650,10 +665,13 @@ func (s *LinkSocksServer) Serve(ctx context.Context) error {
 		http.NotFound(w, r)
 	})
 
-	s.wsServer = &http.Server{
+	srv := &http.Server{
 		Addr:    net.JoinHostPort(s.wsHost, fmt.Sprintf("%d", s.wsPort)),
 		Handler: mux,
 	}
+
+	// Assign once. Background goroutines must not rely on this pointer remaining non-nil.
+	s.wsServer = srv
 
 	// Handle all pending tokens
 	s.mu.RLock()
@@ -670,31 +688,50 @@ func (s *LinkSocksServer) Serve(ctx context.Context) error {
 	}
 
 	// Start server in background goroutine
-	go func() {
-		if err := s.wsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			s.errors <- err
+	go func(srv *http.Server) {
+		defer func() {
+			if r := recover(); r != nil {
+				s.reportError(fmt.Errorf("panic in server ListenAndServe: %v", r))
+			}
+		}()
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.reportError(err)
 		}
-	}()
+	}(srv)
 
 	// Wait for server to actually start listening
-	go func() {
+	addr := srv.Addr
+	go func(addr string) {
+		defer func() {
+			if r := recover(); r != nil {
+				s.reportError(fmt.Errorf("panic in server readiness loop: %v", r))
+			}
+		}()
 		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			// Check if we can connect to the server
-			conn, err := net.DialTimeout("tcp", s.wsServer.Addr, 10*time.Millisecond)
+			conn, err := net.DialTimeout("tcp", addr, 10*time.Millisecond)
 			if err == nil {
 				conn.Close()
 				// Server is listening, signal ready
 				s.log.Info().
-					Str("listen", s.wsServer.Addr).
+					Str("listen", addr).
 					Str("url", fmt.Sprintf("http://localhost:%d", s.wsPort)).
 					Msg("LinkSocks server started")
-				close(s.ready)
+				s.readyOnce.Do(func() {
+					close(s.ready)
+				})
 				return
 			}
 			// Wait a bit before trying again
 			time.Sleep(10 * time.Millisecond)
 		}
-	}()
+	}(addr)
 
 	// Block until context is done
 	<-ctx.Done()
@@ -703,17 +740,28 @@ func (s *LinkSocksServer) Serve(ctx context.Context) error {
 
 // WaitReady starts the server and waits for the server to be ready with optional timeout
 func (s *LinkSocksServer) WaitReady(ctx context.Context, timeout time.Duration) error {
-	ctx, cancel := context.WithCancel(ctx)
+	s.mu.RLock()
+	if s.closed {
+		s.mu.RUnlock()
+		return errors.New("server is closed")
+	}
+	s.mu.RUnlock()
 
-	s.mu.Lock()
-	s.cancelFunc = cancel
-	s.mu.Unlock()
-
-	go func() {
-		if err := s.Serve(ctx); err != nil {
-			s.errors <- err
-		}
-	}()
+	// Start Serve only once; subsequent WaitReady calls just wait.
+	var serveCtx context.Context
+	s.startOnce.Do(func() {
+		serveCtx, s.cancelFunc = context.WithCancel(ctx)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					s.reportError(fmt.Errorf("panic in server Serve: %v", r))
+				}
+			}()
+			if err := s.Serve(serveCtx); err != nil {
+				s.reportError(err)
+			}
+		}()
+	})
 
 	if timeout > 0 {
 		select {
@@ -1487,6 +1535,12 @@ func (s *LinkSocksServer) Close() {
 	}
 	s.closed = true
 
+	// Cancel main worker as early as possible to stop background goroutines.
+	if s.cancelFunc != nil {
+		s.cancelFunc()
+		s.cancelFunc = nil
+	}
+
 	// Close relay if it exists
 	if s.relay != nil {
 		s.relay.Close()
@@ -1535,12 +1589,6 @@ func (s *LinkSocksServer) Close() {
 			s.log.Warn().Err(err).Msg("Error closing WebSocket server")
 		}
 		s.wsServer = nil
-	}
-
-	// Cancel main worker if it exists
-	if s.cancelFunc != nil {
-		s.cancelFunc()
-		s.cancelFunc = nil
 	}
 
 	// Close socket manager if it exists

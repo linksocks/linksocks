@@ -69,6 +69,7 @@ type LinkSocksClient struct {
 	connectionMu sync.Mutex   // Dedicated mutex for connection status
 
 	cancelFunc context.CancelFunc
+	startOnce  sync.Once
 
 	batchLogger *batchLogger
 }
@@ -288,7 +289,7 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 		socksWaitServer: opt.SocksWaitServer,
 		reconnect:       opt.Reconnect,
 		reconnectDelay:  opt.ReconnectDelay,
-		errors:          make(chan error, 1),
+		errors:          make(chan error, 16),
 		Connected:       make(chan struct{}),
 		Disconnected:    disconnected,
 		IsConnected:     false,
@@ -299,6 +300,16 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 	}
 
 	return client
+}
+
+func (c *LinkSocksClient) reportError(err error) {
+	if err == nil {
+		return
+	}
+	select {
+	case c.errors <- err:
+	default:
+	}
 }
 
 // convertWSPath converts HTTP(S) URLs to WS(S) URLs and ensures proper path
@@ -329,17 +340,30 @@ func convertWSPath(wsURL string) string {
 
 // WaitReady start the client and waits for the client to be ready with optional timeout
 func (c *LinkSocksClient) WaitReady(ctx context.Context, timeout time.Duration) error {
-	ctx, cancel := context.WithCancel(ctx)
+	c.mu.RLock()
+	if c.closed {
+		c.mu.RUnlock()
+		return errors.New("client is closed")
+	}
+	c.mu.RUnlock()
 
-	c.mu.Lock()
-	c.cancelFunc = cancel
-	c.mu.Unlock()
-
-	go func() {
-		if err := c.Connect(ctx); err != nil {
-			c.errors <- err
-		}
-	}()
+	// Start Connect only once; repeated WaitReady calls just wait.
+	c.startOnce.Do(func() {
+		ctx, cancel := context.WithCancel(ctx)
+		c.mu.Lock()
+		c.cancelFunc = cancel
+		c.mu.Unlock()
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					c.reportError(fmt.Errorf("panic in client Connect: %v", r))
+				}
+			}()
+			if err := c.Connect(ctx); err != nil {
+				c.reportError(err)
+			}
+		}()
+	})
 
 	if timeout > 0 {
 		select {
