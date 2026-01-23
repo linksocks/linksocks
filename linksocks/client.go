@@ -74,6 +74,24 @@ type LinkSocksClient struct {
 	batchLogger *batchLogger
 }
 
+// ConnectedChan returns the current connection-ready signal channel.
+// The returned channel may be replaced during reconnect/disconnect cycles.
+func (c *LinkSocksClient) ConnectedChan() <-chan struct{} {
+	c.connectionMu.Lock()
+	ch := c.Connected
+	c.connectionMu.Unlock()
+	return ch
+}
+
+// DisconnectedChan returns the current disconnection signal channel.
+// The returned channel may be replaced during reconnect/disconnect cycles.
+func (c *LinkSocksClient) DisconnectedChan() <-chan struct{} {
+	c.connectionMu.Lock()
+	ch := c.Disconnected
+	c.connectionMu.Unlock()
+	return ch
+}
+
 // ClientOption represents configuration options for LinkSocksClient
 type ClientOption struct {
 	WSURL             string
@@ -365,9 +383,11 @@ func (c *LinkSocksClient) WaitReady(ctx context.Context, timeout time.Duration) 
 		}()
 	})
 
+	connectedCh := c.ConnectedChan()
+
 	if timeout > 0 {
 		select {
-		case <-c.Connected:
+		case <-connectedCh:
 			if !c.reverse {
 				// For forward proxy, also wait for SOCKS server
 				select {
@@ -392,7 +412,7 @@ func (c *LinkSocksClient) WaitReady(ctx context.Context, timeout time.Duration) 
 	}
 
 	select {
-	case <-c.Connected:
+	case <-connectedCh:
 		if !c.reverse {
 			// For forward proxy, also wait for SOCKS server
 			select {
@@ -490,8 +510,9 @@ func (c *LinkSocksClient) startForward(ctx context.Context) error {
 
 	// If socksWaitServer is true, start SOCKS server after at least one WebSocket connection is established
 	if c.socksWaitServer {
+		connectedCh := c.ConnectedChan()
 		select {
-		case <-c.Connected:
+		case <-connectedCh:
 			go func() {
 				if err := c.runSocksServer(ctx); err != nil {
 					c.errors <- fmt.Errorf("socks server error: %w", err)

@@ -201,7 +201,7 @@ func TestReverseRemoveToken(t *testing.T) {
 
 	// Wait for client to detect disconnection with timeout
 	select {
-	case <-client1.Client.Disconnected:
+	case <-client1.Client.DisconnectedChan():
 		// Disconnection detected
 	case <-time.After(5 * time.Second):
 		t.Fatal("Timeout waiting for client disconnection")

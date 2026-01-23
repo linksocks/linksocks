@@ -91,7 +91,7 @@ func TestForwardReconnect(t *testing.T) {
 
 	// Stop the server and wait for client to detect disconnection with timeout
 	select {
-	case <-client.Client.Disconnected:
+	case <-client.Client.DisconnectedChan():
 		// Disconnection detected
 	case <-time.After(5 * time.Second):
 		t.Fatal("Timeout waiting for client disconnection")
@@ -107,7 +107,7 @@ func TestForwardReconnect(t *testing.T) {
 
 	// Wait for client to reconnect with timeout
 	select {
-	case <-client.Client.Connected:
+	case <-client.Client.ConnectedChan():
 		// Connection established
 	case <-time.After(5 * time.Second):
 		t.Fatal("Timeout waiting for client connection")
