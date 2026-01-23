@@ -1512,7 +1512,8 @@ func (s *LinkSocksServer) runSocksServer(ctx context.Context, token string, sock
 			continue
 		}
 
-		go func() {
+		go func(conn net.Conn) {
+			defer conn.Close()
 			if err := s.handleSocksRequest(ctx, conn, conn.RemoteAddr(), token); err != nil && !errors.Is(err, context.Canceled) {
 				if errors.Is(err, io.EOF) {
 					s.log.Debug().Err(err).Msg("Error handling SOCKS request")
@@ -1520,7 +1521,7 @@ func (s *LinkSocksServer) runSocksServer(ctx context.Context, token string, sock
 					s.log.Warn().Err(err).Msg("Error handling SOCKS request")
 				}
 			}
-		}()
+		}(conn)
 	}
 }
 

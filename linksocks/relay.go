@@ -693,17 +693,33 @@ func (r *Relay) HandleUDPConnection(ctx context.Context, ws *WSConn, request Con
 func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn net.Conn, socksUsername string, socksPassword string) error {
 	buffer := make([]byte, 1024)
 
-	// Read version and auth methods
-	n, err := socksConn.Read(buffer)
-	if err != nil {
+	// Helper to send SOCKS5 failure response and close connection
+	sendFailureAndClose := func(replyCode byte) {
+		resp := []byte{0x05, replyCode, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+		socksConn.Write(resp)
+		socksConn.Close()
+	}
+
+	// Read version and number of auth methods (exactly 2 bytes)
+	if _, err := io.ReadFull(socksConn, buffer[:2]); err != nil {
 		return fmt.Errorf("read version error: %w", err)
 	}
-	if n < 2 || buffer[0] != 0x05 {
+	if buffer[0] != 0x05 {
+		sendFailureAndClose(0x01) // general SOCKS server failure
 		return fmt.Errorf("invalid socks version")
 	}
 
 	nmethods := int(buffer[1])
-	methods := buffer[2 : 2+nmethods]
+	if nmethods == 0 {
+		sendFailureAndClose(0x01)
+		return fmt.Errorf("no auth methods provided")
+	}
+
+	// Read auth methods (exactly nmethods bytes)
+	if _, err := io.ReadFull(socksConn, buffer[:nmethods]); err != nil {
+		return fmt.Errorf("read auth methods error: %w", err)
+	}
+	methods := buffer[:nmethods]
 
 	if socksUsername != "" && socksPassword != "" {
 		// Require username/password authentication
@@ -718,6 +734,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 			if _, err := socksConn.Write([]byte{0x05, 0xFF}); err != nil {
 				return fmt.Errorf("write auth method error: %w", err)
 			}
+			socksConn.Close()
 			return fmt.Errorf("no username/password auth method")
 		}
 
@@ -726,39 +743,36 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 			return fmt.Errorf("write auth response error: %w", err)
 		}
 
-		// Read auth version
-		_, err = socksConn.Read(buffer[:1])
-		if err != nil {
+		// Read auth version (exactly 1 byte)
+		if _, err := io.ReadFull(socksConn, buffer[:1]); err != nil {
 			return fmt.Errorf("read auth version error: %w", err)
 		}
 		if buffer[0] != 0x01 {
+			socksConn.Write([]byte{0x01, 0x01})
+			socksConn.Close()
 			return fmt.Errorf("invalid auth version")
 		}
 
-		// Read username length
-		_, err = socksConn.Read(buffer[:1])
-		if err != nil {
+		// Read username length (exactly 1 byte)
+		if _, err := io.ReadFull(socksConn, buffer[:1]); err != nil {
 			return fmt.Errorf("read username length error: %w", err)
 		}
 		ulen := int(buffer[0])
 
-		// Read username
-		_, err = socksConn.Read(buffer[:ulen])
-		if err != nil {
+		// Read username (exactly ulen bytes)
+		if _, err := io.ReadFull(socksConn, buffer[:ulen]); err != nil {
 			return fmt.Errorf("read username error: %w", err)
 		}
 		username := string(buffer[:ulen])
 
-		// Read password length
-		_, err = socksConn.Read(buffer[:1])
-		if err != nil {
+		// Read password length (exactly 1 byte)
+		if _, err := io.ReadFull(socksConn, buffer[:1]); err != nil {
 			return fmt.Errorf("read password length error: %w", err)
 		}
 		plen := int(buffer[0])
 
-		// Read password
-		_, err = socksConn.Read(buffer[:plen])
-		if err != nil {
+		// Read password (exactly plen bytes)
+		if _, err := io.ReadFull(socksConn, buffer[:plen]); err != nil {
 			return fmt.Errorf("read password error: %w", err)
 		}
 		password := string(buffer[:plen])
@@ -767,6 +781,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 			if _, err := socksConn.Write([]byte{0x01, 0x01}); err != nil {
 				return fmt.Errorf("write auth failure response error: %w", err)
 			}
+			socksConn.Close()
 			return fmt.Errorf("authentication failed")
 		}
 
@@ -781,51 +796,56 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 		}
 	}
 
-	// Read request
-	n, err = socksConn.Read(buffer)
-	if err != nil {
+	// Read request header (VER, CMD, RSV, ATYP = 4 bytes)
+	if _, err := io.ReadFull(socksConn, buffer[:4]); err != nil {
 		if err == io.EOF {
 			r.log.Debug().Msg("Client closed SOCKS connection")
 			return nil
 		}
-		return fmt.Errorf("read request error: %w", err)
+		return fmt.Errorf("read request header error: %w", err)
 	}
-	if n < 7 {
-		return fmt.Errorf("request too short")
+	if buffer[0] != 0x05 {
+		sendFailureAndClose(0x01)
+		return fmt.Errorf("invalid socks version in request")
 	}
 
 	cmd := buffer[1]
 	atyp := buffer[3]
 	var targetAddr string
 	var targetPort uint16
-	var offset int
 
-	// Parse address
+	// Parse address based on type
 	switch atyp {
-	case 0x01: // IPv4
-		if n < 10 {
-			return fmt.Errorf("request too short for IPv4")
+	case 0x01: // IPv4 (4 bytes addr + 2 bytes port)
+		if _, err := io.ReadFull(socksConn, buffer[:6]); err != nil {
+			sendFailureAndClose(0x01)
+			return fmt.Errorf("read IPv4 address error: %w", err)
 		}
-		targetAddr = net.IP(buffer[4:8]).String()
-		offset = 8
-	case 0x03: // Domain
-		domainLen := int(buffer[4])
-		if n < 5+domainLen+2 {
-			return fmt.Errorf("request too short for domain")
+		targetAddr = net.IP(buffer[:4]).String()
+		targetPort = binary.BigEndian.Uint16(buffer[4:6])
+	case 0x03: // Domain (1 byte len + domain + 2 bytes port)
+		if _, err := io.ReadFull(socksConn, buffer[:1]); err != nil {
+			sendFailureAndClose(0x01)
+			return fmt.Errorf("read domain length error: %w", err)
 		}
-		targetAddr = string(buffer[5 : 5+domainLen])
-		offset = 5 + domainLen
-	case 0x04: // IPv6
-		if n < 22 {
-			return fmt.Errorf("request too short for IPv6")
+		domainLen := int(buffer[0])
+		if _, err := io.ReadFull(socksConn, buffer[:domainLen+2]); err != nil {
+			sendFailureAndClose(0x01)
+			return fmt.Errorf("read domain error: %w", err)
 		}
-		targetAddr = net.IP(buffer[4:20]).String()
-		offset = 20
+		targetAddr = string(buffer[:domainLen])
+		targetPort = binary.BigEndian.Uint16(buffer[domainLen : domainLen+2])
+	case 0x04: // IPv6 (16 bytes addr + 2 bytes port)
+		if _, err := io.ReadFull(socksConn, buffer[:18]); err != nil {
+			sendFailureAndClose(0x01)
+			return fmt.Errorf("read IPv6 address error: %w", err)
+		}
+		targetAddr = net.IP(buffer[:16]).String()
+		targetPort = binary.BigEndian.Uint16(buffer[16:18])
 	default:
+		sendFailureAndClose(0x08) // Address type not supported
 		return fmt.Errorf("unsupported address type: %d", atyp)
 	}
-
-	targetPort = binary.BigEndian.Uint16(buffer[offset : offset+2])
 
 	// Generate unique client ID and connect ID
 	channelID := uuid.New()
