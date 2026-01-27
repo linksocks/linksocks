@@ -131,10 +131,77 @@ jobs:
         with:
           limit-access-to-actor: true
 
+  build_linux_wheels_arm64:
+    if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.build_linux_wheels) }}
+    name: Linux wheels (arm64)
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Clean previous build artifacts
+        working-directory: _bindings/python
+        run: rm -rf linksockslib build dist || true
+
+      - name: Build + repair inside manylinux container
+        env:
+          PY_MAJOR_MINOR: ${{ matrix.python }}
+        run: |
+          set -euxo pipefail
+          # Compute CPython tag (e.g., 3.10 -> cp310-cp310)
+          PYNODOT="${PY_MAJOR_MINOR/.}"
+          CPY="cp${PYNODOT}-cp${PYNODOT}"
+          echo "Using CPython tag: ${CPY}"
+
+          IMAGE="quay.io/pypa/manylinux2014_aarch64"
+          PLAT="manylinux2014_aarch64"
+          echo "Image=${IMAGE}, PLAT=${PLAT}"
+
+          # Run build + auditwheel inside container (arm64 via QEMU on x64 runners)
+          docker run --rm \
+            --platform linux/arm64 \
+            -e PLAT="${PLAT}" \
+            -v "$PWD":/project \
+            -w /project \
+            "${IMAGE}" bash -lc "\
+              set -euxo pipefail; \
+              PY=/opt/python/${CPY}/bin/python; \
+              echo Using Python: \$PY; \$PY --version; \
+              \$PY -m pip install -U pip build auditwheel; \
+              cd _bindings/python; \
+              \$PY -m build --wheel --outdir /project/wheelhouse_raw/; \
+              mkdir -p /project/wheelhouse_manylinux/; \
+              auditwheel show /project/wheelhouse_raw/*.whl || true; \
+              auditwheel repair --plat \"${PLAT}\" /project/wheelhouse_raw/*.whl -w /project/wheelhouse_manylinux/"
+
+          echo "=== Wheels after repair ==="
+          ls -la wheelhouse_manylinux || true
+
+      - name: Upload Artifacts (per Python)
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-arm64-py${{ matrix.python }}
+          path: ./wheelhouse_manylinux/*.whl
+
+      - name: Start tmate session (manual, on failure)
+        if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.enable_tmate }}
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+
   package_linux_wheels:
     if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.build_linux_wheels) }}
     name: Package Linux wheels per arch
-    needs: build_linux_wheels
+    needs:
+      - build_linux_wheels
+      - build_linux_wheels_arm64
     runs-on: ubuntu-latest
     steps:
       - name: Download x64 wheel artifacts
@@ -144,12 +211,26 @@ jobs:
           merge-multiple: true
           path: ./pack/wheels-linux-x64
 
+      - name: Download arm64 wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-linux-arm64-*
+          merge-multiple: true
+          path: ./pack/wheels-linux-arm64
+
       - name: Upload combined x64 wheels
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-x64
           path: ./pack/wheels-linux-x64/**
+
+      - name: Upload combined arm64 wheels
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-arm64
+          path: ./pack/wheels-linux-arm64/**
 
       - name: Start tmate session (manual, on failure)
         if: ${{ failure() && github.event_name == 'workflow_dispatch' && inputs.enable_tmate }}
