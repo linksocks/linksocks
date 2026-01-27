@@ -31,15 +31,22 @@ jobs:
       fail-fast: false
       matrix:
         channel:
+          - system
           - brew
           - conda
           - python-org
-          - pypi
-          - portable
+          - uv
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Python (system python3)
+        if: matrix.channel == 'system'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "PYTHON_BIN=$(command -v python3)" >> "$GITHUB_ENV"
 
       - name: Setup Python (python.org via actions/setup-python)
         if: matrix.channel == 'python-org'
@@ -103,26 +110,14 @@ jobs:
           test -x "$PY_BIN"
           echo "PYTHON_BIN=$PY_BIN" >> "$GITHUB_ENV"
 
-      - name: Setup uv (portable)
-        if: matrix.channel == 'portable'
+      - name: Setup uv
+        if: matrix.channel == 'uv'
         uses: astral-sh/setup-uv@v3
         with:
           version: "latest"
 
-      - name: Setup uv (via PyPI)
-        if: matrix.channel == 'pypi'
-        shell: bash
-        run: |
-          set -euxo pipefail
-          command -v python3
-          python3 --version
-          python3 -m pip --version
-          python3 -m pip install -U pip
-          python3 -m pip install -U uv
-          uv --version
-
       - name: Create venv (uv)
-        if: matrix.channel == 'portable' || matrix.channel == 'pypi'
+        if: matrix.channel == 'uv'
         shell: bash
         run: |
           set -euxo pipefail
@@ -150,6 +145,7 @@ jobs:
           "$PYTHON_BIN" -m pip --version || true
 
       - name: Ensure pip works
+        if: matrix.channel != 'system'
         shell: bash
         run: |
           set -euxo pipefail
@@ -157,7 +153,7 @@ jobs:
           "$PYTHON_BIN" -m pip install -U pip setuptools wheel
 
       - name: Install linksocks (PyPI)
-        if: inputs.install_source == 'pypi'
+        if: inputs.install_source == 'pypi' && matrix.channel != 'system'
         shell: bash
         run: |
           set -euxo pipefail
@@ -168,7 +164,7 @@ jobs:
           fi
 
       - name: Install linksocks (editable from repo)
-        if: inputs.install_source == 'editable'
+        if: inputs.install_source == 'editable' && matrix.channel != 'system'
         shell: bash
         run: |
           set -euxo pipefail
@@ -189,6 +185,7 @@ jobs:
           PY
 
       - name: Smoke test (linksocks import + version)
+        if: matrix.channel != 'system'
         shell: bash
         run: |
           set -euxo pipefail
@@ -200,6 +197,7 @@ jobs:
           PY
 
       - name: Smoke test (linksocks CLI)
+        if: matrix.channel != 'system'
         shell: bash
         run: |
           set -euxo pipefail
