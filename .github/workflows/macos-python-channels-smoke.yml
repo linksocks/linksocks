@@ -106,7 +106,12 @@ jobs:
           else
             conda create -y -n py python
           fi
-          PY_BIN="$(conda run -n py python -c 'import sys; print(sys.executable)' | tail -n 1)"
+          CONDA_BASE="$(conda info --base)"
+          ENV_PREFIX="${CONDA_BASE}/envs/py"
+          if [[ ! -d "$ENV_PREFIX" ]]; then
+            ENV_PREFIX="$(conda env list | awk '$1=="py" {print $NF; exit}')"
+          fi
+          PY_BIN="${ENV_PREFIX}/bin/python"
           test -x "$PY_BIN"
           echo "PYTHON_BIN=$PY_BIN" >> "$GITHUB_ENV"
 
