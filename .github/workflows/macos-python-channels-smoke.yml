@@ -1,0 +1,206 @@
+name: macOS Python Channels Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      python_version:
+        description: "Python version (e.g. 3.12, 3.12.1). Empty means channel default/latest."
+        required: false
+        type: string
+        default: ""
+      linksocks_version:
+        description: "linksocks version to install from PyPI (e.g. 1.7.12). Empty means latest."
+        required: false
+        type: string
+        default: ""
+      install_source:
+        description: "Where to install linksocks from: pypi or editable (repo)."
+        required: false
+        type: choice
+        default: pypi
+        options:
+          - pypi
+          - editable
+
+jobs:
+  smoke:
+    name: ${{ matrix.channel }} (py=${{ inputs.python_version || 'default' }})
+    runs-on: macos-14
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        channel:
+          - brew
+          - conda
+          - python-org
+          - pypi
+          - portable
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python (python.org via actions/setup-python)
+        if: matrix.channel == 'python-org'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version || '3.x' }}
+
+      - name: Setup Python (Homebrew)
+        if: matrix.channel == 'brew'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          brew update
+          PY_VER="${{ inputs.python_version }}"
+          if [[ -n "$PY_VER" ]]; then
+            IFS='.' read -r PY_MAJ PY_MIN PY_PATCH <<<"$PY_VER"
+            if [[ -n "${PY_MAJ:-}" && -n "${PY_MIN:-}" ]]; then
+              MM="${PY_MAJ}.${PY_MIN}"
+              brew install "python@${MM}"
+              PY_BIN="$(brew --prefix "python@${MM}")/bin/python3"
+            else
+              brew install python
+              PY_BIN="$(brew --prefix python)/bin/python3"
+            fi
+          else
+            brew install python
+            PY_BIN="$(brew --prefix python)/bin/python3"
+          fi
+          test -x "$PY_BIN"
+          echo "PYTHON_BIN=$PY_BIN" >> "$GITHUB_ENV"
+
+      - name: Create venv (system python)
+        if: matrix.channel == 'brew'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          "$PYTHON_BIN" -m venv .venv
+          echo "PYTHON_BIN=$PWD/.venv/bin/python" >> "$GITHUB_ENV"
+
+      - name: Setup Python (Conda)
+        if: matrix.channel == 'conda'
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+          miniconda-version: "latest"
+          auto-activate-base: false
+          channels: conda-forge
+
+      - name: Create env (Conda)
+        if: matrix.channel == 'conda'
+        shell: bash -l {0}
+        run: |
+          set -euxo pipefail
+          PY_VER="${{ inputs.python_version }}"
+          if [[ -n "$PY_VER" ]]; then
+            conda create -y -n py "python=$PY_VER"
+          else
+            conda create -y -n py python
+          fi
+          PY_BIN="$(conda run -n py python -c 'import sys; print(sys.executable)' | tail -n 1)"
+          test -x "$PY_BIN"
+          echo "PYTHON_BIN=$PY_BIN" >> "$GITHUB_ENV"
+
+      - name: Setup uv (portable)
+        if: matrix.channel == 'portable'
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Setup uv (via PyPI)
+        if: matrix.channel == 'pypi'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          command -v python3
+          python3 --version
+          python3 -m pip --version
+          python3 -m pip install -U pip
+          python3 -m pip install -U uv
+          uv --version
+
+      - name: Create venv (uv)
+        if: matrix.channel == 'portable' || matrix.channel == 'pypi'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [[ -n "${{ inputs.python_version }}" ]]; then
+            uv python install "${{ inputs.python_version }}"
+            uv venv --python "${{ inputs.python_version }}" .venv
+          else
+            uv python install
+            uv venv .venv
+          fi
+          echo "PYTHON_BIN=$PWD/.venv/bin/python" >> "$GITHUB_ENV"
+
+      - name: Resolve Python executable (python-org)
+        if: matrix.channel == 'python-org'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "PYTHON_BIN=$(command -v python)" >> "$GITHUB_ENV"
+
+      - name: Show Python & pip
+        shell: bash
+        run: |
+          set -euxo pipefail
+          "$PYTHON_BIN" --version
+          "$PYTHON_BIN" -m pip --version || true
+
+      - name: Ensure pip works
+        shell: bash
+        run: |
+          set -euxo pipefail
+          "$PYTHON_BIN" -m ensurepip --upgrade || true
+          "$PYTHON_BIN" -m pip install -U pip setuptools wheel
+
+      - name: Install linksocks (PyPI)
+        if: inputs.install_source == 'pypi'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [[ -n "${{ inputs.linksocks_version }}" ]]; then
+            "$PYTHON_BIN" -m pip install "linksocks==${{ inputs.linksocks_version }}"
+          else
+            "$PYTHON_BIN" -m pip install linksocks
+          fi
+
+      - name: Install linksocks (editable from repo)
+        if: inputs.install_source == 'editable'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          "$PYTHON_BIN" -m pip install -e _bindings/python
+
+      - name: Smoke test (simple script)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          "$PYTHON_BIN" - <<'PY'
+          import platform
+          import sys
+
+          print("executable=", sys.executable)
+          print("version=", sys.version.replace("\n", " "))
+          print("platform=", platform.platform())
+          print("ok")
+          PY
+
+      - name: Smoke test (linksocks import + version)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          "$PYTHON_BIN" - <<'PY'
+          import linksocks
+
+          print("linksocks_version=", getattr(linksocks, "__version__", "unknown"))
+          print("ok")
+          PY
+
+      - name: Smoke test (linksocks CLI)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          "$PYTHON_BIN" -m linksocks._cli version
