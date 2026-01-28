@@ -803,6 +803,7 @@ install_requires = [
     "click>=8.0",
     "loguru",
     "rich",
+    "cffi>=1.15",
 ]
 
 # Development dependencies
