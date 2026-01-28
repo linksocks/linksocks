@@ -50,6 +50,11 @@ clean:
 python-cffi-build:
 	@mkdir -p $(PYTHON_CFFI_DIR)
 	CGO_ENABLED=1 GOFLAGS="${GOFLAGS} -buildvcs=false" go build -buildmode=c-shared -o $(PYTHON_CFFI_LIB) $(PYTHON_CFFI_GO_PKG)
+	@rm -f $(PYTHON_OUTPUT_DIR)/linksockslib/_linksockslib*.so \
+		$(PYTHON_OUTPUT_DIR)/linksockslib/_linksockslib*.dylib \
+		$(PYTHON_OUTPUT_DIR)/linksockslib/_linksockslib*.dll \
+		$(PYTHON_OUTPUT_DIR)/linksockslib/_linksockslib*.pyd \
+		$(PYTHON_OUTPUT_DIR)/linksockslib/_linksockslib*.h 2>/dev/null || true
 
 python-cffi-clean:
 	rm -f $(PYTHON_CFFI_DIR)/liblinksocks_ffi.so $(PYTHON_CFFI_DIR)/liblinksocks_ffi.dylib $(PYTHON_CFFI_DIR)/linksocks_ffi.dll

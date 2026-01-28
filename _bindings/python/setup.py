@@ -634,6 +634,29 @@ def ensure_python_bindings():
     linksocks_lib_dir = here / "linksockslib"
     local_go_src_dir = here / "linksocks_go"
     local_go_mod = here / "go.mod"
+
+    def _cleanup_gopy_artifacts() -> None:
+        if not linksocks_lib_dir.exists():
+            return
+        for p in linksocks_lib_dir.iterdir():
+            if not p.is_file():
+                continue
+            if not p.name.startswith("_linksockslib"):
+                continue
+            try:
+                p.unlink()
+            except Exception:
+                pass
+
+    def _cleanup_ffi_artifacts() -> None:
+        ffi_dir_local = here / "linksocks_ffi"
+        if not ffi_dir_local.exists():
+            return
+        for name in ["liblinksocks_ffi.so", "liblinksocks_ffi.dylib", "linksocks_ffi.dll", "liblinksocks_ffi.h"]:
+            try:
+                (ffi_dir_local / name).unlink(missing_ok=True)
+            except Exception:
+                pass
     
     # Default to the C-ABI FFI shared library (not tied to Python ABI)
     # Set LINKSOCKS_BUILD_GOPY=1 to build gopy-based CPython extension instead.
@@ -644,6 +667,11 @@ def ensure_python_bindings():
         ffi_dir / "liblinksocks_ffi.dylib",
         ffi_dir / "linksocks_ffi.dll",
     ]
+
+    if build_gopy:
+        _cleanup_ffi_artifacts()
+    else:
+        _cleanup_gopy_artifacts()
 
     if build_gopy:
         # If the user explicitly requested gopy, do not short-circuit just because
@@ -709,6 +737,7 @@ def ensure_python_bindings():
                 cwd=here,
                 env=env,
             )
+            _cleanup_gopy_artifacts()
             print("Built linksocks_ffi shared library")
             return
         except Exception as e:
@@ -754,6 +783,7 @@ def ensure_python_bindings():
         
         if not is_linksockslib_built(linksocks_lib_dir):
             raise RuntimeError("Failed to build Python bindings (artifacts missing)")
+        _cleanup_ffi_artifacts()
     else:
         # Ensure we only ship binaries compatible with this interpreter
         prune_foreign_binaries(linksocks_lib_dir)
