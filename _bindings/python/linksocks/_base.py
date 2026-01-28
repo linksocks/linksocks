@@ -1,5 +1,4 @@
-"""
-Base classes and utilities for linksocks.
+"""Base classes and utilities for linksocks.
 
 This module contains shared functionality used by Server and Client classes.
 """
@@ -8,15 +7,27 @@ from __future__ import annotations
 
 import json
 import logging
-import asyncio
-from dataclasses import dataclass
 import threading
 import time
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Callable, Dict, Iterable, Optional, Tuple, Union, List
+from typing import Any, Callable, Dict, List, Optional, Union
 
-# Underlying Go bindings module (generated)
-from linksockslib import linksocks # type: ignore
+_BACKEND: str
+
+try:
+    from linksocks_ffi import parse_duration as _ffi_parse_duration
+    from linksocks_ffi import seconds as _ffi_seconds
+    from linksocks_ffi import cancel_log_waiters as _ffi_cancel_log_waiters
+    from linksocks_ffi import wait_for_log_entries as _ffi_wait_for_log_entries
+
+    _BACKEND = "ffi"
+except Exception:
+    _ffi_parse_duration = None
+    _ffi_seconds = None
+    _BACKEND = "gopy"
+
+    from linksockslib import linksocks as _gopy_linksocks  # type: ignore
 
 _logger = logging.getLogger(__name__)
 
@@ -54,15 +65,338 @@ def _to_duration(value: Optional[DurationLike]) -> Any:
         return 0
     if isinstance(value, timedelta):
         seconds = value.total_seconds()
-        return int(seconds * linksocks.Second())
+        if _BACKEND == "ffi":
+            return int(seconds * int(_ffi_seconds()))  # type: ignore[misc]
+        return int(seconds * _gopy_linksocks.Second())
     if isinstance(value, (int, float)):
-        return int(value * linksocks.Second())
+        if _BACKEND == "ffi":
+            return int(value * int(_ffi_seconds()))  # type: ignore[misc]
+        return int(value * _gopy_linksocks.Second())
     if isinstance(value, str):
         try:
-            return linksocks.ParseDuration(value)
+            if _BACKEND == "ffi":
+                return int(_ffi_parse_duration(value))  # type: ignore[misc]
+            return int(_gopy_linksocks.ParseDuration(value))
         except Exception as exc:
             raise ValueError(f"Invalid duration string: {value}") from exc
     raise TypeError(f"Unsupported duration type: {type(value)!r}")
+
+
+class _NoopLogger:
+    def __call__(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+class _DummyManagedLogger:
+    def __init__(self, py_logger: logging.Logger, logger_id: str):
+        self.py_logger = py_logger
+        self.logger_id = logger_id
+        self.go_logger = _NoopLogger()
+
+    def cleanup(self) -> None:
+        return None
+
+
+def _json_key(snake: str) -> str:
+    return snake
+
+
+class _FFIReverseTokenOptions:
+    def __init__(self) -> None:
+        self.Token = ""
+        self.Port: Optional[int] = None
+        self.Username = ""
+        self.Password = ""
+        self.AllowManageConnector: Optional[bool] = None
+
+
+class _FFIServerOption:
+    def __init__(self) -> None:
+        self._cfg: Dict[str, Any] = {}
+
+    def WithLogger(self, logger: Any) -> None:
+        logger_id: Optional[str] = None
+        if isinstance(logger, str):
+            logger_id = logger
+        else:
+            logger_id = getattr(logger, "logger_id", None)
+        if logger_id:
+            self._cfg[_json_key("logger_id")] = str(logger_id)
+
+    def WithWSHost(self, v: str) -> None:
+        self._cfg[_json_key("ws_host")] = v
+
+    def WithWSPort(self, v: int) -> None:
+        self._cfg[_json_key("ws_port")] = int(v)
+
+    def WithSocksHost(self, v: str) -> None:
+        self._cfg[_json_key("socks_host")] = v
+
+    def WithSocksWaitClient(self, v: bool) -> None:
+        self._cfg[_json_key("socks_wait_client")] = bool(v)
+
+    def WithPortPool(self, _v: Any) -> None:
+        raise NotImplementedError("port_pool is not supported by the cffi backend")
+
+    def WithBufferSize(self, v: int) -> None:
+        self._cfg[_json_key("buffer_size")] = int(v)
+
+    def WithAPI(self, v: str) -> None:
+        self._cfg[_json_key("api_key")] = v
+
+    def WithChannelTimeout(self, v: int) -> None:
+        self._cfg[_json_key("channel_timeout_ns")] = int(v)
+
+    def WithConnectTimeout(self, v: int) -> None:
+        self._cfg[_json_key("connect_timeout_ns")] = int(v)
+
+    def WithFastOpen(self, v: bool) -> None:
+        self._cfg[_json_key("fast_open")] = bool(v)
+
+    def WithUpstreamProxy(self, v: str) -> None:
+        self._cfg[_json_key("upstream_proxy")] = v
+
+    def WithUpstreamAuth(self, username: str, password: str) -> None:
+        self._cfg[_json_key("upstream_username")] = username
+        self._cfg[_json_key("upstream_password")] = password
+
+    def to_cfg(self) -> Dict[str, Any]:
+        return dict(self._cfg)
+
+
+class _FFIClientOption:
+    def __init__(self) -> None:
+        self._cfg: Dict[str, Any] = {}
+
+    def WithLogger(self, logger: Any) -> None:
+        logger_id: Optional[str] = None
+        if isinstance(logger, str):
+            logger_id = logger
+        else:
+            logger_id = getattr(logger, "logger_id", None)
+        if logger_id:
+            self._cfg[_json_key("logger_id")] = str(logger_id)
+
+    def WithWSURL(self, v: str) -> None:
+        self._cfg[_json_key("ws_url")] = v
+
+    def WithReverse(self, v: bool) -> None:
+        self._cfg[_json_key("reverse")] = bool(v)
+
+    def WithSocksHost(self, v: str) -> None:
+        self._cfg[_json_key("socks_host")] = v
+
+    def WithSocksPort(self, v: int) -> None:
+        self._cfg[_json_key("socks_port")] = int(v)
+
+    def WithSocksUsername(self, v: str) -> None:
+        self._cfg[_json_key("socks_username")] = v
+
+    def WithSocksPassword(self, v: str) -> None:
+        self._cfg[_json_key("socks_password")] = v
+
+    def WithSocksWaitServer(self, v: bool) -> None:
+        self._cfg[_json_key("socks_wait_server")] = bool(v)
+
+    def WithReconnect(self, v: bool) -> None:
+        self._cfg[_json_key("reconnect")] = bool(v)
+
+    def WithReconnectDelay(self, v: int) -> None:
+        self._cfg[_json_key("reconnect_delay_ns")] = int(v)
+
+    def WithBufferSize(self, v: int) -> None:
+        self._cfg[_json_key("buffer_size")] = int(v)
+
+    def WithChannelTimeout(self, v: int) -> None:
+        self._cfg[_json_key("channel_timeout_ns")] = int(v)
+
+    def WithConnectTimeout(self, v: int) -> None:
+        self._cfg[_json_key("connect_timeout_ns")] = int(v)
+
+    def WithThreads(self, v: int) -> None:
+        self._cfg[_json_key("threads")] = int(v)
+
+    def WithFastOpen(self, v: bool) -> None:
+        self._cfg[_json_key("fast_open")] = bool(v)
+
+    def WithUpstreamProxy(self, v: str) -> None:
+        self._cfg[_json_key("upstream_proxy")] = v
+
+    def WithUpstreamAuth(self, username: str, password: str) -> None:
+        self._cfg[_json_key("upstream_username")] = username
+        self._cfg[_json_key("upstream_password")] = password
+
+    def WithNoEnvProxy(self, v: bool) -> None:
+        self._cfg[_json_key("no_env_proxy")] = bool(v)
+
+    def to_cfg(self) -> Dict[str, Any]:
+        return dict(self._cfg)
+
+
+class _FFIRawServer:
+    def __init__(self, cfg: Dict[str, Any]):
+        from linksocks_ffi import Server as FFIServer
+
+        self._srv = FFIServer(cfg)
+
+    def WaitReady(self, *, ctx: Any = None, timeout: int = 0) -> None:
+        self._srv.wait_ready(int(timeout))
+
+    def Close(self) -> None:
+        self._srv.close()
+
+    def AddForwardToken(self, token: str = "") -> str:
+        return self._srv.add_forward_token(token or "")
+
+    def AddReverseToken(self, opts: Any) -> Any:
+        payload: Dict[str, Any] = {}
+        token = getattr(opts, "Token", "")
+        if token:
+            payload["token"] = token
+        port = getattr(opts, "Port", None)
+        if port is not None:
+            payload["port"] = int(port)
+        username = getattr(opts, "Username", "")
+        if username:
+            payload["username"] = username
+        password = getattr(opts, "Password", "")
+        if password:
+            payload["password"] = password
+        allow = getattr(opts, "AllowManageConnector", None)
+        if allow is not None:
+            payload["allow_manage_connector"] = bool(allow)
+        return self._srv.add_reverse_token(payload)
+
+    def RemoveToken(self, token: str) -> bool:
+        return bool(self._srv.remove_token(token))
+
+    def AddConnectorToken(self, connector: str, reverse_token: str) -> str:
+        return self._srv.add_connector_token(connector, reverse_token)
+
+
+class _FFIRawClient:
+    def __init__(self, token: str, cfg: Dict[str, Any]):
+        from linksocks_ffi import Client as FFIClient
+
+        self.SocksPort = cfg.get("socks_port")
+        self._cli = FFIClient(token, cfg)
+
+    def WaitReady(self, *, ctx: Any = None, timeout: int = 0) -> None:
+        self._cli.wait_ready(int(timeout))
+
+    def Close(self) -> None:
+        self._cli.close()
+
+    def AddConnector(self, token: str) -> str:
+        return self._cli.add_connector(token)
+
+
+class _FFIContextWithCancel:
+    def __init__(self) -> None:
+        self._cancelled = False
+
+    def Context(self) -> None:
+        return None
+
+    def Cancel(self) -> None:
+        self._cancelled = True
+
+
+class _FFIBackend:
+    def DefaultServerOption(self) -> Any:
+        return _FFIServerOption()
+
+    def DefaultClientOption(self) -> Any:
+        return _FFIClientOption()
+
+    def DefaultReverseTokenOptions(self) -> Any:
+        return _FFIReverseTokenOptions()
+
+    def NewLinkSocksServer(self, opt: Any) -> Any:
+        return _FFIRawServer(opt.to_cfg())
+
+    def NewLinkSocksClient(self, token: str, opt: Any) -> Any:
+        return _FFIRawClient(token, opt.to_cfg())
+
+    def NewContextWithCancel(self) -> Any:
+        return _FFIContextWithCancel()
+
+    def NewLoggerWithID(self, _logger_id: str) -> Any:
+        return str(_logger_id)
+
+    def NewLogger(self, _cb: Any) -> Any:
+        return f"logger_{id(_cb)}"
+
+    def WaitForLogEntries(self, ms: int) -> list[Any]:
+        try:
+            entries = _ffi_wait_for_log_entries(int(ms))  # type: ignore[misc]
+            if not entries:
+                return []
+            out: List[Any] = []
+            for e in entries:
+                if isinstance(e, dict):
+                    out.append({
+                        "LoggerID": e.get("LoggerID") or e.get("logger_id") or "",
+                        "Message": e.get("Message") or e.get("message") or "",
+                        "Time": e.get("Time") or e.get("time") or 0,
+                    })
+            return out
+        except Exception:
+            time.sleep(max(int(ms), 1) / 1000.0)
+            return []
+
+    def CancelLogWaiters(self) -> None:
+        try:
+            _ffi_cancel_log_waiters()  # type: ignore[misc]
+        except Exception:
+            return None
+
+    def Second(self) -> int:
+        return int(_ffi_seconds())  # type: ignore[misc]
+
+    def ParseDuration(self, s: str) -> int:
+        return int(_ffi_parse_duration(s))  # type: ignore[misc]
+
+
+class _GopyBackend:
+    def DefaultServerOption(self) -> Any:
+        return _gopy_linksocks.DefaultServerOption()
+
+    def DefaultClientOption(self) -> Any:
+        return _gopy_linksocks.DefaultClientOption()
+
+    def DefaultReverseTokenOptions(self) -> Any:
+        return _gopy_linksocks.DefaultReverseTokenOptions()
+
+    def NewLinkSocksServer(self, opt: Any) -> Any:
+        return _gopy_linksocks.NewLinkSocksServer(opt)
+
+    def NewLinkSocksClient(self, token: str, opt: Any) -> Any:
+        return _gopy_linksocks.NewLinkSocksClient(token, opt)
+
+    def NewContextWithCancel(self) -> Any:
+        return _gopy_linksocks.NewContextWithCancel()
+
+    def NewLoggerWithID(self, logger_id: str) -> Any:
+        return _gopy_linksocks.NewLoggerWithID(logger_id)
+
+    def NewLogger(self, cb: Any) -> Any:
+        return _gopy_linksocks.NewLogger(cb)
+
+    def WaitForLogEntries(self, ms: int) -> list[Any]:
+        return _gopy_linksocks.WaitForLogEntries(ms)
+
+    def CancelLogWaiters(self) -> None:
+        return _gopy_linksocks.CancelLogWaiters()
+
+    def Second(self) -> int:
+        return int(_gopy_linksocks.Second())
+
+    def ParseDuration(self, s: str) -> int:
+        return int(_gopy_linksocks.ParseDuration(s))
+
+
+backend = _FFIBackend() if _BACKEND == "ffi" else _GopyBackend()
 
 
 # Shared Go->Python log dispatcher
@@ -114,12 +448,7 @@ def _start_log_listener() -> None:
     def _run() -> None:
         # Drain loop: wait for entries with timeout to allow graceful shutdown
         while _listener_active:
-            try:
-                entries = linksocks.WaitForLogEntries(2000)  # wait up to 2s
-            except Exception:
-                # Backoff on unexpected errors to avoid busy loop
-                time.sleep(0.2)
-                continue
+            entries = backend.WaitForLogEntries(2000)
 
             if not entries:
                 continue
@@ -153,8 +482,7 @@ def _stop_log_listener() -> None:
     global _listener_active
     _listener_active = False
     try:
-        # Unblock WaitForLogEntries callers
-        linksocks.CancelLogWaiters()
+        backend.CancelLogWaiters()
     except Exception:
         pass
 
@@ -171,17 +499,17 @@ class BufferZerologLogger:
         # Prefer Go logger with explicit ID so we can map entries back
         try:
             # Newer binding that tags entries with our provided ID
-            self.go_logger = linksocks.NewLoggerWithID(self.logger_id)
+            self.go_logger = backend.NewLoggerWithID(self.logger_id)
         except Exception:
             # Fallback to older API; if present, still try callback path
             try:
                 def log_callback(line: str) -> None:
                     _emit_go_log(py_logger, line)
 
-                self.go_logger = linksocks.NewLogger(log_callback)
+                self.go_logger = backend.NewLogger(log_callback)
             except Exception:
                 # As a last resort, create a default Go logger
-                self.go_logger = linksocks.NewLoggerWithID(self.logger_id)  # may still raise; surface to caller
+                self.go_logger = backend.NewLoggerWithID(self.logger_id)  # may still raise; surface to caller
         _logger_registry[logger_id] = py_logger
     
     def cleanup(self):

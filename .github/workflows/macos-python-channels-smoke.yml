@@ -201,6 +201,17 @@ jobs:
           print("ok")
           PY
 
+      - name: Smoke test (linksocks_ffi load)
+        if: matrix.channel != 'system'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          "$PYTHON_BIN" - <<'PY'
+          import linksocks_ffi._lib as L
+
+          print("ffi_ok", L.version())
+          PY
+
       - name: Smoke test (linksocks CLI)
         if: matrix.channel != 'system'
         shell: bash

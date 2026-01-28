@@ -11,9 +11,6 @@ import asyncio
 import logging
 from typing import Any, Optional
 
-# Underlying Go bindings module (generated)
-from linksockslib import linksocks  # type: ignore
-
 from ._base import (
     _SnakePassthrough,
     _to_duration,
@@ -21,6 +18,7 @@ from ._base import (
     BufferZerologLogger,
     ReverseTokenResult,
     DurationLike,
+    backend,
 )
 
 
@@ -73,7 +71,7 @@ class Server(_SnakePassthrough):
             upstream_username: Username for upstream proxy authentication
             upstream_password: Password for upstream proxy authentication
         """
-        opt = linksocks.DefaultServerOption()
+        opt = backend.DefaultServerOption()
         if logger is None:
             logger = _logger
         # Use buffer-based logger system
@@ -104,7 +102,7 @@ class Server(_SnakePassthrough):
         if upstream_username or upstream_password:
             opt.WithUpstreamAuth(upstream_username or "", upstream_password or "")
 
-        self._raw = linksocks.NewLinkSocksServer(opt)
+        self._raw = backend.NewLinkSocksServer(opt)
         self._ctx = None
 
     @property
@@ -155,7 +153,7 @@ class Server(_SnakePassthrough):
         Returns:
             Result containing the token and assigned port
         """
-        opts = linksocks.DefaultReverseTokenOptions()
+        opts = backend.DefaultReverseTokenOptions()
         if token:
             opts.Token = token
         if port is not None:
@@ -167,7 +165,7 @@ class Server(_SnakePassthrough):
         if allow_manage_connector is not None:
             opts.AllowManageConnector = bool(allow_manage_connector)
         result = self._raw.AddReverseToken(opts)
-        return ReverseTokenResult(token=result.Token, port=result.Port)
+        return ReverseTokenResult(token=result.token, port=result.port)
 
     async def async_add_reverse_token(
         self,
@@ -190,7 +188,7 @@ class Server(_SnakePassthrough):
         Returns:
             Result containing the token and assigned port
         """
-        opts = linksocks.DefaultReverseTokenOptions()
+        opts = backend.DefaultReverseTokenOptions()
         if token:
             opts.Token = token
         if port is not None:
@@ -202,7 +200,7 @@ class Server(_SnakePassthrough):
         if allow_manage_connector is not None:
             opts.AllowManageConnector = bool(allow_manage_connector)
         result = await asyncio.to_thread(self._raw.AddReverseToken, opts)
-        return ReverseTokenResult(token=result.Token, port=result.Port)
+        return ReverseTokenResult(token=result.token, port=result.port)
 
     def add_connector_token(self, connector_token: Optional[str], reverse_token: str) -> str:
         """Add a connector token for reverse proxy.
@@ -257,7 +255,7 @@ class Server(_SnakePassthrough):
             timeout: Maximum time to wait, no timeout if None
         """
         if not self._ctx:
-            self._ctx = linksocks.NewContextWithCancel()
+            self._ctx = backend.NewContextWithCancel()
         timeout = _to_duration(timeout) if timeout is not None else 0
         self._raw.WaitReady(ctx=self._ctx.Context(), timeout=timeout)
 
@@ -268,7 +266,7 @@ class Server(_SnakePassthrough):
             timeout: Maximum time to wait, no timeout if None
         """
         if not self._ctx:
-            self._ctx = linksocks.NewContextWithCancel()
+            self._ctx = backend.NewContextWithCancel()
         timeout = _to_duration(timeout) if timeout is not None else 0
         try:
             return await asyncio.to_thread(self._raw.WaitReady, ctx=self._ctx.Context(), timeout=timeout)

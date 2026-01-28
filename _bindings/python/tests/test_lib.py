@@ -6,6 +6,15 @@ import pytest
 
 from .utils import *
 
+
+try:
+    from linksockslib import linksocks as _linksocks_gopy  # noqa: F401
+except Exception:
+    pytest.skip(
+        "linksockslib (gopy backend) is not available; skip gopy-only tests",
+        allow_module_level=True,
+    )
+
 test_logger = logging.getLogger(__name__)
 
 start_time_limit = 60

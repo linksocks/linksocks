@@ -43,6 +43,7 @@ install_requires = [
     "click>=8.0",
     "loguru",
     "rich",
+    "cffi>=1.15",
 ]
 
 # Development dependencies
@@ -114,6 +115,23 @@ def prepare_go_sources():
     
     print(f"Go sources prepared in {go_src_dir}")
     return go_src_dir
+
+
+def prepare_ffi_go_sources() -> Path:
+    """Ensure the Go FFI shim sources exist in linksocks_go_ffi directory."""
+    ffi_src_dir = here / "linksocks_go_ffi"
+    if ffi_src_dir.exists() and any(ffi_src_dir.glob("*.go")):
+        return ffi_src_dir
+
+    project_root = here.parent.parent
+    candidate = project_root / "_bindings" / "python" / "linksocks_go_ffi"
+    if candidate.exists() and any(candidate.glob("*.go")):
+        if ffi_src_dir.exists():
+            shutil.rmtree(ffi_src_dir)
+        shutil.copytree(candidate, ffi_src_dir)
+        return ffi_src_dir
+
+    raise FileNotFoundError("Cannot find linksocks_go_ffi sources")
 
 def _expected_binary_names() -> list[str]:
     """Return candidate filenames for the extension for the current interpreter/platform."""
@@ -573,8 +591,12 @@ def build_python_bindings(vm_python: Optional[str] = None):
                 linksockslib_go.write_text(content)
                 print(f"Fixed C23 bool conflict in {linksockslib_go}")
         
-        # Clean up go.mod
-        run_command(["go", "mod", "tidy"], cwd=here)
+        # Avoid running `go mod tidy` by default. It can traverse unrelated packages
+        # (e.g., cffi shim) and trigger network access during gopy builds.
+        # Enable explicitly if needed.
+        run_tidy = os.environ.get("LINKSOCKS_RUN_GO_MOD_TIDY", "").strip().lower() in {"1", "true", "yes", "on"}
+        if run_tidy:
+            run_command(["go", "mod", "tidy"], cwd=here)
         
         print("Python bindings built successfully")
         # After a successful build, prune any binaries not matching current ABI
@@ -590,6 +612,16 @@ def build_python_bindings(vm_python: Optional[str] = None):
         if go_src_dir.exists():
             shutil.rmtree(go_src_dir)
             print(f"Cleaned up {go_src_dir}")
+
+        # Clean up linksocks_go_ffi directory if it was copied in
+        ffi_dir = here / "linksocks_go_ffi"
+        try:
+            # Only remove if it looks like a generated/cached copy (has our FFI file and no VCS context)
+            if ffi_dir.exists() and (ffi_dir / "linksocks_ffi.go").exists():
+                # Keep if directory is part of the source tree (sdist) by default
+                pass
+        except Exception:
+            pass
         
         for file in ["go.mod", "go.sum"]:
             temp_go_file = here / file
@@ -602,10 +634,60 @@ def ensure_python_bindings():
     linksocks_lib_dir = here / "linksockslib"
     local_go_src_dir = here / "linksocks_go"
     local_go_mod = here / "go.mod"
+
+    def _cleanup_gopy_artifacts() -> None:
+        if not linksocks_lib_dir.exists():
+            return
+        for p in linksocks_lib_dir.iterdir():
+            if not p.is_file():
+                continue
+            if not p.name.startswith("_linksockslib"):
+                continue
+            try:
+                p.unlink()
+            except Exception:
+                pass
+
+    def _cleanup_ffi_artifacts() -> None:
+        ffi_dir_local = here / "linksocks_ffi"
+        if not ffi_dir_local.exists():
+            return
+        for name in ["liblinksocks_ffi.so", "liblinksocks_ffi.dylib", "linksocks_ffi.dll", "liblinksocks_ffi.h"]:
+            try:
+                (ffi_dir_local / name).unlink(missing_ok=True)
+            except Exception:
+                pass
     
-    # Decide based on whether a binding for THIS interpreter exists
-    if not is_linksockslib_built(linksocks_lib_dir):
-        print("linksockslib not built or only placeholder found, building Python bindings...")
+    # Default to the C-ABI FFI shared library (not tied to Python ABI)
+    # Set LINKSOCKS_BUILD_GOPY=1 to build gopy-based CPython extension instead.
+    build_gopy = os.environ.get("LINKSOCKS_BUILD_GOPY", "").strip() in {"1", "true", "yes", "on"}
+    ffi_dir = here / "linksocks_ffi"
+    ffi_candidates = [
+        ffi_dir / "liblinksocks_ffi.so",
+        ffi_dir / "liblinksocks_ffi.dylib",
+        ffi_dir / "linksocks_ffi.dll",
+    ]
+
+    if build_gopy:
+        _cleanup_ffi_artifacts()
+    else:
+        _cleanup_gopy_artifacts()
+
+    if build_gopy:
+        # If the user explicitly requested gopy, do not short-circuit just because
+        # a CFFI shared library already exists.
+        if is_linksockslib_built(linksocks_lib_dir):
+            prune_foreign_binaries(linksocks_lib_dir)
+            print(f"Found existing built linksockslib at {linksocks_lib_dir}")
+            return
+    else:
+        # Default: if CFFI shared lib already exists, nothing to do.
+        if any(p.exists() for p in ffi_candidates):
+            return
+
+    # Default: build FFI shared library
+    if not build_gopy:
+        print("linksocks_ffi not built, building C-ABI shared library...")
         
         # Determine availability of Go sources
         have_local_sources = local_go_src_dir.exists() and (local_go_src_dir / "_python.go").exists() and local_go_mod.exists()
@@ -634,6 +716,40 @@ def ensure_python_bindings():
                     "Please install Go 1.21+ from https://golang.org/dl/ or use a pre-built wheel."
                 )
         
+        try:
+            prepare_ffi_go_sources()
+            env = os.environ.copy()
+            env["CGO_ENABLED"] = "1"
+            out_name = (
+                "liblinksocks_ffi.so"
+                if platform.system().lower() == "linux"
+                else ("liblinksocks_ffi.dylib" if platform.system().lower() == "darwin" else "linksocks_ffi.dll")
+            )
+            run_command(
+                [
+                    "go",
+                    "build",
+                    "-buildmode=c-shared",
+                    "-o",
+                    str(ffi_dir / out_name),
+                    "./linksocks_go_ffi",
+                ],
+                cwd=here,
+                env=env,
+            )
+            _cleanup_gopy_artifacts()
+            print("Built linksocks_ffi shared library")
+            return
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to build linksocks_ffi shared library: {e}\n"
+                "Set LINKSOCKS_BUILD_GOPY=1 to build the gopy-based extension instead."
+            )
+
+    # Opt-in: build gopy bindings
+    if not is_linksockslib_built(linksocks_lib_dir):
+        print("linksockslib not built or only placeholder found, building gopy bindings...")
+
         try:
             # Install gopy and tools
             install_gopy_and_tools()
@@ -667,6 +783,7 @@ def ensure_python_bindings():
         
         if not is_linksockslib_built(linksocks_lib_dir):
             raise RuntimeError("Failed to build Python bindings (artifacts missing)")
+        _cleanup_ffi_artifacts()
     else:
         # Ensure we only ship binaries compatible with this interpreter
         prune_foreign_binaries(linksocks_lib_dir)
@@ -716,6 +833,7 @@ install_requires = [
     "click>=8.0",
     "loguru",
     "rich",
+    "cffi>=1.15",
 ]
 
 # Development dependencies
@@ -901,10 +1019,11 @@ setup(
     license="MIT",
     
     # Package configuration
-    packages=find_packages(include=["linksockslib", "linksockslib.*", "linksocks"]),
+    packages=find_packages(include=["linksockslib", "linksockslib.*", "linksocks", "linksocks_ffi", "linksocks_ffi.*"]),
     package_data={
         # Include native artifacts and helper sources generated by gopy
         "linksockslib": ["*.py", "*.so", "*.pyd", "*.dll", "*.dylib", "*.h", "*.c", "*.go"],
+        "linksocks_ffi": ["*.py", "*.so", "*.dll", "*.dylib", "*.h"],
     },
     include_package_data=True,
     

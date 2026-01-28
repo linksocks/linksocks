@@ -58,7 +58,23 @@ jobs:
 
       - name: Install Linksocks (Editable, dev extras)
         run: |
-          python -m pip install -e _bindings/python[dev]
+          make python-test-deps PYBIN=python
+
+      - name: Verify embedded build (linksocks_ffi)
+        run: |
+          python - <<'PY'
+          import pathlib
+          import linksocks_ffi
+          import linksocks_ffi._lib as L
+
+          ffi_dir = pathlib.Path(linksocks_ffi.__file__).resolve().parent
+          names = [p.name for p in ffi_dir.iterdir()]
+          assert any(
+              (n.endswith((".so", ".dylib", ".dll")) and "linksocks_ffi" in n)
+              for n in names
+          ), names
+          print("ffi_ok", L.version())
+          PY
 
       - name: Run Pytest
         working-directory: _bindings/python

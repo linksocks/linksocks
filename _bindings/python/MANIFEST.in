@@ -1,5 +1,6 @@
 # Include Go source files in linksocks_go directory
 recursive-include linksocks_go *.go
+recursive-include linksocks_go_ffi *.go
 include go.mod
 include go.sum
 
@@ -10,7 +11,6 @@ include README.md
 global-exclude __pycache__
 global-exclude *.py[co]
 global-exclude .git*
-global-exclude *.so
 global-exclude *.dylib
 global-exclude *.dll
 

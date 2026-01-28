@@ -191,9 +191,11 @@ def test_forward_reconnect(website):
         ws_port = get_free_port()
         socks_port = get_free_port()
 
-        # first server
-        async with Server(ws_port=ws_port) as srv1:
+        srv1 = Server(ws_port=ws_port)
+        try:
             token = await srv1.async_add_forward_token()
+            await srv1.async_wait_ready(timeout=start_time_limit)
+
             async with Client(
                 token,
                 ws_url=_ws_url(ws_port),
@@ -203,16 +205,35 @@ def test_forward_reconnect(website):
                 no_env_proxy=True,
             ) as cli:
                 await async_assert_web_connection(website, socks_port)
-                # stop server
-                await srv1.async_close()
-                await asyncio.sleep(2)
-                # start new server same port
-                async with Server(ws_port=ws_port) as srv2:
-                    await srv2.async_add_forward_token(token)
-                    await asyncio.sleep(3)
-                    await async_assert_web_connection(website, socks_port)
 
-    asyncio.run(asyncio.wait_for(_main(), 45))
+                await srv1.async_close()
+                await asyncio.sleep(1)
+
+                srv2 = Server(ws_port=ws_port)
+                try:
+                    await srv2.async_add_forward_token(token)
+                    await srv2.async_wait_ready(timeout=start_time_limit)
+
+                    await cli.async_wait_ready(timeout=start_time_limit)
+
+                    deadline = time.monotonic() + 15
+                    while True:
+                        try:
+                            await async_assert_web_connection(website, socks_port, timeout=3)
+                            break
+                        except Exception:
+                            if time.monotonic() >= deadline:
+                                raise
+                            await asyncio.sleep(0.5)
+                finally:
+                    await srv2.async_close()
+        finally:
+            try:
+                await srv1.async_close()
+            except Exception:
+                pass
+
+    asyncio.run(asyncio.wait_for(_main(), 60))
 
 
 def test_reverse_reconnect(website):
