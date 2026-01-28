@@ -119,14 +119,17 @@ def client(
             fast_open=fast_open,
             no_env_proxy=no_env_proxy,
         )
-        
-        # Add connector for reverse mode
-        if actual_connector_token and reverse:
-            await client.async_add_connector(actual_connector_token)
-            await asyncio.sleep(0.2)
-        
+
         # Run client
         async with client:
+            # Add connector for reverse mode after the client is ready.
+            if actual_connector_token and reverse:
+                try:
+                    await client.async_add_connector(actual_connector_token)
+                except Exception as e:
+                    raise click.ClickException(str(e)) from e
+                await asyncio.sleep(0.2)
+
             await asyncio.Future()
 
     asyncio.run(main())

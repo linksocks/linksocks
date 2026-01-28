@@ -1,3 +1,8 @@
+# CFFI build artifacts
+linksocks_ffi/*.so
+linksocks_ffi/*.dll
+linksocks_ffi/*.h
+
 # Gopy generated files
 linksockslib/
 linksocks_go/
