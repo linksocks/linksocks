@@ -6,6 +6,7 @@
 
 # Python binding targets
 PYTHON_OUTPUT_DIR = _bindings/python
+PYTHON_GOPY_OUTPUT_DIR = _bindings/python_gopy
 PYBIN ?= python3
 PIP ?= $(PYBIN) -m pip
 
@@ -34,8 +35,8 @@ help:
 	@echo "  python-install      - Install Python package (default: cffi backend)"
 	@echo "  python-wheel        - Build Python wheel (default: cffi backend)"
 	@echo "  python-test         - Run Python tests (default: cffi backend; ignores gopy-only tests)"
-	@echo "  python-gopy-install - Install Python package with gopy backend (LINKSOCKS_BUILD_GOPY=1)"
-	@echo "  python-gopy-test    - Run Python tests with gopy backend"
+	@echo "  python-gopy-install - Install gopy backend package (linksockslib)"
+	@echo "  python-gopy-test    - Run gopy-backend Python tests (requires linksockslib)"
 
 # Go targets
 build:
@@ -90,35 +91,42 @@ python-wheel:
 	cd $(PYTHON_OUTPUT_DIR) && $(PYBIN) -m build --wheel
 
 python-gopy-clean:
-	rm -rf $(PYTHON_OUTPUT_DIR)/linksockslib
-	rm -rf $(PYTHON_OUTPUT_DIR)/linksocks.egg-info
-	rm -rf $(PYTHON_OUTPUT_DIR)/build
-	rm -rf $(PYTHON_OUTPUT_DIR)/dist
+	rm -f $(PYTHON_GOPY_OUTPUT_DIR)/linksockslib/_linksockslib*.so \
+		$(PYTHON_GOPY_OUTPUT_DIR)/linksockslib/_linksockslib*.dylib \
+		$(PYTHON_GOPY_OUTPUT_DIR)/linksockslib/_linksockslib*.dll \
+		$(PYTHON_GOPY_OUTPUT_DIR)/linksockslib/_linksockslib*.pyd \
+		$(PYTHON_GOPY_OUTPUT_DIR)/linksockslib/*.h \
+		$(PYTHON_GOPY_OUTPUT_DIR)/linksockslib/*.c \
+		$(PYTHON_GOPY_OUTPUT_DIR)/linksockslib/go.py \
+		$(PYTHON_GOPY_OUTPUT_DIR)/linksockslib/linksocks.py 2>/dev/null || true
+	rm -rf $(PYTHON_GOPY_OUTPUT_DIR)/linksockslib.egg-info
+	rm -rf $(PYTHON_GOPY_OUTPUT_DIR)/build
+	rm -rf $(PYTHON_GOPY_OUTPUT_DIR)/dist
 
 python-gopy-test-deps:
-	@echo "Installing Python dev dependencies (gopy backend)..."
-	cd $(PYTHON_OUTPUT_DIR) && LINKSOCKS_BUILD_GOPY=1 $(PYBIN) -m pip install -e .[dev]
+	@echo "Installing Python dev dependencies + linksockslib (gopy backend)..."
+	cd $(PYTHON_GOPY_OUTPUT_DIR) && $(PYBIN) -m pip install -e .[dev]
 
 python-gopy-test-lib:
 	@echo "Running Python binding library tests (gopy backend)..."
-	cd $(PYTHON_OUTPUT_DIR) && $(PYBIN) -m pytest tests/test_lib.py -v --tb=short -n auto
+	cd $(PYTHON_GOPY_OUTPUT_DIR) && $(PYBIN) -m pytest tests/test_lib.py -v --tb=short -n auto
 
 python-gopy-test-wrapper:
 	@echo "Running Python wrapper tests (gopy backend)..."
-	cd $(PYTHON_OUTPUT_DIR) && $(PYBIN) -m pytest tests/test_wrapper.py -v --tb=short -n auto
+	cd $(PYTHON_GOPY_OUTPUT_DIR) && $(PYBIN) -m pytest tests/test_wrapper.py -v --tb=short -n auto
 
 python-gopy-test-crash:
 	@echo "Running Python wrapper crash tests (gopy backend)..."
-	cd $(PYTHON_OUTPUT_DIR) && $(PYBIN) -m pytest tests/test_crash.py -v --tb=short -n auto
+	cd $(PYTHON_GOPY_OUTPUT_DIR) && $(PYBIN) -m pytest tests/test_crash.py -v --tb=short -n auto
 
 python-gopy-test:
-	@echo "Running Python tests (gopy backend)..."
-	cd $(PYTHON_OUTPUT_DIR) && $(PYBIN) -m pytest tests -v --tb=short -n auto
+	@echo "Running Python tests (gopy backend; requires linksockslib)..."
+	cd $(PYTHON_GOPY_OUTPUT_DIR) && $(PYBIN) -m pytest tests -v --tb=short -n auto
 
 python-gopy-install:
-	@echo "Installing Python package via pip (gopy backend)..."
-	cd $(PYTHON_OUTPUT_DIR) && LINKSOCKS_BUILD_GOPY=1 $(PYBIN) -m pip install -e .
+	@echo "Installing gopy backend package via pip (linksockslib)..."
+	cd $(PYTHON_GOPY_OUTPUT_DIR) && $(PYBIN) -m pip install -e .
 
 python-gopy-wheel:
 	@echo "Building Python wheel (gopy backend)..."
-	cd $(PYTHON_OUTPUT_DIR) && LINKSOCKS_BUILD_GOPY=1 $(PYBIN) -m build --wheel
+	cd $(PYTHON_GOPY_OUTPUT_DIR) && $(PYBIN) -m build --wheel

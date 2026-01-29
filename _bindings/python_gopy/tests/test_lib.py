@@ -1,10 +1,502 @@
+import asyncio
+import contextlib
+from typing import Optional, Iterable
+import logging
 import pytest
 
+from .utils import *
 
-pytest.skip(
-    "gopy-only tests live under _bindings/python_gopy/tests",
-    allow_module_level=True,
-)
+
+try:
+    from linksockslib import linksocks as _linksocks_gopy  # noqa: F401
+except Exception:
+    pytest.skip(
+        "linksockslib (gopy backend) is not available; skip gopy-only tests",
+        allow_module_level=True,
+    )
+
+test_logger = logging.getLogger(__name__)
+
+start_time_limit = 60
+
+
+@contextlib.asynccontextmanager
+async def forward_server(
+    token: Optional[str] = "<token>",
+    ws_port: Optional[int] = None,
+):
+    """Create a forward server using the Go bindings"""
+    from linksockslib import linksocks
+
+    ws_port = ws_port or get_free_port()
+    assert ws_port
+
+    server = None
+    try:
+        # Create server using Go bindings - all initialization steps in try block
+        server_opt = linksocks.DefaultServerOption()
+        server_opt.WithWSPort(ws_port)
+        server = linksocks.NewLinkSocksServer(server_opt)
+        test_logger.info(f"Created forward server on port {ws_port} with token {token}")
+        
+        # Add forward token to server
+        server.AddForwardToken(token)
+        await asyncio.to_thread(
+            server.WaitReady, ctx=linksocks.NewContext(), timeout=start_time_limit * linksocks.Second()
+        )
+    except Exception as e:
+        test_logger.error(f"Failed to create forward server: {e}")
+        if server:
+            server.Close()
+        raise
+    
+    try:
+        yield server, ws_port, token
+    finally:
+        server.Close()
+
+
+@contextlib.asynccontextmanager
+async def forward_client(ws_port: int, token: str):
+    """Create a forward client using the Go bindings"""
+    from linksockslib import linksocks
+
+    socks_port = get_free_port()
+    assert socks_port
+
+    client = None
+    try:
+        # Create client using Go bindings - all initialization steps in try block
+        client_opt = linksocks.DefaultClientOption()
+        client_opt.WithWSURL(f"ws://localhost:{ws_port}")
+        client_opt.WithSocksPort(socks_port)
+        client_opt.WithReconnectDelay(1 * linksocks.Second())
+        client_opt.WithNoEnvProxy(True)
+        client = linksocks.NewLinkSocksClient(token, client_opt)
+        
+        ctx = linksocks.NewContext()
+        await asyncio.to_thread(
+            client.WaitReady, ctx=ctx, timeout=start_time_limit * linksocks.Second()
+        )
+        test_logger.info(f"Created forward client connecting to ws://localhost:{ws_port}")
+    except Exception as e:
+        test_logger.error(f"Failed to create forward client: {e}")
+        if client:
+            client.Close()
+        raise
+    
+    # yield outside initialization try block so user code exceptions are not caught
+    try:
+        yield client, socks_port
+    finally:
+        client.Close()
+
+
+@contextlib.asynccontextmanager
+async def forward_proxy(
+    token: Optional[str] = "<token>",
+    ws_port: Optional[int] = None,
+):
+    """Create forward proxy (server + client) using Go bindings"""
+    async with forward_server(token=token, ws_port=ws_port) as (server, ws_port, token):
+        async with forward_client(ws_port, token) as (client, socks_port):
+            yield server, client, socks_port
+
+
+@contextlib.asynccontextmanager
+async def reverse_server(
+    token: Optional[str] = "<token>",
+    ws_port: Optional[int] = None,
+):
+    """Create a reverse server using the Go bindings"""
+    from linksockslib import linksocks
+
+    ws_port = ws_port or get_free_port()
+
+    server = None
+    try:
+        # Create server - all initialization steps in try block
+        server_opt = linksocks.DefaultServerOption()
+        server_opt.WithWSPort(ws_port)
+        server = linksocks.NewLinkSocksServer(server_opt)
+
+        # Add reverse token to server
+        reverse_opts = linksocks.DefaultReverseTokenOptions()
+        reverse_opts.Token = token
+        result: linksocks.ReverseTokenResult = server.AddReverseToken(reverse_opts)
+        socks_port = result.Port
+        test_logger.info(f"Created reverse server on ws_port={ws_port}, socks_port={socks_port}")
+        ctx = linksocks.NewContext()
+        await asyncio.to_thread(
+            server.WaitReady, ctx=ctx, timeout=start_time_limit * linksocks.Second()
+        )
+    except Exception as e:
+        test_logger.error(f"Failed to create reverse server: {e}")
+        if server:
+            server.Close()
+        raise
+    
+    try:
+        yield server, ws_port, token, socks_port
+    finally:
+        server.Close()
+
+
+@contextlib.asynccontextmanager
+async def reverse_client(ws_port: int, token: str):
+    """Create a reverse client using the Go bindings"""
+    from linksockslib import linksocks
+
+    client = None
+    try:
+        # Create client - all initialization steps in try block
+        client_opt = linksocks.DefaultClientOption()
+        client_opt.WithWSURL(f"ws://localhost:{ws_port}")
+        client_opt.WithReconnectDelay(1 * linksocks.Second())
+        client_opt.WithReverse(True)
+        client_opt.WithNoEnvProxy(True)
+        client = linksocks.NewLinkSocksClient(token, client_opt)
+        
+        ctx = linksocks.NewContext()
+        await asyncio.to_thread(
+            client.WaitReady, ctx=ctx, timeout=start_time_limit * linksocks.Second()
+        )
+    except Exception as e:
+        test_logger.error(f"Failed to create reverse client: {e}")
+        if client:
+            client.Close()
+        raise
+    
+    try:
+        yield client
+    finally:
+        client.Close()
+
+
+@contextlib.asynccontextmanager
+async def reverse_proxy(
+    token: Optional[str] = "<token>",
+    ws_port: Optional[int] = None,
+):
+    """Create reverse proxy (server + client) using Go bindings"""
+    async with reverse_server(token=token, ws_port=ws_port) as (server, ws_port, token, socks_port):
+        async with reverse_client(ws_port, token) as client:
+            yield server, client, socks_port
+
+
+# ==================== Basic Tests ====================
+
+
+def test_import():
+    """Test importing the Go linksocks bindings"""
+    from linksockslib import linksocks
+
+    assert hasattr(linksocks, "NewLinkSocksClient")
+
+def test_website(website):
+    """Test direct website access"""
+    assert_web_connection(website)
+
+
+def test_website_async_tester(website):
+    """Test async website access"""
+
+    async def _main():
+        await async_assert_web_connection(website)
+
+    return asyncio.run(asyncio.wait_for(_main(), 30))
+
+
+@pytest.mark.skipif(not has_ipv6_support(), reason="IPv6 is not supported on this system")
+def test_website_ipv6(website_v6):
+    """Test IPv6 website access"""
+    assert_web_connection(website_v6)
+
+
+def test_udp_server(udp_server):
+    """Test UDP server access"""
+    assert_udp_connection(udp_server)
+
+
+def test_udp_server_async_tester(udp_server):
+    """Test async UDP server access"""
+
+    async def _main():
+        await async_assert_udp_connection(udp_server)
+
+    return asyncio.run(asyncio.wait_for(_main(), 30))
+
+
+def test_forward_basic(caplog, website):
+    """Test basic forward proxy functionality"""
+
+    async def _main():
+        async with forward_proxy() as (server, client, socks_port):
+            await async_assert_web_connection(website, socks_port)
+
+    return asyncio.run(asyncio.wait_for(_main(), 30))
+
+
+def test_reverse_basic(caplog, website):
+    """Test basic reverse proxy functionality"""
+
+    async def _main():
+        async with reverse_proxy() as (server, client, socks_port):
+            await async_assert_web_connection(website, socks_port)
+
+    return asyncio.run(asyncio.wait_for(_main(), 30))
+
+
+def test_forward_remove_token(caplog, website):
+    """Test forward proxy token removal"""
+
+    async def _main():
+        async with forward_server() as (server, ws_port, token):
+            async with forward_client(ws_port, token) as (client, socks_port):
+                await async_assert_web_connection(website, socks_port)
+
+                # Remove token via Go bindings
+                server.RemoveToken(token)
+
+                # Connection should fail after token removal
+                with pytest.raises(Exception):
+                    await async_assert_web_connection(website, socks_port, timeout=3)
+
+    return asyncio.run(asyncio.wait_for(_main(), 30))
+
+
+def test_reverse_remove_token(caplog, website):
+    """Test reverse proxy token removal"""
+
+    async def _main():
+        async with reverse_server() as (server, ws_port, token, socks_port):
+            async with reverse_client(ws_port, token) as (client):
+                await async_assert_web_connection(website, socks_port)
+
+                # Remove token via Go bindings
+                server.RemoveToken(token)
+
+                # Connection should fail after token removal
+                with pytest.raises(Exception):
+                    await async_assert_web_connection(website, socks_port, timeout=3)
+
+    return asyncio.run(asyncio.wait_for(_main(), 30))
+
+
+@pytest.mark.skipif(not has_ipv6_support(), reason="IPv6 is not supported on this system")
+def test_forward_ipv6(caplog, website_v6):
+    """Test forward proxy with IPv6"""
+
+    async def _main():
+        async with forward_proxy() as (server, client, socks_port):
+            await async_assert_web_connection(website_v6, socks_port)
+
+    return asyncio.run(asyncio.wait_for(_main(), 30))
+
+
+@pytest.mark.skipif(not has_ipv6_support(), reason="IPv6 is not supported on this system")
+def test_reverse_ipv6(caplog, website_v6):
+    """Test reverse proxy with IPv6"""
+
+    async def _main():
+        async with reverse_proxy() as (server, client, socks_port):
+            await async_assert_web_connection(website_v6, socks_port)
+
+    return asyncio.run(asyncio.wait_for(_main(), 30))
+
+
+# ==================== UDP Tests ====================
+
+
+def test_udp_forward_proxy(caplog, udp_server):
+    """Test UDP through forward proxy"""
+
+    async def _main():
+        async with forward_proxy() as (server, client, socks_port):
+            await async_assert_udp_connection(udp_server, socks_port)
+
+    return asyncio.run(asyncio.wait_for(_main(), 30))
+
+
+def test_udp_reverse_proxy(caplog, udp_server):
+    """Test UDP through reverse proxy"""
+
+    async def _main():
+        async with reverse_proxy() as (server, client, socks_port):
+            await async_assert_udp_connection(udp_server, socks_port)
+
+    return asyncio.run(asyncio.wait_for(_main(), 30))
+
+
+@pytest.mark.skipif(not has_ipv6_support(), reason="IPv6 is not supported on this system")
+def test_udp_forward_proxy_v6(caplog, udp_server_v6):
+    """Test UDP through forward proxy with IPv6"""
+
+    async def _main():
+        async with forward_proxy() as (server, client, socks_port):
+            await async_assert_udp_connection(udp_server_v6, socks_port)
+
+    return asyncio.run(asyncio.wait_for(_main(), 30))
+
+
+@pytest.mark.skipif(not has_ipv6_support(), reason="IPv6 is not supported on this system")
+def test_udp_reverse_proxy_v6(caplog, udp_server_v6):
+    """Test UDP through reverse proxy with IPv6"""
+
+    async def _main():
+        async with reverse_proxy() as (server, client, socks_port):
+            await async_assert_udp_connection(udp_server_v6, socks_port)
+
+    return asyncio.run(asyncio.wait_for(_main(), 30))
+
+
+def test_udp_forward_proxy_domain(caplog, udp_server_domain):
+    """Test UDP through forward proxy using domain name"""
+
+    async def _main():
+        # Check localhost resolution first
+        import socket
+
+        try:
+            addrs = socket.getaddrinfo("localhost", None, socket.AF_UNSPEC)
+            if not addrs:
+                pytest.skip("localhost resolution failed")
+
+            # Use the server regardless of localhost resolution preference
+            async with forward_proxy() as (server, client, socks_port):
+                await async_assert_udp_connection(udp_server_domain, socks_port)
+        except socket.gaierror:
+            pytest.skip("localhost resolution not available")
+
+    return asyncio.run(asyncio.wait_for(_main(), 30))
+
+
+def test_udp_reverse_proxy_domain(caplog, udp_server_domain):
+    """Test UDP through reverse proxy using domain name"""
+
+    async def _main():
+        # Check localhost resolution first
+        import socket
+
+        try:
+            addrs = socket.getaddrinfo("localhost", None, socket.AF_UNSPEC)
+            if not addrs:
+                pytest.skip("localhost resolution failed")
+
+            # Use the server regardless of localhost resolution preference
+            async with reverse_proxy() as (server, client, socks_port):
+                await async_assert_udp_connection(udp_server_domain, socks_port)
+        except socket.gaierror:
+            pytest.skip("localhost resolution not available")
+
+    return asyncio.run(asyncio.wait_for(_main(), 30))
+
+
+# ==================== Proxy Authentication Tests ====================
+
+
+@contextlib.asynccontextmanager
+async def reverse_server_with_auth(
+    token: Optional[str] = "<token>",
+    username: str = "test_user",
+    password: str = "test_pass",
+    ws_port: Optional[int] = None,
+    **kw,
+):
+    """Create a reverse server with SOCKS authentication"""
+    from linksockslib import linksocks
+
+    ws_port = ws_port or get_free_port()
+
+    server = None
+    try:
+        # Create server - all initialization steps in try block
+        server_opt = linksocks.DefaultServerOption()
+        server_opt.WithWSPort(ws_port)
+        server = linksocks.NewLinkSocksServer(server_opt)
+
+        # Add reverse token with authentication
+        reverse_opts = linksocks.DefaultReverseTokenOptions()
+        reverse_opts.Token = token
+        reverse_opts.Username = username
+        reverse_opts.Password = password
+        result: linksocks.ReverseTokenResult = server.AddReverseToken(reverse_opts)
+        socks_port = result.Port
+
+        await asyncio.to_thread(
+            server.WaitReady, ctx=linksocks.NewContext(), timeout=start_time_limit * linksocks.Second()
+        )
+    except Exception as e:
+        test_logger.error(f"Failed to create reverse server with auth: {e}")
+        if server:
+            server.Close()
+        raise
+    
+    try:
+        yield server, ws_port, token, socks_port, username, password
+    finally:
+        server.Close()
+
+
+def test_proxy_auth(caplog, website):
+    """Test proxy authentication"""
+
+    async def _main():
+        username = "test_user"
+        password = "test_pass"
+
+        async with reverse_server_with_auth(username=username, password=password) as (
+            server,
+            ws_port,
+            token,
+            socks_port,
+            user,
+            pwd,
+        ):
+            async with reverse_client(ws_port, token) as client:
+                # Connection without auth should fail
+                with pytest.raises(Exception):
+                    await async_assert_web_connection(website, socks_port, timeout=3)
+
+                # Connection with auth should succeed
+                await async_assert_web_connection(website, socks_port, socks_auth=(user, pwd))
+
+    return asyncio.run(asyncio.wait_for(_main(), 30))
+
+
+# ==================== Reconnection Tests ====================
+
+
+@contextlib.asynccontextmanager
+async def forward_client_with_reconnect(ws_port: int, token: str, **kw):
+    """Create a forward client with reconnection enabled"""
+    from linksockslib import linksocks
+
+    socks_port = get_free_port()
+
+    client = None
+    try:
+        # Create client with reconnection - all initialization steps in try block
+        client_opt = linksocks.DefaultClientOption()
+        client_opt.WithWSURL(f"ws://localhost:{ws_port}")
+        client_opt.WithSocksPort(socks_port)
+        client_opt.WithReconnectDelay(1 * linksocks.Second())
+        client_opt.WithReconnect(True)
+        client = linksocks.NewLinkSocksClient(token, client_opt)
+
+        await asyncio.to_thread(
+            client.WaitReady, ctx=linksocks.NewContext(), timeout=start_time_limit * linksocks.Second()
+        )
+    except Exception as e:
+        test_logger.error(f"Failed to create forward client with reconnect: {e}")
+        if client:
+            client.Close()
+        raise
+    
+    try:
+        yield client, socks_port
+    finally:
+        client.Close()
 
 
 def test_forward_reconnect(caplog, website):

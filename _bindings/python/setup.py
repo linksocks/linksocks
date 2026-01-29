@@ -12,7 +12,6 @@ import shutil
 import subprocess
 import platform
 import tempfile
-import importlib.machinery
 import tarfile
 import zipfile
 from pathlib import Path
@@ -61,20 +60,6 @@ extras_require = {
         "pysocks",
     ],
 }
-
-def ensure_placeholder_linksockslib():
-    """Ensure a placeholder Python package exists so find_packages() includes it.
-    The actual native bindings will be generated later during the build step.
-    """
-    pkg_dir = here / "linksockslib"
-    init_py = pkg_dir / "__init__.py"
-    try:
-        if not pkg_dir.exists():
-            pkg_dir.mkdir(parents=True, exist_ok=True)
-        if not init_py.exists():
-            init_py.write_text("# Placeholder; real contents generated during build\n")
-    except Exception as e:
-        print(f"Warning: failed to create placeholder linksockslib: {e}")
 
 def prepare_go_sources():
     """Prepare Go source files by copying them to linksocks_go directory."""
@@ -133,48 +118,6 @@ def prepare_ffi_go_sources() -> Path:
 
     raise FileNotFoundError("Cannot find linksocks_go_ffi sources")
 
-def _expected_binary_names() -> list[str]:
-    """Return candidate filenames for the extension for the current interpreter/platform."""
-    candidates: list[str] = []
-    for suffix in importlib.machinery.EXTENSION_SUFFIXES:
-        # e.g. ['.cpython-311-x86_64-linux-gnu.so', '.so']
-        candidates.append(f"_linksockslib{suffix}")
-    # Also include conservative fallbacks by version tag just in case
-    pyver = f"{sys.version_info.major}{sys.version_info.minor}"
-    candidates.append(f"_linksockslib.cpython-{pyver}.so")
-    candidates.append(f"_linksockslib.cp{pyver}.pyd")
-    return candidates
-
-
-def is_linksockslib_built(lib_dir: Path) -> bool:
-    """Determine if linksockslib contains a native artifact compatible with this Python."""
-    if not lib_dir.exists():
-        return False
-    for name in _expected_binary_names():
-        if (lib_dir / name).exists():
-            return True
-    return False
-
-
-def prune_foreign_binaries(lib_dir: Path) -> None:
-    """Remove artifacts that are not compatible with the current interpreter.
-
-    This prevents wheels for one Python version from accidentally bundling
-    binaries produced for a different version/ABI.
-    """
-    if not lib_dir.exists():
-        return
-    keep_names = set(_expected_binary_names())
-    for p in lib_dir.iterdir():
-        if not p.is_file():
-            continue
-        if p.name.startswith("_linksockslib") and p.suffix in {".so", ".pyd", ".dll", ".dylib"}:
-            if p.name not in keep_names:
-                try:
-                    p.unlink()
-                    print(f"Pruned foreign binary: {p}")
-                except Exception as e:
-                    print(f"Warning: failed to remove {p}: {e}")
 
 def run_command(cmd, cwd=None, env=None):
     """Run a command and return the result."""
@@ -425,242 +368,8 @@ def cleanup_temp_go():
             print(f"Warning: Failed to clean up temporary Go installation: {e}")
             _temp_go_dir = None
 
-def install_gopy_and_tools():
-    """Install gopy and related Go tools."""
-    print("Installing gopy and Go tools...")
-    
-    # Ensure Go is available
-    if not check_go_installation():
-        raise RuntimeError("Go is not available after installation attempt")
-    
-    # Helper to add Go bin dirs (GOBIN/GOPATH/bin) to PATH so "gopy" is discoverable
-    def _ensure_go_bins_on_path():
-        try:
-            gobin = run_command(["go", "env", "GOBIN"]) or ""
-        except Exception:
-            gobin = ""
-        try:
-            gopath = run_command(["go", "env", "GOPATH"]) or ""
-        except Exception:
-            gopath = ""
-
-        candidate_dirs = []
-        if gobin.strip():
-            candidate_dirs.append(Path(gobin.strip()))
-        if gopath.strip():
-            candidate_dirs.append(Path(gopath.strip()) / "bin")
-
-        current_path = os.environ.get("PATH", "")
-        updated_parts = [p for p in current_path.split(os.pathsep) if p]
-        for d in candidate_dirs:
-            d_str = str(d)
-            if d_str and d_str not in updated_parts:
-                updated_parts.insert(0, d_str)
-        os.environ["PATH"] = os.pathsep.join(updated_parts)
-
-    # Install gopy
-    try:
-        run_command(["go", "install", "github.com/go-python/gopy@latest"])
-        print("gopy installed successfully")
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to install gopy: {e}")
-        raise
-    
-    # Ensure the freshly installed Go binaries are on PATH (especially on Windows)
-    _ensure_go_bins_on_path()
-
-    # Install goimports
-    try:
-        run_command(["go", "install", "golang.org/x/tools/cmd/goimports@latest"])
-        print("goimports installed successfully")
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to install goimports: {e}")
-        raise
-
-def build_python_bindings(vm_python: Optional[str] = None):
-    """Build Python bindings using gopy.
-
-    vm_python: Optional path to the Python interpreter to target (e.g., from a venv).
-    If not provided, defaults to the current interpreter.
-    """
-    print("Building Python bindings with gopy...")
-    
-    # Prepare Go sources first
-    go_src_dir = prepare_go_sources()
-    temp_file = None
-    
-    try:
-        # Clean existing bindings
-        linksocks_lib_dir = here / "linksockslib"
-        if linksocks_lib_dir.exists():
-            shutil.rmtree(linksocks_lib_dir)
-            print(f"Cleaned existing {linksocks_lib_dir}")
-        
-        # Copy _python.go to python.go if it exists
-        orig_file = go_src_dir / "_python.go"
-        temp_file = go_src_dir / "python.go"
-        
-        if orig_file.exists():
-            shutil.copy2(orig_file, temp_file)
-            print(f"Copied {orig_file} to {temp_file}")
-        
-        # Set up environment
-        env = os.environ.copy()
-        env["CGO_ENABLED"] = "1"
-        # Allow any LDFLAGS through cgo validation
-        env["CGO_LDFLAGS_ALLOW"] = ".*"
-        # Determine target Python now so we can configure CGO flags appropriately
-        target_vm = vm_python or sys.executable
-        # Configure platform-specific CGO flags based on the target interpreter
-        env = configure_python_env(target_vm, env)
-        
-        # Ensure PATH includes Go binary directory (for temp install path)
-        if _temp_go_dir:
-            go_bin = Path(_temp_go_dir) / "go" / "bin"
-            current_path = env.get("PATH", "")
-            if str(go_bin) not in current_path:
-                env["PATH"] = f"{go_bin}{os.pathsep}{current_path}"
-                print(f"Updated PATH for gopy execution: {go_bin}")
-
-        # Also ensure GOBIN/GOPATH/bin are present for system Go installs
-        try:
-            gobin = run_command(["go", "env", "GOBIN"]) or ""
-        except Exception:
-            gobin = ""
-        try:
-            gopath = run_command(["go", "env", "GOPATH"]) or ""
-        except Exception:
-            gopath = ""
-        candidate_bins = []
-        if gobin.strip():
-            candidate_bins.append(Path(gobin.strip()))
-        if gopath.strip():
-            candidate_bins.append(Path(gopath.strip()) / "bin")
-        current_path = env.get("PATH", "")
-        for b in candidate_bins:
-            b_str = str(b)
-            if b_str and b_str not in current_path:
-                current_path = f"{b_str}{os.pathsep}{current_path}"
-        env["PATH"] = current_path
-        
-        # Prefer absolute path to gopy if available
-        gopy_executable = shutil.which("gopy", path=env.get("PATH", ""))
-        if not gopy_executable:
-            # Try common locations
-            for b in candidate_bins:
-                candidate = b / ("gopy.exe" if platform.system().lower() == "windows" else "gopy")
-                if candidate.exists():
-                    gopy_executable = str(candidate)
-                    break
-        if not gopy_executable:
-            raise FileNotFoundError("gopy executable not found on PATH. Ensure GOBIN/GOPATH/bin is on PATH.")
-
-        # Log environment before build for diagnostics
-        print(f"Using gopy: {gopy_executable}")
-        print(f"Using PATH: {env.get('PATH','')}")
-        print(f"Using CGO_CFLAGS: {env.get('CGO_CFLAGS','')}")
-        print(f"Using CGO_LDFLAGS: {env.get('CGO_LDFLAGS','')}")
-        print(f"Using CGO_LDFLAGS_ALLOW: {env.get('CGO_LDFLAGS_ALLOW','')}")
-
-        # Run gopy build from _bindings/python directory
-        cmd = [
-            gopy_executable, "build",
-            f"-vm={target_vm}",
-            f"-output={linksocks_lib_dir}",
-            "-name=linksockslib",
-            "-no-make=true",
-        ]
-        
-        # Only enable dynamic-link on Linux
-        if platform.system().lower() == "linux":
-            cmd.append("-dynamic-link=true")
-        
-        cmd.append("./linksocks_go")  # Use linksocks_go directory
-        
-        run_command(cmd, cwd=here, env=env)
-        
-        # Fix GCC 15 C23 bool conflict in generated linksockslib.go
-        # Wrap bool typedef with C23 version check to avoid conflict with built-in bool type (https://github.com/go-python/gopy/pull/379/files)
-        linksockslib_go = linksocks_lib_dir / "linksockslib.go"
-        if linksockslib_go.exists():
-            content = linksockslib_go.read_text()
-            if "typedef uint8_t bool;" in content:
-                old_typedef = "typedef uint8_t bool;"
-                new_typedef = "#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L\ntypedef uint8_t bool;\n#endif"
-                content = content.replace(old_typedef, new_typedef)
-                linksockslib_go.write_text(content)
-                print(f"Fixed C23 bool conflict in {linksockslib_go}")
-        
-        # Avoid running `go mod tidy` by default. It can traverse unrelated packages
-        # (e.g., cffi shim) and trigger network access during gopy builds.
-        # Enable explicitly if needed.
-        run_tidy = os.environ.get("LINKSOCKS_RUN_GO_MOD_TIDY", "").strip().lower() in {"1", "true", "yes", "on"}
-        if run_tidy:
-            run_command(["go", "mod", "tidy"], cwd=here)
-        
-        print("Python bindings built successfully")
-        # After a successful build, prune any binaries not matching current ABI
-        prune_foreign_binaries(linksocks_lib_dir)
-        
-    finally:
-        # Clean up temporary python.go file
-        if temp_file and temp_file.exists():
-            temp_file.unlink()
-            print(f"Cleaned up {temp_file}")
-        
-        # Clean up linksocks_go directory and go.mod/go.sum
-        if go_src_dir.exists():
-            shutil.rmtree(go_src_dir)
-            print(f"Cleaned up {go_src_dir}")
-
-        # Clean up linksocks_go_ffi directory if it was copied in
-        ffi_dir = here / "linksocks_go_ffi"
-        try:
-            # Only remove if it looks like a generated/cached copy (has our FFI file and no VCS context)
-            if ffi_dir.exists() and (ffi_dir / "linksocks_ffi.go").exists():
-                # Keep if directory is part of the source tree (sdist) by default
-                pass
-        except Exception:
-            pass
-        
-        for file in ["go.mod", "go.sum"]:
-            temp_go_file = here / file
-            if temp_go_file.exists():
-                temp_go_file.unlink()
-                print(f"Cleaned up {temp_go_file}")
-
 def ensure_python_bindings():
-    """Ensure Python bindings are available, build if necessary."""
-    linksocks_lib_dir = here / "linksockslib"
-    local_go_src_dir = here / "linksocks_go"
-    local_go_mod = here / "go.mod"
-
-    def _cleanup_gopy_artifacts() -> None:
-        if not linksocks_lib_dir.exists():
-            return
-        for p in linksocks_lib_dir.iterdir():
-            if not p.is_file():
-                continue
-            if not p.name.startswith("_linksockslib"):
-                continue
-            try:
-                p.unlink()
-            except Exception:
-                pass
-
-    def _cleanup_ffi_artifacts() -> None:
-        ffi_dir_local = here / "linksocks_ffi"
-        if not ffi_dir_local.exists():
-            return
-        for name in ["liblinksocks_ffi.so", "liblinksocks_ffi.dylib", "linksocks_ffi.dll", "liblinksocks_ffi.h"]:
-            try:
-                (ffi_dir_local / name).unlink(missing_ok=True)
-            except Exception:
-                pass
-    
-    # Default to the C-ABI FFI shared library (not tied to Python ABI)
-    # Set LINKSOCKS_BUILD_GOPY=1 to build gopy-based CPython extension instead.
-    build_gopy = os.environ.get("LINKSOCKS_BUILD_GOPY", "").strip() in {"1", "true", "yes", "on"}
+    """Ensure the C-ABI FFI shared library is available, build if necessary."""
     ffi_dir = here / "linksocks_ffi"
     ffi_candidates = [
         ffi_dir / "liblinksocks_ffi.so",
@@ -668,137 +377,76 @@ def ensure_python_bindings():
         ffi_dir / "linksocks_ffi.dll",
     ]
 
-    if build_gopy:
-        _cleanup_ffi_artifacts()
-    else:
-        _cleanup_gopy_artifacts()
+    if any(p.exists() for p in ffi_candidates):
+        return
 
-    if build_gopy:
-        # If the user explicitly requested gopy, do not short-circuit just because
-        # a CFFI shared library already exists.
-        if is_linksockslib_built(linksocks_lib_dir):
-            prune_foreign_binaries(linksocks_lib_dir)
-            print(f"Found existing built linksockslib at {linksocks_lib_dir}")
-            return
-    else:
-        # Default: if CFFI shared lib already exists, nothing to do.
-        if any(p.exists() for p in ffi_candidates):
-            return
+    print("linksocks_ffi not built, building C-ABI shared library...")
 
-    # Default: build FFI shared library
-    if not build_gopy:
-        print("linksocks_ffi not built, building C-ABI shared library...")
-        
-        # Determine availability of Go sources
-        have_local_sources = local_go_src_dir.exists() and (local_go_src_dir / "_python.go").exists() and local_go_mod.exists()
-        if not have_local_sources:
-            # Fallback to project root layout (building from repo)
-            try:
-                project_root = here.parent.parent
-                if not (project_root / "go.mod").exists():
-                    raise FileNotFoundError("Cannot find project root with go.mod file")
-            except Exception:
-                raise RuntimeError(
-                    "Cannot find Go source files. "
-                    "This package should be built from the linksocks source repository, "
-                    "or you should use a pre-built wheel."
-                )
-        
-        # Check if we have Go available
-        if not check_go_installation():
-            print("Go not found, attempting to install...")
-            try:
-                install_go()
-            except Exception as e:
-                print(f"Failed to install Go: {e}")
-                raise RuntimeError(
-                    "Go is required to build linksocks from source. "
-                    "Please install Go 1.21+ from https://golang.org/dl/ or use a pre-built wheel."
-                )
-        
+    # Determine availability of Go sources
+    local_go_src_dir = here / "linksocks_go"
+    local_go_mod = here / "go.mod"
+    have_local_sources = local_go_src_dir.exists() and (local_go_src_dir / "_python.go").exists() and local_go_mod.exists()
+    if not have_local_sources:
         try:
-            prepare_ffi_go_sources()
-            env = os.environ.copy()
-            env["CGO_ENABLED"] = "1"
-            out_name = (
-                "liblinksocks_ffi.so"
-                if platform.system().lower() == "linux"
-                else ("liblinksocks_ffi.dylib" if platform.system().lower() == "darwin" else "linksocks_ffi.dll")
-            )
-            run_command(
-                [
-                    "go",
-                    "build",
-                    "-buildmode=c-shared",
-                    "-o",
-                    str(ffi_dir / out_name),
-                    "./linksocks_go_ffi",
-                ],
-                cwd=here,
-                env=env,
-            )
-            _cleanup_gopy_artifacts()
-            print("Built linksocks_ffi shared library")
-            return
-        except Exception as e:
+            project_root = here.parent.parent
+            if not (project_root / "go.mod").exists():
+                raise FileNotFoundError("Cannot find project root with go.mod file")
+        except Exception:
             raise RuntimeError(
-                f"Failed to build linksocks_ffi shared library: {e}\n"
-                "Set LINKSOCKS_BUILD_GOPY=1 to build the gopy-based extension instead."
+                "Cannot find Go source files. "
+                "This package should be built from the linksocks source repository, "
+                "or you should use a pre-built wheel."
             )
 
-    # Opt-in: build gopy bindings
-    if not is_linksockslib_built(linksocks_lib_dir):
-        print("linksockslib not built or only placeholder found, building gopy bindings...")
-
+    if not check_go_installation():
+        print("Go not found, attempting to install...")
         try:
-            # Install gopy and tools
-            install_gopy_and_tools()
-            
-            # Create an isolated temporary virtual environment for Python-side build deps
-            venv_dir, venv_python = create_temp_virtualenv()
-            pip_cmd = ensure_pip_for_python(venv_python)
-            # Upgrade pip in the venv and install build deps strictly inside the venv
-            run_command(pip_cmd + ["install", "--upgrade", "pip"])
-            run_command(pip_cmd + ["install", "pybindgen", "wheel", "setuptools"])
-
-            # Build bindings targeting the venv's Python
-            build_python_bindings(vm_python=str(venv_python))
-            
+            install_go()
         except Exception as e:
-            print(f"Failed to build Python bindings: {e}")
+            print(f"Failed to install Go: {e}")
             raise RuntimeError(
-                f"Failed to build linksocks from source: {e}\n"
-                "This may be due to missing dependencies or incompatible system.\n"
-                "Try installing a pre-built wheel or ensure Go 1.21+ is installed."
+                "Go is required to build linksocks from source. "
+                "Please install Go 1.21+ from https://golang.org/dl/ or use a pre-built wheel."
             )
-        finally:
-            # Clean up temporary Go installation
-            cleanup_temp_go()
-            # Clean up temporary Python virtual environment
-            try:
-                if _temp_py_venv_dir and Path(_temp_py_venv_dir).exists():
-                    shutil.rmtree(_temp_py_venv_dir)
-            except Exception as e:
-                print(f"Warning: Failed to clean up temporary Python venv: {e}")
-        
-        if not is_linksockslib_built(linksocks_lib_dir):
-            raise RuntimeError("Failed to build Python bindings (artifacts missing)")
-        _cleanup_ffi_artifacts()
-    else:
-        # Ensure we only ship binaries compatible with this interpreter
-        prune_foreign_binaries(linksocks_lib_dir)
-        print(f"Found existing built linksockslib at {linksocks_lib_dir}")
+
+    try:
+        prepare_ffi_go_sources()
+        env = os.environ.copy()
+        env["CGO_ENABLED"] = "1"
+        out_name = (
+            "liblinksocks_ffi.so"
+            if platform.system().lower() == "linux"
+            else ("liblinksocks_ffi.dylib" if platform.system().lower() == "darwin" else "linksocks_ffi.dll")
+        )
+        run_command(
+            [
+                "go",
+                "build",
+                "-buildmode=c-shared",
+                "-o",
+                str(ffi_dir / out_name),
+                "./linksocks_go_ffi",
+            ],
+            cwd=here,
+            env=env,
+        )
+        print("Built linksocks_ffi shared library")
+        return
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to build linksocks_ffi shared library: {e}\n"
+            "Use a pre-built wheel, or ensure Go 1.21+ is installed."
+        )
 
 def test_bindings():
     """Test if the Python bindings work correctly."""
     try:
         # Try to import the bindings
         sys.path.insert(0, str(here))
-        import linksockslib
+        import linksocks_ffi
         print("✓ Python bindings imported successfully")
-        
-        # Try to access some basic functionality
-        if hasattr(linksockslib, '__version__') or hasattr(linksockslib, 'NewClient'):
+
+        if hasattr(linksocks_ffi, "Client") and hasattr(linksocks_ffi, "Server"):
             print("✓ Python bindings appear to be functional")
         else:
             print("⚠ Python bindings imported but may not be fully functional")
@@ -814,6 +462,8 @@ def test_bindings():
         # Clean up sys.path
         if str(here) in sys.path:
             sys.path.remove(str(here))
+
+
 
 # Read description from README
 def get_long_description():
@@ -892,8 +542,6 @@ class BuildPyEnsureBindings(_build_py):
     """
 
     def run(self):
-        # Ensure placeholder so that wheel metadata captures the package
-        ensure_placeholder_linksockslib()
         try:
             ensure_python_bindings()
         except Exception as e:
@@ -901,8 +549,6 @@ class BuildPyEnsureBindings(_build_py):
             if os.environ.get("SETUPTOOLS_BUILD_META", ""):  # PEP 517 builds
                 raise
             raise
-        # Just in case, prune leftovers again before packaging
-        prune_foreign_binaries(here / "linksockslib")
         super().run()
 
 
@@ -910,7 +556,6 @@ class DevelopEnsureBindings(_develop):
     """Ensure bindings exist for editable installs (pip install -e .)."""
 
     def run(self):
-        ensure_placeholder_linksockslib()
         ensure_python_bindings()
         super().run()
 
@@ -919,9 +564,30 @@ class InstallEnsureBindings(_install):
     """Ensure bindings exist for regular installs (pip install .)."""
 
     def run(self):
-        ensure_placeholder_linksockslib()
         ensure_python_bindings()
         super().run()
+
+
+try:
+    from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
+except Exception:
+    _bdist_wheel = None
+
+
+class BdistWheelFFI(_bdist_wheel if _bdist_wheel is not None else object):
+    def finalize_options(self):
+        if _bdist_wheel is None:
+            return
+        super().finalize_options()
+        # This project ships a platform-specific shared library via package_data,
+        # but it is not a CPython extension module.
+        self.root_is_pure = False
+
+    def get_tag(self):
+        if _bdist_wheel is None:
+            return ("py3", "none", "any")
+        _python, _abi, plat = super().get_tag()
+        return ("py3", "none", plat)
 
 class BinaryDistribution(setuptools.Distribution):
     def has_ext_modules(_):
@@ -976,8 +642,7 @@ def configure_python_env(target_python: str, env: dict) -> dict:
             print(f"Windows CGO config: py_version={py_version}, include={include_dir}, libs={libs_dir}")
 
             env["CGO_ENABLED"] = "1"
-            # Use C17 standard to avoid C23 bool conflict (gopy generates "typedef uint8_t bool;")
-            # Set CC to include -std=gnu17 because gopy's build.py rewrites CGO_CFLAGS internally
+            # Use C17 standard for broad compiler compatibility.
             env["CC"] = "gcc -std=gnu17"
             cflags = []
             if include_dir.exists():
@@ -996,16 +661,12 @@ def configure_python_env(target_python: str, env: dict) -> dict:
             return env
         elif system_name == "darwin":
             # macOS 15+ clang treats -Ofast as deprecated error
-            # gopy's build.py rewrites CGO_CFLAGS internally, so we pass the flag via CC instead
             env["CC"] = "clang -Wno-deprecated"
             return env
         return env
     except Exception as cfg_err:
         print(f"Warning: failed to configure platform CGO flags: {cfg_err}")
         return env
-
-# Ensure placeholder package exists BEFORE calling setup() so find_packages() sees it
-ensure_placeholder_linksockslib()
 
 setup(
     name="linksocks",
@@ -1019,10 +680,8 @@ setup(
     license="MIT",
     
     # Package configuration
-    packages=find_packages(include=["linksockslib", "linksockslib.*", "linksocks", "linksocks_ffi", "linksocks_ffi.*"]),
+    packages=find_packages(include=["linksocks", "linksocks.*", "linksocks_ffi", "linksocks_ffi.*"]),
     package_data={
-        # Include native artifacts and helper sources generated by gopy
-        "linksockslib": ["*.py", "*.so", "*.pyd", "*.dll", "*.dylib", "*.h", "*.c", "*.go"],
         "linksocks_ffi": ["*.py", "*.so", "*.dll", "*.dylib", "*.h"],
     },
     include_package_data=True,
@@ -1082,5 +741,6 @@ setup(
         "build_py": BuildPyEnsureBindings,
         "develop": DevelopEnsureBindings,
         "install": InstallEnsureBindings,
+        **({"bdist_wheel": BdistWheelFFI} if _bdist_wheel is not None else {}),
     },
 )

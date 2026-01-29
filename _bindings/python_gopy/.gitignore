@@ -1,12 +1,5 @@
-# CFFI build artifacts
-linksocks_ffi/*.so
-linksocks_ffi/*.dll
-linksocks_ffi/*.h
-
-# Embedded Go sources for sdist builds
-linksocks_go/
-go.mod
-go.sum
+# Generated files
+linksockslib/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -15,19 +15,12 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 _BACKEND: str
 
-try:
-    from linksocks_ffi import parse_duration as _ffi_parse_duration
-    from linksocks_ffi import seconds as _ffi_seconds
-    from linksocks_ffi import cancel_log_waiters as _ffi_cancel_log_waiters
-    from linksocks_ffi import wait_for_log_entries as _ffi_wait_for_log_entries
+from linksocks_ffi import cancel_log_waiters as _ffi_cancel_log_waiters
+from linksocks_ffi import parse_duration as _ffi_parse_duration
+from linksocks_ffi import seconds as _ffi_seconds
+from linksocks_ffi import wait_for_log_entries as _ffi_wait_for_log_entries
 
-    _BACKEND = "ffi"
-except Exception:
-    _ffi_parse_duration = None
-    _ffi_seconds = None
-    _BACKEND = "gopy"
-
-    from linksockslib import linksocks as _gopy_linksocks  # type: ignore
+_BACKEND = "ffi"
 
 _logger = logging.getLogger(__name__)
 
@@ -65,18 +58,12 @@ def _to_duration(value: Optional[DurationLike]) -> Any:
         return 0
     if isinstance(value, timedelta):
         seconds = value.total_seconds()
-        if _BACKEND == "ffi":
-            return int(seconds * int(_ffi_seconds()))  # type: ignore[misc]
-        return int(seconds * _gopy_linksocks.Second())
+        return int(seconds * int(_ffi_seconds()))
     if isinstance(value, (int, float)):
-        if _BACKEND == "ffi":
-            return int(value * int(_ffi_seconds()))  # type: ignore[misc]
-        return int(value * _gopy_linksocks.Second())
+        return int(value * int(_ffi_seconds()))
     if isinstance(value, str):
         try:
-            if _BACKEND == "ffi":
-                return int(_ffi_parse_duration(value))  # type: ignore[misc]
-            return int(_gopy_linksocks.ParseDuration(value))
+            return int(_ffi_parse_duration(value))
         except Exception as exc:
             raise ValueError(f"Invalid duration string: {value}") from exc
     raise TypeError(f"Unsupported duration type: {type(value)!r}")
@@ -358,45 +345,7 @@ class _FFIBackend:
         return int(_ffi_parse_duration(s))  # type: ignore[misc]
 
 
-class _GopyBackend:
-    def DefaultServerOption(self) -> Any:
-        return _gopy_linksocks.DefaultServerOption()
-
-    def DefaultClientOption(self) -> Any:
-        return _gopy_linksocks.DefaultClientOption()
-
-    def DefaultReverseTokenOptions(self) -> Any:
-        return _gopy_linksocks.DefaultReverseTokenOptions()
-
-    def NewLinkSocksServer(self, opt: Any) -> Any:
-        return _gopy_linksocks.NewLinkSocksServer(opt)
-
-    def NewLinkSocksClient(self, token: str, opt: Any) -> Any:
-        return _gopy_linksocks.NewLinkSocksClient(token, opt)
-
-    def NewContextWithCancel(self) -> Any:
-        return _gopy_linksocks.NewContextWithCancel()
-
-    def NewLoggerWithID(self, logger_id: str) -> Any:
-        return _gopy_linksocks.NewLoggerWithID(logger_id)
-
-    def NewLogger(self, cb: Any) -> Any:
-        return _gopy_linksocks.NewLogger(cb)
-
-    def WaitForLogEntries(self, ms: int) -> list[Any]:
-        return _gopy_linksocks.WaitForLogEntries(ms)
-
-    def CancelLogWaiters(self) -> None:
-        return _gopy_linksocks.CancelLogWaiters()
-
-    def Second(self) -> int:
-        return int(_gopy_linksocks.Second())
-
-    def ParseDuration(self, s: str) -> int:
-        return int(_gopy_linksocks.ParseDuration(s))
-
-
-backend = _FFIBackend() if _BACKEND == "ffi" else _GopyBackend()
+backend = _FFIBackend()
 
 
 # Shared Go->Python log dispatcher
