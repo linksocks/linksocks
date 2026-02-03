@@ -746,7 +746,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 	go func() {
 		latency, err := wsConn.MeasureLatency(10 * time.Second)
 		if err != nil {
-		c.log.Debug().Err(err).Msg("Latency measurement failed")
+			c.log.Debug().Err(err).Msg("Latency measurement failed")
 			return
 		}
 		c.log.Info().Msgf("Server latency: %s", latency.Round(time.Millisecond))
@@ -778,7 +778,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 		}
 	}
 	if allDown {
-	c.setConnectionStatus(false)
+		c.setConnectionStatus(false)
 	}
 	c.mu.Unlock()
 
