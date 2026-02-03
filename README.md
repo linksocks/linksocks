@@ -152,3 +152,4 @@ For detailed API usage and examples, see: [HTTP API](https://linksocks.github.io
 ## License
 
 LinkSocks is open source under the MIT license.
+
