@@ -14,9 +14,14 @@ LinkSocks 支持多种身份验证方法：
 # 服务器（如果省略则自动生成）
 linksocks server -t server_token
 
-# 客户端（必需）
+# 客户端（如果省略则使用 'anonymous'）
 linksocks client -t server_token -u ws://localhost:8765
+
+# 使用匿名令牌的客户端（无需 -t 参数）
+linksocks client -u ws://localhost:8765
 ```
+
+> **注意：** `anonymous` 令牌是为未指定令牌的客户端保留的。您不能在服务器上手动将 `anonymous` 设置为令牌或连接者令牌。
 
 ## 代理代理模式令牌
 

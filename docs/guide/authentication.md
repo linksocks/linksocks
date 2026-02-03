@@ -13,10 +13,14 @@ Used in forward and reverse proxy modes for client-server authentication.
 ```bash
 # Server (auto-generate if omitted)
 linksocks server -t server_token
-
-# Client (required)
+# Client (uses 'anonymous' if omitted)
 linksocks client -t server_token -u ws://localhost:8765
+
+# Client with anonymous token (no -t flag needed)
+linksocks client -u ws://localhost:8765
 ```
+
+> **Note:** The token `anonymous` is reserved for clients that don't specify a token. You cannot manually set `anonymous` as a token or connector token on the server.
 
 ## Agent Proxy Mode Tokens
 

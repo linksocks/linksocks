@@ -62,8 +62,8 @@ LinkSocks 提供两个主要命令：`server` 和 `client`。
 ### 基本选项
 
 | 参数 | 简写 | 默认值 | 描述 |
-|-----|------|--------|------|
-| `--token` | `-t` | | 认证令牌（必需） |
+|-----|------|--------|----|
+| `--token` | `-t` | `anonymous` | 认证令牌（如果未提供则使用 'anonymous'） |
 | `--url` | `-u` | `ws://localhost:8765` | WebSocket 服务器 URL |
 | `--reverse` | `-r` | `false` | 启用反向代理模式 |
 | `--connector-token` | `-c` | | 代理代理的连接者令牌 |

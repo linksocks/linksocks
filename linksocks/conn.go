@@ -1,6 +1,7 @@
 package linksocks
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"strings"
@@ -133,6 +134,43 @@ func (c *WSConn) SyncWriteControl(messageType int, data []byte, deadline time.Ti
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.conn.WriteControl(messageType, data, deadline)
+}
+
+// MeasureLatency sends a ping and waits for pong to measure latency
+// Returns the one-way latency (RTT/2) or error if timeout
+func (c *WSConn) MeasureLatency(timeout time.Duration) (time.Duration, error) {
+	pongReceived := make(chan time.Duration, 1)
+	originalHandler := c.conn.PongHandler()
+
+	c.conn.SetPongHandler(func(appData string) error {
+		c.pingMu.Lock()
+		rtt := time.Since(c.pingTime)
+		c.pingMu.Unlock()
+
+		select {
+		case pongReceived <- rtt / 2:
+		default:
+		}
+
+		if originalHandler != nil {
+			return originalHandler(appData)
+		}
+		return c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	})
+
+	if err := c.SyncWriteControl(websocket.PingMessage, nil, time.Now().Add(timeout)); err != nil {
+		c.conn.SetPongHandler(originalHandler)
+		return 0, err
+	}
+
+	select {
+	case latency := <-pongReceived:
+		c.conn.SetPongHandler(originalHandler)
+		return latency, nil
+	case <-time.After(timeout):
+		c.conn.SetPongHandler(originalHandler)
+		return 0, errors.New("timeout waiting for pong")
+	}
 }
 
 // Close closes the underlying websocket connection

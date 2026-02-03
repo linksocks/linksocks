@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -252,10 +251,6 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	defer client.Close()
 
 	if err := client.WaitReady(cmd.Context(), 0); err != nil {
-		// If token is empty and authentication failed, provide helpful hint
-		if token == "" && strings.Contains(err.Error(), "authentication failed") {
-			err = fmt.Errorf("authentication failed: please provide token with -t or set LINKSOCKS_TOKEN")
-		}
 		logger.Fatal().Msgf("Exit due to error: %s", err.Error())
 		return err
 	}
@@ -277,9 +272,6 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 		time.Sleep(100 * time.Millisecond)
 		return cmd.Context().Err()
 	case err := <-client.errors:
-		if token == "" && strings.Contains(err.Error(), "authentication failed") {
-			err = fmt.Errorf("authentication failed: please provide token with -t or set LINKSOCKS_TOKEN")
-		}
 		logger.Error().Msgf("Exit due to error: %s", err.Error())
 		// Ensure log messages are written before termination
 		time.Sleep(100 * time.Millisecond)

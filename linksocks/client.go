@@ -281,6 +281,11 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 	// Convert URL with token
 	opt.WSURL = convertWSPath(opt.WSURL)
 
+	// Use "anonymous" token if not provided
+	if token == "" {
+		token = "anonymous"
+	}
+
 	disconnected := make(chan struct{})
 	close(disconnected)
 
@@ -718,7 +723,11 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 		})
 		wsConn.Close()
 		// Return a non-retriable error to prevent reconnection attempts
-		return &nonRetriableError{msg: "authentication failed"}
+		// Provide helpful hint when using anonymous token
+		if c.token == "anonymous" {
+			return &nonRetriableError{msg: "authentication failed: please provide a token with -t or set LINKSOCKS_TOKEN"}
+		}
+		return &nonRetriableError{msg: "authentication failed: invalid token"}
 	}
 
 	c.batchLogger.log("auth_success", c.threads, func(count, total int) {
@@ -733,14 +742,15 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 		c.setConnectionStatus(true)
 	}
 
-	if err := wsConn.SyncWriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
-		if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
-			c.log.Trace().Msg("WebSocket connection closed, stopping heartbeat")
-		} else {
-			c.log.Debug().Err(err).Msg("Heartbeat error")
+	// Measure latency using ping/pong asynchronously
+	go func() {
+		latency, err := wsConn.MeasureLatency(10 * time.Second)
+		if err != nil {
+		c.log.Debug().Err(err).Msg("Latency measurement failed")
+			return
 		}
-		return err
-	}
+		c.log.Info().Msgf("Server latency: %s", latency.Round(time.Millisecond))
+	}()
 
 	errChan := make(chan error, 2)
 
@@ -759,7 +769,6 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 	if index < len(c.websockets) {
 		c.websockets[index] = nil
 	}
-
 	// Check if all connections are down
 	allDown := true
 	for _, ws := range c.websockets {
@@ -769,7 +778,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 		}
 	}
 	if allDown {
-		c.setConnectionStatus(false)
+	c.setConnectionStatus(false)
 	}
 	c.mu.Unlock()
 

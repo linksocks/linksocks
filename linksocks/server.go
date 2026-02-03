@@ -341,6 +341,11 @@ func (s *LinkSocksServer) AddReverseToken(opts *ReverseTokenOptions) (*ReverseTo
 		opts = DefaultReverseTokenOptions()
 	}
 
+	// Reject "anonymous" as a token
+	if opts.Token == "anonymous" {
+		return nil, fmt.Errorf("'anonymous' is reserved and cannot be used as a token")
+	}
+
 	// If token is provided, check if it already exists
 	if opts.Token != "" && s.tokenExists(opts.Token) {
 		return nil, fmt.Errorf("token already exists")
@@ -410,6 +415,11 @@ func (s *LinkSocksServer) AddReverseToken(opts *ReverseTokenOptions) (*ReverseTo
 
 // AddForwardToken adds a new token for forward socks proxy
 func (s *LinkSocksServer) AddForwardToken(token string) (string, error) {
+	// Reject "anonymous" as a token
+	if token == "anonymous" {
+		return "", fmt.Errorf("'anonymous' is reserved and cannot be used as a token")
+	}
+
 	// Check if token already exists
 	if token != "" && s.tokenExists(token) {
 		return "", fmt.Errorf("token already exists")
@@ -435,6 +445,11 @@ func (s *LinkSocksServer) AddForwardToken(token string) (string, error) {
 
 // AddConnectorToken adds a new connector token that forwards requests to a reverse token
 func (s *LinkSocksServer) AddConnectorToken(connectorToken string, reverseToken string) (string, error) {
+	// Reject "anonymous" as a connector token
+	if connectorToken == "anonymous" {
+		return "", fmt.Errorf("'anonymous' is reserved and cannot be used as a connector token")
+	}
+
 	// Check if connector token already exists
 	if connectorToken != "" && s.tokenExists(connectorToken) {
 		return "", fmt.Errorf("connector token already exists")

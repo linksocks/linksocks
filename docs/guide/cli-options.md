@@ -63,7 +63,7 @@ Starts the LinkSocks client which connects to the server and provides SOCKS prox
 
 | Parameter | Short | Default | Description |
 |-----------|-------|---------|-------------|
-| `--token` | `-t` | | Authentication token (required) |
+| `--token` | `-t` | `anonymous` | Authentication token (uses 'anonymous' if not provided) |
 | `--url` | `-u` | `ws://localhost:8765` | WebSocket server URL |
 | `--reverse` | `-r` | `false` | Enable reverse proxy mode |
 | `--connector-token` | `-c` | | Connector token for agent proxy |
