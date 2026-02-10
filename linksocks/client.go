@@ -58,6 +58,9 @@ type LinkSocksClient struct {
 	noEnvProxy      bool
 	numPartners     int
 
+	// Direct signaling (experimental)
+	directMode DirectMode
+
 	websockets     []*WSConn // Multiple WebSocket connections
 	currentIndex   int       // Current WebSocket index for round-robin
 	socksListener  net.Listener
@@ -351,6 +354,7 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 		threads:         opt.Threads,
 		websockets:      make([]*WSConn, 0, opt.Threads),
 		noEnvProxy:      opt.NoEnvProxy,
+		directMode:      opt.DirectMode,
 	}
 
 	return client
@@ -761,6 +765,16 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 		return &nonRetriableError{msg: "authentication failed: invalid token"}
 	}
 
+	// Advertise direct signaling support in a backward-compatible way.
+	if c.directMode != DirectModeRelayOnly {
+		hello := LogMessage{Level: LogLevelDebug, Msg: DirectClientHelloPrefix + "direct_signaling=1"}
+		c.relay.logMessage(hello, "send", wsConn.Label())
+		if err := wsConn.WriteMessage(hello); err != nil {
+			wsConn.Close()
+			return err
+		}
+	}
+
 	c.batchLogger.log("auth_success", c.threads, func(count, total int) {
 		mode := "forward"
 		if c.reverse {
@@ -875,6 +889,19 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 			c.relay.logMessage(msg, "recv", ws.Label())
 
 			switch m := msg.(type) {
+			case DirectCapabilitiesMessage:
+				// TODO(LSHP-050+): store and use for ICE-lite probing.
+				c.log.Debug().Str("session_id", m.SessionID.String()).Int("candidates", len(m.Candidates)).Msg("Received direct capabilities")
+
+			case DirectRendezvousMessage:
+				c.log.Debug().Str("session_id", m.SessionID.String()).Int("candidates", len(m.Candidates)).Msg("Received direct rendezvous")
+
+			case DirectStatusMessage:
+				c.log.Debug().Str("session_id", m.SessionID.String()).Str("status", m.Status).Msg("Received direct status")
+
+			case UnknownMessage:
+				c.log.Trace().Int("binary_type", int(m.BinaryType)).Msg("Dropped unknown binary message")
+
 			case DataMessage:
 				if queue, ok := c.relay.messageQueues.Load(m.ChannelID); ok {
 					select {

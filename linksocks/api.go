@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // APIHandler handles HTTP API requests for LinkSocksServer
@@ -51,6 +52,23 @@ type TokenResponse struct {
 type StatusResponse struct {
 	Version string        `json:"version"`
 	Tokens  []interface{} `json:"tokens"`
+	Direct  *DirectStatus `json:"direct,omitempty"`
+}
+
+type DirectPeerStatus struct {
+	ClientID        string    `json:"client_id"`
+	InternalToken   string    `json:"internal_token"`
+	Role            string    `json:"role"`
+	ReverseToken    string    `json:"reverse_token,omitempty"`
+	SupportsDirect  bool      `json:"supports_direct"`
+	UpdatedAt       string    `json:"updated_at,omitempty"`
+	LastSessionID   string    `json:"last_session_id,omitempty"`
+	LastDirectState string    `json:"last_direct_state,omitempty"`
+}
+
+type DirectStatus struct {
+	Enabled bool              `json:"enabled"`
+	Peers   []DirectPeerStatus `json:"peers,omitempty"`
 }
 
 // TokenStatus represents the status of a token
@@ -234,10 +252,48 @@ func (h *APIHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
 			ClientsCount: h.server.GetTokenClientCount(token),
 		})
 	}
+
+	var directStatus *DirectStatus
+	if h.server.directEnable {
+		peers := make([]DirectPeerStatus, 0, len(h.server.clientMeta))
+		for id, meta := range h.server.clientMeta {
+			if meta == nil {
+				continue
+			}
+			lastSessionID := ""
+			lastDirectState := ""
+			if meta.LastStatus != nil {
+				lastSessionID = meta.LastStatus.SessionID.String()
+				lastDirectState = meta.LastStatus.Status
+			} else if meta.LastCapabilities != nil {
+				lastSessionID = meta.LastCapabilities.SessionID.String()
+			} else if meta.LastRendezvous != nil {
+				lastSessionID = meta.LastRendezvous.SessionID.String()
+			}
+			updatedAt := ""
+			if !meta.UpdatedAt.IsZero() {
+				updatedAt = meta.UpdatedAt.UTC().Format(time.RFC3339)
+			}
+			peers = append(peers, DirectPeerStatus{
+				ClientID:        id.String(),
+				InternalToken:   meta.InternalToken,
+				Role:            string(meta.Role),
+				ReverseToken:    meta.ReverseToken,
+				SupportsDirect:  meta.SupportsDirect,
+				UpdatedAt:       updatedAt,
+				LastSessionID:   lastSessionID,
+				LastDirectState: lastDirectState,
+			})
+		}
+		directStatus = &DirectStatus{Enabled: true, Peers: peers}
+	} else {
+		directStatus = &DirectStatus{Enabled: false}
+	}
 	h.server.mu.RUnlock()
 
 	json.NewEncoder(w).Encode(StatusResponse{
 		Version: Version,
 		Tokens:  tokens,
+		Direct:  directStatus,
 	})
 }

@@ -108,6 +108,11 @@ const (
 	DataCompressionGzip = byte(0x01)
 )
 
+const (
+	DirectServerHelloPrefix = "linksocks_server_hello:"
+	DirectClientHelloPrefix = "linksocks_client_hello:"
+)
+
 // BaseMessage defines the common interface for all message types
 type BaseMessage interface {
 	GetType() string

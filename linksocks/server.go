@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,10 +72,36 @@ type LinkSocksServer struct {
 	// Error channel
 	errors chan error // Channel for errors
 
+	// Direct signaling (experimental; WS-only, no UDP dependencies)
+	directEnable bool
+	clientMeta   map[uuid.UUID]*directClientMeta
+
 	// Start/ready guards (important for language bindings calling WaitReady repeatedly)
 	startOnce sync.Once
 	readyOnce sync.Once
 }
+
+type directClientRole string
+
+const (
+	directClientRoleForward   directClientRole = "forward"
+	directClientRoleReverse   directClientRole = "reverse"
+	directClientRoleConnector directClientRole = "connector"
+)
+
+type directClientMeta struct {
+	InternalToken string
+	ReverseToken  string // For connector clients only
+	Role          directClientRole
+
+	SupportsDirect bool
+
+	LastCapabilities *DirectCapabilitiesMessage
+	LastRendezvous   *DirectRendezvousMessage
+	LastStatus       *DirectStatusMessage
+	UpdatedAt        time.Time
+}
+
 
 type clientInfo struct {
 	ID   uuid.UUID
@@ -274,9 +301,135 @@ func NewLinkSocksServer(opt *ServerOption) *LinkSocksServer {
 		internalTokens:  make(map[string][]string),
 		sha256TokenMap:  make(map[string]string),
 		errors:          make(chan error, 16),
+		directEnable:    opt.DirectEnable,
+		clientMeta:      make(map[uuid.UUID]*directClientMeta),
 	}
 
 	return s
+}
+
+func (s *LinkSocksServer) clientHelloIndicatesDirectSupport(m LogMessage) bool {
+	if !strings.HasPrefix(m.Msg, DirectClientHelloPrefix) {
+		return false
+	}
+	// Minimal parsing: treat direct_signaling=1 as the marker.
+	return strings.Contains(m.Msg, "direct_signaling=1")
+}
+
+func (s *LinkSocksServer) markClientSupportsDirect(clientID uuid.UUID) {
+	s.mu.Lock()
+	meta := s.clientMeta[clientID]
+	if meta != nil {
+		meta.SupportsDirect = true
+		meta.UpdatedAt = time.Now()
+	}
+	s.mu.Unlock()
+}
+
+func (s *LinkSocksServer) sendKnownPeerDirectCapabilities(clientID uuid.UUID, ws *WSConn) {
+	if !s.directEnable {
+		return
+	}
+
+	var capsToSend []DirectCapabilitiesMessage
+
+	s.mu.RLock()
+	meta := s.clientMeta[clientID]
+	if meta == nil {
+		s.mu.RUnlock()
+		return
+	}
+
+	switch meta.Role {
+	case directClientRoleConnector:
+		// Connector peers are reverse clients under meta.ReverseToken.
+		if clients, ok := s.tokenClients[meta.ReverseToken]; ok {
+			for _, ci := range clients {
+				pm := s.clientMeta[ci.ID]
+				if pm == nil || !pm.SupportsDirect || pm.LastCapabilities == nil {
+					continue
+				}
+				capsToSend = append(capsToSend, *pm.LastCapabilities)
+			}
+		}
+
+	case directClientRoleReverse:
+		// Reverse peers are all connector clients mapped to this internal token.
+		for connectorToken, rt := range s.connectorTokens {
+			if rt != meta.InternalToken {
+				continue
+			}
+			if clients, ok := s.tokenClients[connectorToken]; ok {
+				for _, ci := range clients {
+					pm := s.clientMeta[ci.ID]
+					if pm == nil || !pm.SupportsDirect || pm.LastCapabilities == nil {
+						continue
+					}
+					capsToSend = append(capsToSend, *pm.LastCapabilities)
+				}
+			}
+		}
+	}
+	s.mu.RUnlock()
+
+	for _, capMsg := range capsToSend {
+		s.relay.logMessage(capMsg, "send", ws.Label())
+		if err := ws.WriteMessage(capMsg); err != nil {
+			s.log.Debug().Err(err).Msg("Failed to send cached direct capabilities")
+		}
+	}
+}
+
+func (s *LinkSocksServer) forwardDirectMessageFromClient(clientID uuid.UUID, msg BaseMessage) {
+	if !s.directEnable {
+		return
+	}
+
+	var targets []*WSConn
+
+	s.mu.RLock()
+	meta := s.clientMeta[clientID]
+	if meta == nil {
+		s.mu.RUnlock()
+		return
+	}
+
+	switch meta.Role {
+	case directClientRoleConnector:
+		if clients, ok := s.tokenClients[meta.ReverseToken]; ok {
+			for _, ci := range clients {
+				pm := s.clientMeta[ci.ID]
+				if pm == nil || !pm.SupportsDirect {
+					continue
+				}
+				targets = append(targets, ci.Conn)
+			}
+		}
+
+	case directClientRoleReverse:
+		for connectorToken, rt := range s.connectorTokens {
+			if rt != meta.InternalToken {
+				continue
+			}
+			if clients, ok := s.tokenClients[connectorToken]; ok {
+				for _, ci := range clients {
+					pm := s.clientMeta[ci.ID]
+					if pm == nil || !pm.SupportsDirect {
+						continue
+					}
+					targets = append(targets, ci.Conn)
+				}
+			}
+		}
+	}
+	s.mu.RUnlock()
+
+	for _, t := range targets {
+		s.relay.logMessage(msg, "send", t.Label())
+		if err := t.WriteMessage(msg); err != nil {
+			s.log.Debug().Err(err).Msg("Failed to forward direct signaling message")
+		}
+	}
 }
 
 func (s *LinkSocksServer) reportError(err error) {
@@ -943,6 +1096,24 @@ func (s *LinkSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Con
 	}
 	s.tokenClients[internalToken] = append(s.tokenClients[internalToken], clientInfo{ID: clientID, Conn: wsConn})
 	s.clients[clientID] = wsConn
+	role := directClientRoleForward
+	metaReverseToken := ""
+	if isValidReverse {
+		role = directClientRoleReverse
+	} else if isValidConnector {
+		role = directClientRoleConnector
+		metaReverseToken = reverseToken
+	}
+	s.clientMeta[clientID] = &directClientMeta{
+		InternalToken:   internalToken,
+		ReverseToken:    metaReverseToken,
+		Role:            role,
+		SupportsDirect:  false,
+		UpdatedAt:       time.Now(),
+		LastCapabilities: nil,
+		LastRendezvous:   nil,
+		LastStatus:       nil,
+	}
 	s.mu.Unlock()
 
 	if isValidReverse {
@@ -981,6 +1152,14 @@ func (s *LinkSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Con
 		return
 	}
 
+	if s.directEnable {
+		hello := LogMessage{Level: LogLevelDebug, Msg: DirectServerHelloPrefix + "direct_signaling=1"}
+		s.relay.logMessage(hello, "send", wsConn.Label())
+		if err := wsConn.WriteMessage(hello); err != nil {
+			s.log.Debug().Err(err).Msg("Failed to send direct signaling server hello")
+		}
+	}
+
 	// Send initial partner status for connector clients
 	if isValidConnector {
 		// Count total reverse clients for this token
@@ -1011,7 +1190,7 @@ func (s *LinkSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Con
 	// Start message dispatcher
 	if isValidConnector {
 		go func() {
-			errChan <- s.connectorMessageDispatcher(ctx, wsConn, reverseToken)
+			errChan <- s.connectorMessageDispatcher(ctx, wsConn, reverseToken, clientID)
 		}()
 	} else {
 		go func() {
@@ -1042,6 +1221,54 @@ func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, cli
 
 			// Handle message sequentially (not in a goroutine)
 			switch m := msg.(type) {
+			case LogMessage:
+				if s.directEnable && s.clientHelloIndicatesDirectSupport(m) {
+					s.markClientSupportsDirect(clientID)
+					s.sendKnownPeerDirectCapabilities(clientID, ws)
+				}
+
+			case DirectCapabilitiesMessage:
+				if s.directEnable {
+					s.mu.Lock()
+					if meta := s.clientMeta[clientID]; meta != nil {
+						meta.SupportsDirect = true
+						tmp := m
+						meta.LastCapabilities = &tmp
+						meta.UpdatedAt = time.Now()
+					}
+					s.mu.Unlock()
+					s.forwardDirectMessageFromClient(clientID, m)
+				}
+
+			case DirectRendezvousMessage:
+				if s.directEnable {
+					s.mu.Lock()
+					if meta := s.clientMeta[clientID]; meta != nil {
+						meta.SupportsDirect = true
+						tmp := m
+						meta.LastRendezvous = &tmp
+						meta.UpdatedAt = time.Now()
+					}
+					s.mu.Unlock()
+					s.forwardDirectMessageFromClient(clientID, m)
+				}
+
+			case DirectStatusMessage:
+				if s.directEnable {
+					s.mu.Lock()
+					if meta := s.clientMeta[clientID]; meta != nil {
+						meta.SupportsDirect = true
+						tmp := m
+						meta.LastStatus = &tmp
+						meta.UpdatedAt = time.Now()
+					}
+					s.mu.Unlock()
+					s.forwardDirectMessageFromClient(clientID, m)
+				}
+
+			case UnknownMessage:
+				// Forward compatibility: ignore.
+
 			case DataMessage:
 				// Use non-blocking send for data messages
 				if queue, ok := s.relay.messageQueues.Load(m.ChannelID); ok {
@@ -1198,7 +1425,7 @@ func (s *LinkSocksServer) handleConnectorMessage(m ConnectorMessage, ws *WSConn,
 }
 
 // connectorMessageDispatcher handles WebSocket message distribution for connector tokens
-func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSConn, reverseToken string) error {
+func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSConn, reverseToken string, clientID uuid.UUID) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -1215,6 +1442,54 @@ func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WS
 			s.relay.logMessage(msg, "recv", ws.Label())
 
 			switch m := msg.(type) {
+			case LogMessage:
+				if s.directEnable && s.clientHelloIndicatesDirectSupport(m) {
+					s.markClientSupportsDirect(clientID)
+					s.sendKnownPeerDirectCapabilities(clientID, ws)
+				}
+
+			case DirectCapabilitiesMessage:
+				if s.directEnable {
+					s.mu.Lock()
+					if meta := s.clientMeta[clientID]; meta != nil {
+						meta.SupportsDirect = true
+						tmp := m
+						meta.LastCapabilities = &tmp
+						meta.UpdatedAt = time.Now()
+					}
+					s.mu.Unlock()
+					s.forwardDirectMessageFromClient(clientID, m)
+				}
+
+			case DirectRendezvousMessage:
+				if s.directEnable {
+					s.mu.Lock()
+					if meta := s.clientMeta[clientID]; meta != nil {
+						meta.SupportsDirect = true
+						tmp := m
+						meta.LastRendezvous = &tmp
+						meta.UpdatedAt = time.Now()
+					}
+					s.mu.Unlock()
+					s.forwardDirectMessageFromClient(clientID, m)
+				}
+
+			case DirectStatusMessage:
+				if s.directEnable {
+					s.mu.Lock()
+					if meta := s.clientMeta[clientID]; meta != nil {
+						meta.SupportsDirect = true
+						tmp := m
+						meta.LastStatus = &tmp
+						meta.UpdatedAt = time.Now()
+					}
+					s.mu.Unlock()
+					s.forwardDirectMessageFromClient(clientID, m)
+				}
+
+			case UnknownMessage:
+				// Forward compatibility: ignore.
+
 			case ConnectMessage:
 				go func(m ConnectMessage) {
 					reverseWS, err := s.getNextWebSocket(reverseToken)
@@ -1337,6 +1612,7 @@ func (s *LinkSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 
 	// Clean up client connection
 	delete(s.clients, clientID)
+	delete(s.clientMeta, clientID)
 	s.mu.Unlock()
 
 	// Broadcast outside the lock to avoid deadlock
