@@ -70,12 +70,17 @@ type LinkSocksClient struct {
 
 	directLocalSessionID  uuid.UUID
 	directLocalCandidates []DirectCandidate
+	directLocalPublicKey  []byte
+	directLocalKeyPair    *directKeyPair
+	directRemotePublicKey []byte
 	directLocalReady      bool
 
 	directRemoteSessionID  uuid.UUID
 	directRemoteCandidates []DirectCandidate
 
 	directPairSessionID  uuid.UUID
+	directPairSessionKey []byte
+	directPairKeyReady   bool
 	directPairSessionSet bool
 
 	directPendingRendezvous map[uuid.UUID]struct{}
@@ -429,11 +434,13 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 	var discovery DirectDiscovery
 	var stunServers []string
 	var localSession uuid.UUID
+	var action DirectOnlyAction
 
 	c.directMu.Lock()
 	discovery = c.directDiscovery
 	stunServers = append([]string(nil), c.stunServers...)
 	localSession = c.directLocalSessionID
+	action = c.directOnlyAction
 	c.directMu.Unlock()
 
 	if discovery == DirectDiscoveryAuto {
@@ -443,6 +450,17 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 		c.log.Warn().Str("direct_discovery", string(discovery)).Msg("Direct discovery not supported")
 		return
 	}
+
+	kp, err := newDirectKeyPair()
+	if err != nil {
+		c.log.Warn().Err(err).Msg("Direct keypair generation failed")
+		return
+	}
+
+	c.directMu.Lock()
+	c.directLocalKeyPair = kp
+	c.directLocalPublicKey = append([]byte(nil), kp.pub...)
+	c.directMu.Unlock()
 
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
@@ -455,9 +473,6 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 	if err != nil {
 		c.log.Warn().Err(err).Msg("Direct STUN discovery failed")
 		if c.directMode == DirectModeDirectOnly {
-			c.directMu.Lock()
-			action := c.directOnlyAction
-			c.directMu.Unlock()
 			if action == DirectOnlyActionExit {
 				c.reportError(fmt.Errorf("direct-only: STUN discovery failed: %w", err))
 				c.Close()
@@ -480,16 +495,17 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 		pending = append(pending, sid)
 	}
 	c.directPendingRendezvous = make(map[uuid.UUID]struct{})
+	localPub := append([]byte(nil), c.directLocalPublicKey...)
 	c.directMu.Unlock()
 	c.directNotify()
 
-	capMsg := DirectCapabilitiesMessage{SessionID: localSession, Candidates: localCandidates, Discoveries: []string{"stun"}}
+	capMsg := DirectCapabilitiesMessage{SessionID: localSession, Candidates: localCandidates, Discoveries: []string{"stun"}, PublicKey: localPub}
 	if err := c.sendDirectMessage(capMsg); err != nil {
 		c.log.Debug().Err(err).Msg("Failed to send direct capabilities")
 	}
 
 	for _, sid := range pending {
-		rendezvous := DirectRendezvousMessage{SessionID: sid, Candidates: localCandidates}
+		rendezvous := DirectRendezvousMessage{SessionID: sid, Candidates: localCandidates, PublicKey: localPub}
 		_ = c.sendDirectMessage(rendezvous)
 	}
 	c.directNotify()
@@ -501,16 +517,22 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 		case <-c.directNotifyCh:
 			var remoteSession uuid.UUID
 			var remoteCandidates []DirectCandidate
+			var remotePub []byte
 			var pairSession uuid.UUID
 			var pairSet bool
+			var pairKey []byte
+			var pairKeyReady bool
 			var alreadyProbing bool
 			var alreadyReady bool
 
 			c.directMu.Lock()
 			remoteSession = c.directRemoteSessionID
 			remoteCandidates = append([]DirectCandidate(nil), c.directRemoteCandidates...)
+			remotePub = append([]byte(nil), c.directRemotePublicKey...)
 			pairSession = c.directPairSessionID
 			pairSet = c.directPairSessionSet
+			pairKey = append([]byte(nil), c.directPairSessionKey...)
+			pairKeyReady = c.directPairKeyReady
 			alreadyProbing = c.directProbing
 			alreadyReady = c.directReady
 			c.directMu.Unlock()
@@ -533,7 +555,24 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 				c.directMu.Unlock()
 			}
 
-			prober := NewDirectProber(conn, pairSession, c.log)
+			if !pairKeyReady {
+				if len(remotePub) != 32 {
+					// Peer does not support LSHP-060 yet; keep relay path.
+					continue
+				}
+				k, err := deriveDirectSessionKey(pairSession, kp.priv, remotePub)
+				if err != nil {
+					c.log.Debug().Err(err).Msg("Direct session key derivation failed")
+					continue
+				}
+				pairKey = k
+				c.directMu.Lock()
+				c.directPairSessionKey = append([]byte(nil), k...)
+				c.directPairKeyReady = true
+				c.directMu.Unlock()
+			}
+
+			prober := NewDirectProber(conn, pairSession, pairKey, c.log)
 			c.directMu.Lock()
 			c.directProbing = true
 			c.directMu.Unlock()
@@ -562,9 +601,6 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 			c.log.Warn().Err(err).Str("session_id", pairSession.String()).Msg("Direct probe failed")
 
 			if c.directMode == DirectModeDirectOnly {
-				c.directMu.Lock()
-				action := c.directOnlyAction
-				c.directMu.Unlock()
 				if action == DirectOnlyActionExit {
 					c.reportError(fmt.Errorf("direct-only: probe failed: %w", err))
 					c.Close()
@@ -1112,8 +1148,12 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 				c.directMu.Lock()
 				c.directRemoteSessionID = m.SessionID
 				c.directRemoteCandidates = append([]DirectCandidate(nil), m.Candidates...)
+				if len(m.PublicKey) > 0 {
+					c.directRemotePublicKey = append([]byte(nil), m.PublicKey...)
+				}
 				localReady := c.directLocalReady
 				localCandidates := append([]DirectCandidate(nil), c.directLocalCandidates...)
+				localPub := append([]byte(nil), c.directLocalPublicKey...)
 				if !localReady {
 					c.directPendingRendezvous[m.SessionID] = struct{}{}
 				}
@@ -1121,7 +1161,7 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 
 				c.log.Debug().Str("session_id", m.SessionID.String()).Int("candidates", len(m.Candidates)).Msg("Received direct capabilities")
 				if localReady {
-					rendezvous := DirectRendezvousMessage{SessionID: m.SessionID, Candidates: localCandidates}
+					rendezvous := DirectRendezvousMessage{SessionID: m.SessionID, Candidates: localCandidates, PublicKey: localPub}
 					c.relay.logMessage(rendezvous, "send", ws.Label())
 					_ = ws.WriteMessage(rendezvous)
 				}
@@ -1131,6 +1171,9 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 				c.directMu.Lock()
 				if m.SessionID == c.directLocalSessionID {
 					c.directRemoteCandidates = append([]DirectCandidate(nil), m.Candidates...)
+					if len(m.PublicKey) > 0 {
+						c.directRemotePublicKey = append([]byte(nil), m.PublicKey...)
+					}
 				}
 				c.directMu.Unlock()
 				c.log.Debug().Str("session_id", m.SessionID.String()).Int("candidates", len(m.Candidates)).Msg("Received direct rendezvous")

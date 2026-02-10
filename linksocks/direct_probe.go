@@ -16,7 +16,7 @@ import (
 
 const (
 	directProbeMagic   uint32 = 0x4C534850 // "LSHP"
-	directProbeVersion byte   = 1
+	directProbeVersion byte   = 2
 
 	directProbeTypeRequest  byte = 1
 	directProbeTypeResponse byte = 2
@@ -26,12 +26,29 @@ type directProbePacket struct {
 	Type      byte
 	SessionID uuid.UUID
 	Nonce     [8]byte
+	MAC       [directProbeMACLen]byte
+	HasMAC    bool
+	Version   byte
 }
 
 func packDirectProbePacket(p directProbePacket) []byte {
+	if p.Version == 0 {
+		p.Version = directProbeVersion
+	}
+	if p.Version >= 2 {
+		b := make([]byte, 4+1+1+16+8+directProbeMACLen)
+		binary.BigEndian.PutUint32(b[0:4], directProbeMagic)
+		b[4] = p.Version
+		b[5] = p.Type
+		copy(b[6:22], p.SessionID[:])
+		copy(b[22:30], p.Nonce[:])
+		copy(b[30:30+directProbeMACLen], p.MAC[:])
+		return b
+	}
+
 	b := make([]byte, 4+1+1+16+8)
 	binary.BigEndian.PutUint32(b[0:4], directProbeMagic)
-	b[4] = directProbeVersion
+	b[4] = p.Version
 	b[5] = p.Type
 	copy(b[6:22], p.SessionID[:])
 	copy(b[22:30], p.Nonce[:])
@@ -45,7 +62,8 @@ func parseDirectProbePacket(b []byte) (directProbePacket, bool) {
 	if binary.BigEndian.Uint32(b[0:4]) != directProbeMagic {
 		return directProbePacket{}, false
 	}
-	if b[4] != directProbeVersion {
+	ver := b[4]
+	if ver != 1 && ver != 2 {
 		return directProbePacket{}, false
 	}
 
@@ -53,12 +71,21 @@ func parseDirectProbePacket(b []byte) (directProbePacket, bool) {
 	copy(sid[:], b[6:22])
 	var nonce [8]byte
 	copy(nonce[:], b[22:30])
-	return directProbePacket{Type: b[5], SessionID: sid, Nonce: nonce}, true
+	if ver >= 2 {
+		if len(b) < 4+1+1+16+8+directProbeMACLen {
+			return directProbePacket{}, false
+		}
+		var mac [directProbeMACLen]byte
+		copy(mac[:], b[30:30+directProbeMACLen])
+		return directProbePacket{Type: b[5], SessionID: sid, Nonce: nonce, MAC: mac, HasMAC: true, Version: ver}, true
+	}
+	return directProbePacket{Type: b[5], SessionID: sid, Nonce: nonce, HasMAC: false, Version: ver}, true
 }
 
 type DirectProber struct {
-	log  zerolog.Logger
-	conn *net.UDPConn
+	log        zerolog.Logger
+	conn       *net.UDPConn
+	sessionKey []byte
 
 	mu       sync.Mutex
 	session  uuid.UUID
@@ -67,16 +94,17 @@ type DirectProber struct {
 	lastFrom *net.UDPAddr
 }
 
-func NewDirectProber(conn *net.UDPConn, sessionID uuid.UUID, logger zerolog.Logger) *DirectProber {
+func NewDirectProber(conn *net.UDPConn, sessionID uuid.UUID, sessionKey []byte, logger zerolog.Logger) *DirectProber {
 	if logger.GetLevel() == zerolog.NoLevel {
 		logger = zerolog.Nop()
 	}
 	return &DirectProber{
-		log:     logger,
-		conn:    conn,
-		session: sessionID,
-		ready:   false,
-		readyCh: make(chan struct{}),
+		log:        logger,
+		conn:       conn,
+		sessionKey: append([]byte(nil), sessionKey...),
+		session:    sessionID,
+		ready:      false,
+		readyCh:    make(chan struct{}),
 	}
 }
 
@@ -125,9 +153,24 @@ func (p *DirectProber) Start(ctx context.Context) {
 				continue
 			}
 
+			if len(p.sessionKey) > 0 {
+				// If we have a session key, require authenticated probe packets.
+				if pkt.Version < 2 || !pkt.HasMAC {
+					continue
+				}
+				if !verifyDirectProbeMAC(p.sessionKey, pkt.Version, pkt.Type, pkt.SessionID, pkt.Nonce, pkt.MAC) {
+					continue
+				}
+			}
+
 			switch pkt.Type {
 			case directProbeTypeRequest:
-				resp := directProbePacket{Type: directProbeTypeResponse, SessionID: p.session, Nonce: pkt.Nonce}
+				resp := directProbePacket{Type: directProbeTypeResponse, SessionID: p.session, Nonce: pkt.Nonce, Version: pkt.Version}
+				if len(p.sessionKey) > 0 {
+					resp.Version = 2
+					resp.MAC = computeDirectProbeMAC(p.sessionKey, resp.Version, resp.Type, resp.SessionID, resp.Nonce)
+					resp.HasMAC = true
+				}
 				_, _ = p.conn.WriteToUDP(packDirectProbePacket(resp), from)
 
 			case directProbeTypeResponse:
@@ -166,7 +209,12 @@ candidateLoop:
 
 		var nonce [8]byte
 		_, _ = rand.Read(nonce[:])
-		req := directProbePacket{Type: directProbeTypeRequest, SessionID: p.session, Nonce: nonce}
+		req := directProbePacket{Type: directProbeTypeRequest, SessionID: p.session, Nonce: nonce, Version: 1}
+		if len(p.sessionKey) > 0 {
+			req.Version = 2
+			req.MAC = computeDirectProbeMAC(p.sessionKey, req.Version, req.Type, req.SessionID, req.Nonce)
+			req.HasMAC = true
+		}
 		payload := packDirectProbePacket(req)
 
 		start := time.Now()

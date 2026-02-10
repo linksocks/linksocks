@@ -65,16 +65,16 @@ const (
 	ProtocolVersion = byte(0x01)
 
 	// Binary message types
-	BinaryTypeAuth              = byte(0x01)
-	BinaryTypeAuthResponse      = byte(0x02)
-	BinaryTypeConnect           = byte(0x03)
-	BinaryTypeData              = byte(0x04)
-	BinaryTypeConnectResponse   = byte(0x05)
-	BinaryTypeDisconnect        = byte(0x06)
-	BinaryTypeConnector         = byte(0x07)
-	BinaryTypeConnectorResponse = byte(0x08)
-	BinaryTypeLog               = byte(0x09)
-	BinaryTypePartners          = byte(0x0A)
+	BinaryTypeAuth               = byte(0x01)
+	BinaryTypeAuthResponse       = byte(0x02)
+	BinaryTypeConnect            = byte(0x03)
+	BinaryTypeData               = byte(0x04)
+	BinaryTypeConnectResponse    = byte(0x05)
+	BinaryTypeDisconnect         = byte(0x06)
+	BinaryTypeConnector          = byte(0x07)
+	BinaryTypeConnectorResponse  = byte(0x08)
+	BinaryTypeLog                = byte(0x09)
+	BinaryTypePartners           = byte(0x0A)
 	BinaryTypeDirectCapabilities = byte(0x0B)
 	BinaryTypeDirectRendezvous   = byte(0x0C)
 	BinaryTypeDirectStatus       = byte(0x0D)
@@ -88,16 +88,16 @@ const (
 	BinaryConnectorOperationRemove = byte(0x02)
 
 	// Type strings
-	TypeAuth              = "auth"
-	TypeAuthResponse      = "auth_response"
-	TypeConnect           = "connect"
-	TypeData              = "data"
-	TypeConnectResponse   = "connect_response"
-	TypeDisconnect        = "disconnect"
-	TypeConnector         = "connector"
-	TypeConnectorResponse = "connector_response"
-	TypeLog               = "log"
-	TypePartners          = "partners"
+	TypeAuth               = "auth"
+	TypeAuthResponse       = "auth_response"
+	TypeConnect            = "connect"
+	TypeData               = "data"
+	TypeConnectResponse    = "connect_response"
+	TypeDisconnect         = "disconnect"
+	TypeConnector          = "connector"
+	TypeConnectorResponse  = "connector_response"
+	TypeLog                = "log"
+	TypePartners           = "partners"
 	TypeDirectCapabilities = "direct_capabilities"
 	TypeDirectRendezvous   = "direct_rendezvous"
 	TypeDirectStatus       = "direct_status"
@@ -246,6 +246,7 @@ type DirectCapabilitiesMessage struct {
 	SessionID   uuid.UUID         `json:"session_id"`
 	Candidates  []DirectCandidate `json:"candidates,omitempty"`
 	Discoveries []string          `json:"discoveries,omitempty"`
+	PublicKey   []byte            `json:"public_key,omitempty"`
 }
 
 func (m DirectCapabilitiesMessage) GetType() string {
@@ -255,6 +256,7 @@ func (m DirectCapabilitiesMessage) GetType() string {
 type DirectRendezvousMessage struct {
 	SessionID  uuid.UUID         `json:"session_id"`
 	Candidates []DirectCandidate `json:"candidates,omitempty"`
+	PublicKey  []byte            `json:"public_key,omitempty"`
 }
 
 func (m DirectRendezvousMessage) GetType() string {
