@@ -114,6 +114,12 @@ type ClientOption struct {
 	UpstreamPassword  string
 	UpstreamProxyType ProxyType
 	NoEnvProxy        bool // Ignore environment proxy settings
+
+	// Direct connection options (experimental; default relay-only).
+	DirectMode       DirectMode
+	DirectDiscovery  DirectDiscovery
+	StunServers      []string
+	DirectOnlyAction DirectOnlyAction
 }
 
 // DefaultClientOption returns default client options
@@ -136,6 +142,11 @@ func DefaultClientOption() *ClientOption {
 		UpstreamUsername: "",
 		UpstreamPassword: "",
 		NoEnvProxy:       false,
+
+		DirectMode:       DirectModeRelayOnly,
+		DirectDiscovery:  DirectDiscoverySTUN,
+		StunServers:      nil,
+		DirectOnlyAction: DirectOnlyActionExit,
 	}
 }
 
@@ -251,6 +262,26 @@ func (o *ClientOption) WithUpstreamAuth(username, password string) *ClientOption
 // WithNoEnvProxy sets whether to ignore environment proxy settings
 func (o *ClientOption) WithNoEnvProxy(noEnvProxy bool) *ClientOption {
 	o.NoEnvProxy = noEnvProxy
+	return o
+}
+
+func (o *ClientOption) WithDirectMode(mode DirectMode) *ClientOption {
+	o.DirectMode = mode
+	return o
+}
+
+func (o *ClientOption) WithDirectDiscovery(discovery DirectDiscovery) *ClientOption {
+	o.DirectDiscovery = discovery
+	return o
+}
+
+func (o *ClientOption) WithStunServers(servers []string) *ClientOption {
+	o.StunServers = servers
+	return o
+}
+
+func (o *ClientOption) WithDirectOnlyAction(action DirectOnlyAction) *ClientOption {
+	o.DirectOnlyAction = action
 	return o
 }
 

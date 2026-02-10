@@ -119,6 +119,9 @@ type ServerOption struct {
 	UpstreamUsername  string
 	UpstreamPassword  string
 	UpstreamProxyType ProxyType
+
+	// Direct connection options (experimental; default disabled).
+	DirectEnable bool
 }
 
 // DefaultServerOption returns default server options
@@ -138,6 +141,7 @@ func DefaultServerOption() *ServerOption {
 		UpstreamProxy:    "",
 		UpstreamUsername: "",
 		UpstreamPassword: "",
+		DirectEnable:     false,
 	}
 }
 
@@ -223,6 +227,11 @@ func (o *ServerOption) WithUpstreamProxyType(proxyType ProxyType) *ServerOption 
 func (o *ServerOption) WithUpstreamAuth(username, password string) *ServerOption {
 	o.UpstreamUsername = username
 	o.UpstreamPassword = password
+	return o
+}
+
+func (o *ServerOption) WithDirectEnable(enable bool) *ServerOption {
+	o.DirectEnable = enable
 	return o
 }
 
