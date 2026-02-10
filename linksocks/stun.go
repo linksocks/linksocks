@@ -19,9 +19,9 @@ const (
 	stunTypeBindingRequest  = 0x0001
 	stunTypeBindingResponse = 0x0101
 
-	stunAttrMappedAddress     = 0x0001
-	stunAttrXorMappedAddress  = 0x0020
-	stunMagicCookie    uint32 = 0x2112A442
+	stunAttrMappedAddress           = 0x0001
+	stunAttrXorMappedAddress        = 0x0020
+	stunMagicCookie          uint32 = 0x2112A442
 )
 
 type StunResult struct {
@@ -30,6 +30,18 @@ type StunResult struct {
 	Port      int
 	RTT       time.Duration
 	Candidate DirectCandidate
+}
+
+func extractStunTxID(b []byte) ([12]byte, bool) {
+	var txID [12]byte
+	if len(b) < 20 {
+		return txID, false
+	}
+	if binary.BigEndian.Uint32(b[4:8]) != stunMagicCookie {
+		return txID, false
+	}
+	copy(txID[:], b[8:20])
+	return txID, true
 }
 
 func normalizeStunServer(s string) string {
@@ -353,6 +365,149 @@ func StunDiscover(ctx context.Context, opt *StunDiscoverOption) (*StunResult, er
 		return best, nil
 	}
 
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, errors.New("stun: no results")
+}
+
+// StunDiscoverFromConn performs STUN discovery using an existing UDP socket.
+// This is required when the caller needs the mapped address/port to match the
+// socket that will later be used for NAT hole punching.
+func StunDiscoverFromConn(ctx context.Context, conn *net.UDPConn, opt *StunDiscoverOption) (*StunResult, error) {
+	if conn == nil {
+		return nil, errors.New("stun: nil conn")
+	}
+	if opt == nil {
+		opt = DefaultStunDiscoverOption()
+	}
+	if opt.Timeout <= 0 {
+		opt.Timeout = 2 * time.Second
+	}
+	if len(opt.Servers) == 0 {
+		return nil, errors.New("stun: no servers")
+	}
+
+	type pendingReq struct {
+		server   string
+		addr     *net.UDPAddr
+		txID     [12]byte
+		sentAt   time.Time
+		disabled bool
+	}
+
+	pendings := make([]pendingReq, 0, len(opt.Servers))
+	for _, s := range opt.Servers {
+		server := normalizeStunServer(s)
+		if server == "" {
+			continue
+		}
+		addr, err := net.ResolveUDPAddr("udp", server)
+		if err != nil {
+			continue
+		}
+		var txID [12]byte
+		if _, err := rand.Read(txID[:]); err != nil {
+			return nil, fmt.Errorf("stun: rand: %w", err)
+		}
+		req := BuildStunBindingRequest(txID)
+		sentAt := time.Now()
+		if _, err := conn.WriteToUDP(req, addr); err != nil {
+			continue
+		}
+		pendings = append(pendings, pendingReq{server: server, addr: addr, txID: txID, sentAt: sentAt})
+	}
+
+	if len(pendings) == 0 {
+		return nil, errors.New("stun: no valid servers")
+	}
+
+	start := time.Now()
+	deadline := start.Add(opt.Timeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return nil, fmt.Errorf("stun: set deadline: %w", err)
+	}
+
+	remaining := len(pendings)
+	buf := make([]byte, 1500)
+	var best *StunResult
+	var lastErr error
+
+	for remaining > 0 {
+		select {
+		case <-ctx.Done():
+			if best != nil {
+				return best, nil
+			}
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, ctx.Err()
+		default:
+		}
+
+		n, _, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			if best != nil {
+				return best, nil
+			}
+			return nil, fmt.Errorf("stun: read: %w", err)
+		}
+
+		rxTxID, ok := extractStunTxID(buf[:n])
+		if !ok {
+			continue
+		}
+
+		matched := -1
+		for i := range pendings {
+			if pendings[i].disabled {
+				continue
+			}
+			if pendings[i].txID == rxTxID {
+				matched = i
+				break
+			}
+		}
+		if matched < 0 {
+			continue
+		}
+
+		pending := &pendings[matched]
+		pending.disabled = true
+		remaining--
+
+		mappedAddr, mappedPort, err := ParseStunBindingResponse(buf[:n], pending.txID)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		rtt := time.Since(pending.sentAt)
+		res := &StunResult{
+			Server: pending.server,
+			Addr:   mappedAddr,
+			Port:   mappedPort,
+			RTT:    rtt,
+			Candidate: DirectCandidate{
+				Addr: mappedAddr,
+				Port: mappedPort,
+				Kind: "srflx",
+			},
+		}
+
+		if best == nil || res.RTT < best.RTT {
+			best = res
+		}
+	}
+
+	if best != nil {
+		opt.Logger.Debug().Str("server", best.Server).Str("addr", best.Addr).Int("port", best.Port).Int64("rtt_ms", best.RTT.Milliseconds()).Msg("STUN srflx discovered")
+		return best, nil
+	}
 	if lastErr != nil {
 		return nil, lastErr
 	}

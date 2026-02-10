@@ -59,7 +59,29 @@ type LinkSocksClient struct {
 	numPartners     int
 
 	// Direct signaling (experimental)
-	directMode DirectMode
+	directMode       DirectMode
+	directDiscovery  DirectDiscovery
+	stunServers      []string
+	directOnlyAction DirectOnlyAction
+
+	directStartOnce sync.Once
+	directMu        sync.Mutex
+	directNotifyCh  chan struct{}
+
+	directLocalSessionID  uuid.UUID
+	directLocalCandidates []DirectCandidate
+	directLocalReady      bool
+
+	directRemoteSessionID  uuid.UUID
+	directRemoteCandidates []DirectCandidate
+
+	directPairSessionID  uuid.UUID
+	directPairSessionSet bool
+
+	directPendingRendezvous map[uuid.UUID]struct{}
+	directProbing           bool
+	directReady             bool
+	directRefuseSocks       bool
 
 	websockets     []*WSConn // Multiple WebSocket connections
 	currentIndex   int       // Current WebSocket index for round-robin
@@ -333,31 +355,227 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 		WithUpstreamProxyType(opt.UpstreamProxyType)
 
 	client := &LinkSocksClient{
-		instanceID:      uuid.New(),
-		relay:           NewRelay(opt.Logger, relayOpt),
-		log:             opt.Logger,
-		token:           token,
-		wsURL:           opt.WSURL,
-		reverse:         opt.Reverse,
-		socksHost:       opt.SocksHost,
-		socksPort:       opt.SocksPort,
-		socksUsername:   opt.SocksUsername,
-		socksPassword:   opt.SocksPassword,
-		socksWaitServer: opt.SocksWaitServer,
-		reconnect:       opt.Reconnect,
-		reconnectDelay:  opt.ReconnectDelay,
-		errors:          make(chan error, 16),
-		Connected:       make(chan struct{}),
-		Disconnected:    disconnected,
-		IsConnected:     false,
-		numPartners:     0,
-		threads:         opt.Threads,
-		websockets:      make([]*WSConn, 0, opt.Threads),
-		noEnvProxy:      opt.NoEnvProxy,
-		directMode:      opt.DirectMode,
+		instanceID:              uuid.New(),
+		relay:                   NewRelay(opt.Logger, relayOpt),
+		log:                     opt.Logger,
+		token:                   token,
+		wsURL:                   opt.WSURL,
+		reverse:                 opt.Reverse,
+		socksHost:               opt.SocksHost,
+		socksPort:               opt.SocksPort,
+		socksUsername:           opt.SocksUsername,
+		socksPassword:           opt.SocksPassword,
+		socksWaitServer:         opt.SocksWaitServer,
+		reconnect:               opt.Reconnect,
+		reconnectDelay:          opt.ReconnectDelay,
+		errors:                  make(chan error, 16),
+		Connected:               make(chan struct{}),
+		Disconnected:            disconnected,
+		IsConnected:             false,
+		numPartners:             0,
+		threads:                 opt.Threads,
+		websockets:              make([]*WSConn, 0, opt.Threads),
+		noEnvProxy:              opt.NoEnvProxy,
+		directMode:              opt.DirectMode,
+		directDiscovery:         opt.DirectDiscovery,
+		stunServers:             opt.StunServers,
+		directOnlyAction:        opt.DirectOnlyAction,
+		directNotifyCh:          make(chan struct{}, 1),
+		directLocalSessionID:    uuid.New(),
+		directPendingRendezvous: make(map[uuid.UUID]struct{}),
 	}
 
 	return client
+}
+
+func minUUID(a, b uuid.UUID) uuid.UUID {
+	for i := 0; i < len(a); i++ {
+		if a[i] < b[i] {
+			return a
+		}
+		if a[i] > b[i] {
+			return b
+		}
+	}
+	return a
+}
+
+func (c *LinkSocksClient) directNotify() {
+	select {
+	case c.directNotifyCh <- struct{}{}:
+	default:
+	}
+}
+
+func (c *LinkSocksClient) startDirectAgent(ctx context.Context) {
+	if c.directMode == DirectModeRelayOnly {
+		return
+	}
+	c.directStartOnce.Do(func() {
+		go c.directAgent(ctx)
+	})
+}
+
+func (c *LinkSocksClient) sendDirectMessage(msg BaseMessage) error {
+	ws := c.getNextWebSocket()
+	if ws == nil {
+		return errors.New("direct: not connected")
+	}
+	c.relay.logMessage(msg, "send", ws.Label())
+	return ws.WriteMessage(msg)
+}
+
+func (c *LinkSocksClient) directAgent(ctx context.Context) {
+	var discovery DirectDiscovery
+	var stunServers []string
+	var localSession uuid.UUID
+
+	c.directMu.Lock()
+	discovery = c.directDiscovery
+	stunServers = append([]string(nil), c.stunServers...)
+	localSession = c.directLocalSessionID
+	c.directMu.Unlock()
+
+	if discovery == DirectDiscoveryAuto {
+		discovery = DirectDiscoverySTUN
+	}
+	if discovery != DirectDiscoverySTUN {
+		c.log.Warn().Str("direct_discovery", string(discovery)).Msg("Direct discovery not supported")
+		return
+	}
+
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		c.log.Warn().Err(err).Msg("Direct UDP listen failed")
+		return
+	}
+	defer conn.Close()
+
+	stunRes, err := StunDiscoverFromConn(ctx, conn, &StunDiscoverOption{Servers: stunServers, Timeout: 2 * time.Second, Logger: c.log})
+	if err != nil {
+		c.log.Warn().Err(err).Msg("Direct STUN discovery failed")
+		if c.directMode == DirectModeDirectOnly {
+			c.directMu.Lock()
+			action := c.directOnlyAction
+			c.directMu.Unlock()
+			if action == DirectOnlyActionExit {
+				c.reportError(fmt.Errorf("direct-only: STUN discovery failed: %w", err))
+				c.Close()
+			} else {
+				c.directMu.Lock()
+				c.directRefuseSocks = true
+				c.directMu.Unlock()
+			}
+		}
+		return
+	}
+
+	localCandidates := []DirectCandidate{stunRes.Candidate}
+
+	c.directMu.Lock()
+	c.directLocalCandidates = localCandidates
+	c.directLocalReady = true
+	pending := make([]uuid.UUID, 0, len(c.directPendingRendezvous))
+	for sid := range c.directPendingRendezvous {
+		pending = append(pending, sid)
+	}
+	c.directPendingRendezvous = make(map[uuid.UUID]struct{})
+	c.directMu.Unlock()
+	c.directNotify()
+
+	capMsg := DirectCapabilitiesMessage{SessionID: localSession, Candidates: localCandidates, Discoveries: []string{"stun"}}
+	if err := c.sendDirectMessage(capMsg); err != nil {
+		c.log.Debug().Err(err).Msg("Failed to send direct capabilities")
+	}
+
+	for _, sid := range pending {
+		rendezvous := DirectRendezvousMessage{SessionID: sid, Candidates: localCandidates}
+		_ = c.sendDirectMessage(rendezvous)
+	}
+	c.directNotify()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.directNotifyCh:
+			var remoteSession uuid.UUID
+			var remoteCandidates []DirectCandidate
+			var pairSession uuid.UUID
+			var pairSet bool
+			var alreadyProbing bool
+			var alreadyReady bool
+
+			c.directMu.Lock()
+			remoteSession = c.directRemoteSessionID
+			remoteCandidates = append([]DirectCandidate(nil), c.directRemoteCandidates...)
+			pairSession = c.directPairSessionID
+			pairSet = c.directPairSessionSet
+			alreadyProbing = c.directProbing
+			alreadyReady = c.directReady
+			c.directMu.Unlock()
+
+			if alreadyReady || alreadyProbing {
+				continue
+			}
+			if remoteSession == uuid.Nil {
+				continue
+			}
+			if len(remoteCandidates) == 0 {
+				continue
+			}
+
+			if !pairSet {
+				pairSession = minUUID(localSession, remoteSession)
+				c.directMu.Lock()
+				c.directPairSessionID = pairSession
+				c.directPairSessionSet = true
+				c.directMu.Unlock()
+			}
+
+			prober := NewDirectProber(conn, pairSession, c.log)
+			c.directMu.Lock()
+			c.directProbing = true
+			c.directMu.Unlock()
+
+			_ = c.sendDirectMessage(DirectStatusMessage{SessionID: pairSession, Status: "probing"})
+			go prober.Start(ctx)
+
+			probeCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+			res, err := prober.Probe(probeCtx, remoteCandidates, 800*time.Millisecond)
+			cancel()
+
+			if err == nil && res != nil {
+				c.directMu.Lock()
+				c.directReady = true
+				c.directProbing = false
+				c.directMu.Unlock()
+				_ = c.sendDirectMessage(DirectStatusMessage{SessionID: pairSession, Status: "ready", Metrics: DirectMetrics{RTTMs: res.RTT.Milliseconds()}})
+				c.log.Info().Str("session_id", pairSession.String()).Int64("rtt_ms", res.RTT.Milliseconds()).Msg("Direct probe ready")
+				continue
+			}
+
+			c.directMu.Lock()
+			c.directProbing = false
+			c.directMu.Unlock()
+			_ = c.sendDirectMessage(DirectStatusMessage{SessionID: pairSession, Status: "failed", Metrics: DirectMetrics{Reason: err.Error()}})
+			c.log.Warn().Err(err).Str("session_id", pairSession.String()).Msg("Direct probe failed")
+
+			if c.directMode == DirectModeDirectOnly {
+				c.directMu.Lock()
+				action := c.directOnlyAction
+				c.directMu.Unlock()
+				if action == DirectOnlyActionExit {
+					c.reportError(fmt.Errorf("direct-only: probe failed: %w", err))
+					c.Close()
+					return
+				}
+				c.directMu.Lock()
+				c.directRefuseSocks = true
+				c.directMu.Unlock()
+			}
+		}
+	}
 }
 
 func (c *LinkSocksClient) reportError(err error) {
@@ -785,6 +1003,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 
 	if index == 0 {
 		c.setConnectionStatus(true)
+		c.startDirectAgent(ctx)
 	}
 
 	// Measure latency using ping/pong asynchronously
@@ -890,11 +1109,32 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 
 			switch m := msg.(type) {
 			case DirectCapabilitiesMessage:
-				// TODO(LSHP-050+): store and use for ICE-lite probing.
+				c.directMu.Lock()
+				c.directRemoteSessionID = m.SessionID
+				c.directRemoteCandidates = append([]DirectCandidate(nil), m.Candidates...)
+				localReady := c.directLocalReady
+				localCandidates := append([]DirectCandidate(nil), c.directLocalCandidates...)
+				if !localReady {
+					c.directPendingRendezvous[m.SessionID] = struct{}{}
+				}
+				c.directMu.Unlock()
+
 				c.log.Debug().Str("session_id", m.SessionID.String()).Int("candidates", len(m.Candidates)).Msg("Received direct capabilities")
+				if localReady {
+					rendezvous := DirectRendezvousMessage{SessionID: m.SessionID, Candidates: localCandidates}
+					c.relay.logMessage(rendezvous, "send", ws.Label())
+					_ = ws.WriteMessage(rendezvous)
+				}
+				c.directNotify()
 
 			case DirectRendezvousMessage:
+				c.directMu.Lock()
+				if m.SessionID == c.directLocalSessionID {
+					c.directRemoteCandidates = append([]DirectCandidate(nil), m.Candidates...)
+				}
+				c.directMu.Unlock()
 				c.log.Debug().Str("session_id", m.SessionID.String()).Int("candidates", len(m.Candidates)).Msg("Received direct rendezvous")
+				c.directNotify()
 
 			case DirectStatusMessage:
 				c.log.Debug().Str("session_id", m.SessionID.String()).Str("status", m.Status).Msg("Received direct status")
@@ -1065,6 +1305,17 @@ func (c *LinkSocksClient) runSocksServer(ctx context.Context) error {
 // handleSocksRequest handles SOCKS5 client request
 func (c *LinkSocksClient) handleSocksRequest(ctx context.Context, socksConn net.Conn) {
 	defer socksConn.Close()
+
+	if c.directMode == DirectModeDirectOnly {
+		c.directMu.Lock()
+		refuse := c.directRefuseSocks
+		c.directMu.Unlock()
+		if refuse {
+			c.log.Warn().Msg("Direct-only failed, refusing socks request")
+			_ = c.relay.RefuseSocksRequest(socksConn, 0x03)
+			return
+		}
+	}
 
 	// Wait up to 10 seconds for WebSocket connection
 	startTime := time.Now()
