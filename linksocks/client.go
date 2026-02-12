@@ -578,11 +578,13 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 			c.directMu.Unlock()
 
 			_ = c.sendDirectMessage(DirectStatusMessage{SessionID: pairSession, Status: "probing"})
-			go prober.Start(ctx)
+			proberCtx, cancelProber := context.WithCancel(ctx)
+			go prober.Start(proberCtx)
 
 			probeCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
 			res, err := prober.Probe(probeCtx, remoteCandidates, 800*time.Millisecond)
 			cancel()
+			cancelProber()
 
 			if err == nil && res != nil {
 				c.directMu.Lock()
