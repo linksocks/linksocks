@@ -8,7 +8,11 @@ LinkSocks is a SOCKS proxy implementation over WebSocket protocol.
 
 ## Overview
 
-This tool allows you to securely expose SOCKS proxy services under Web Application Firewall (WAF) protection (forward socks), or enable clients to connect and serve as SOCKS proxy servers when they don't have public network access (reverse socks).
+LinkSocks is a secure SOCKS5 proxy over WebSocket. It allows you to traverse firewalls and complex network topologies by tunneling traffic through standard web connections.
+
+Its architecture allows you to hide the proxy server behind a WAF or CDN (like Cloudflare). By disguising proxy traffic as normal HTTPS requests, it protects the server's real IP address and evades deep packet inspection.
+
+Crucially, it supports Serverless Intranet Penetration (compatible with Cloudflare Workers). This allows you to bridge two private networks securely without a dedicated VPS. Since both the user and the internal resource actively connect to the serverless cloud relay, you can access your home or office network without a public IP or opening any risky inbound ports.
 
 ![Main Diagram](https://github.com/linksocks/linksocks/raw/main/images/abstract.svg)
 
