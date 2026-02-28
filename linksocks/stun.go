@@ -430,6 +430,10 @@ func StunDiscoverFromConn(ctx context.Context, conn *net.UDPConn, opt *StunDisco
 	if err := conn.SetReadDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("stun: set deadline: %w", err)
 	}
+	defer func() {
+		// Ensure callers can safely reuse this UDP socket (e.g. for direct probing or QUIC).
+		_ = conn.SetReadDeadline(time.Time{})
+	}()
 
 	remaining := len(pendings)
 	buf := make([]byte, 1500)

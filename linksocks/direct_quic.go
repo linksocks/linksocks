@@ -393,7 +393,16 @@ func (m *DirectQUICManager) Active() quic.Connection {
 	m.mu.Lock()
 	c := m.active
 	m.mu.Unlock()
-	return c
+	if c == nil {
+		return nil
+	}
+	// Treat closed connections as inactive so callers can reconnect.
+	select {
+	case <-c.Context().Done():
+		return nil
+	default:
+		return c
+	}
 }
 
 func (m *DirectQUICManager) Close() error {

@@ -5,8 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -129,6 +129,16 @@ func (p *DirectProber) markReady(from *net.UDPAddr) {
 }
 
 func (p *DirectProber) Start(ctx context.Context) {
+	if p.conn == nil {
+		return
+	}
+	// This prober temporarily uses read deadlines for polling. When the same UDP
+	// socket is later reused by the QUIC transport, ensure we clear deadlines on
+	// exit so quic-go reads don't get spurious timeouts.
+	defer func() {
+		_ = p.conn.SetReadDeadline(time.Time{})
+	}()
+
 	buf := make([]byte, 2048)
 	for {
 		select {
@@ -195,14 +205,16 @@ func (p *DirectProber) Probe(ctx context.Context, candidates []DirectCandidate, 
 
 candidateLoop:
 	for _, c := range candidates {
-		if c.Kind != "srflx" {
+		// Historically only srflx candidates were used (from STUN). For local/LAN
+		// testing we also allow host candidates.
+		if c.Kind != "" && c.Kind != "srflx" && c.Kind != "host" {
 			continue
 		}
 		if c.Addr == "" || c.Port <= 0 {
 			continue
 		}
 
-		addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", c.Addr, c.Port))
+		addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(c.Addr, strconv.Itoa(c.Port)))
 		if err != nil {
 			continue
 		}
