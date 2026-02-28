@@ -132,6 +132,9 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().StringP("upstream-proxy", "x", "", "Upstream proxy (e.g., socks5://user:pass@127.0.0.1:1080 or http://user:pass@127.0.0.1:8080)")
 	serverCmd.Flags().BoolP("fast-open", "f", false, "Assume connection success and allow data transfer immediately")
 	serverCmd.Flags().Bool("direct-enable", false, "Enable direct signaling/negotiation (experimental)")
+	serverCmd.Flags().Bool("direct-rendezvous-udp", false, "Enable server-side UDP rendezvous (experimental; non-Worker deployments)")
+	serverCmd.Flags().String("direct-rendezvous-host", "", "UDP rendezvous listen host (default: ws-host)")
+	serverCmd.Flags().Int("direct-rendezvous-port", 0, "UDP rendezvous listen port (default: ws-port)")
 
 	// Update usage to show environment variables
 	serverCmd.Flags().Lookup("token").Usage += " (env: LINKSOCKS_TOKEN)"
@@ -295,10 +298,12 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 
 	// Add connector token if provided
 	if connectorToken != "" && reverse {
-		if _, err := client.AddConnector(connectorToken); err != nil {
+		token, err := client.AddConnector(connectorToken)
+		if err != nil {
 			logger.Fatal().Err(err).Msg("Failed to add connector token")
 			return nil
 		}
+		logger.Info().Str("connector_token", token).Msg("Connector token added successfully")
 	}
 
 	// Wait for either client error or context cancellation
@@ -346,6 +351,9 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 	upstreamProxy, _ := cmd.Flags().GetString("upstream-proxy")
 	fastOpen, _ := cmd.Flags().GetBool("fast-open")
 	directEnable, _ := cmd.Flags().GetBool("direct-enable")
+	directRendezvousUDP, _ := cmd.Flags().GetBool("direct-rendezvous-udp")
+	directRendezvousHost, _ := cmd.Flags().GetString("direct-rendezvous-host")
+	directRendezvousPort, _ := cmd.Flags().GetInt("direct-rendezvous-port")
 
 	// Parse proxy URL
 	proxyAddr, proxyUser, proxyPass, proxyType, err := parseProxy(upstreamProxy)
@@ -371,7 +379,10 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 		WithSocksHost(socksHost).
 		WithLogger(logger).
 		WithBufferSize(bufferSize).
-		WithDirectEnable(directEnable)
+		WithDirectEnable(directEnable).
+		WithDirectRendezvousUDP(directRendezvousUDP).
+		WithDirectRendezvousHost(directRendezvousHost).
+		WithDirectRendezvousPort(directRendezvousPort)
 
 	// Add new options
 	if proxyAddr != "" {

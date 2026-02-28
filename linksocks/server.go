@@ -76,6 +76,13 @@ type LinkSocksServer struct {
 	directEnable bool
 	clientMeta   map[uuid.UUID]*directClientMeta
 
+	// Optional server-side UDP rendezvous (minimal STUN subset). Disabled by default.
+	directRendezvousEnable bool
+	directRendezvousHost   string
+	directRendezvousPort   int
+	directRendezvousConn   *net.UDPConn
+	directRendezvousCancel context.CancelFunc
+
 	// Start/ready guards (important for language bindings calling WaitReady repeatedly)
 	startOnce sync.Once
 	readyOnce sync.Once
@@ -101,7 +108,6 @@ type directClientMeta struct {
 	LastStatus       *DirectStatusMessage
 	UpdatedAt        time.Time
 }
-
 
 type clientInfo struct {
 	ID   uuid.UUID
@@ -149,6 +155,12 @@ type ServerOption struct {
 
 	// Direct connection options (experimental; default disabled).
 	DirectEnable bool
+
+	// Optional server-side UDP rendezvous (minimal STUN subset).
+	// Disabled by default. Intended for non-Worker deployments.
+	DirectRendezvousEnable bool
+	DirectRendezvousHost   string
+	DirectRendezvousPort   int
 }
 
 // DefaultServerOption returns default server options
@@ -169,6 +181,9 @@ func DefaultServerOption() *ServerOption {
 		UpstreamUsername: "",
 		UpstreamPassword: "",
 		DirectEnable:     false,
+		DirectRendezvousEnable: false,
+		DirectRendezvousHost:   "",
+		DirectRendezvousPort:   0,
 	}
 }
 
@@ -262,6 +277,21 @@ func (o *ServerOption) WithDirectEnable(enable bool) *ServerOption {
 	return o
 }
 
+func (o *ServerOption) WithDirectRendezvousUDP(enable bool) *ServerOption {
+	o.DirectRendezvousEnable = enable
+	return o
+}
+
+func (o *ServerOption) WithDirectRendezvousHost(host string) *ServerOption {
+	o.DirectRendezvousHost = host
+	return o
+}
+
+func (o *ServerOption) WithDirectRendezvousPort(port int) *ServerOption {
+	o.DirectRendezvousPort = port
+	return o
+}
+
 // NewLinkSocksServer creates a new LinkSocksServer instance
 func NewLinkSocksServer(opt *ServerOption) *LinkSocksServer {
 	if opt == nil {
@@ -303,6 +333,9 @@ func NewLinkSocksServer(opt *ServerOption) *LinkSocksServer {
 		errors:          make(chan error, 16),
 		directEnable:    opt.DirectEnable,
 		clientMeta:      make(map[uuid.UUID]*directClientMeta),
+		directRendezvousEnable: opt.DirectRendezvousEnable,
+		directRendezvousHost:   opt.DirectRendezvousHost,
+		directRendezvousPort:   opt.DirectRendezvousPort,
 	}
 
 	return s
@@ -612,11 +645,6 @@ func (s *LinkSocksServer) AddConnectorToken(connectorToken string, reverseToken 
 		return "", fmt.Errorf("'anonymous' is reserved and cannot be used as a connector token")
 	}
 
-	// Check if connector token already exists
-	if connectorToken != "" && s.tokenExists(connectorToken) {
-		return "", fmt.Errorf("connector token already exists")
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -628,6 +656,23 @@ func (s *LinkSocksServer) AddConnectorToken(connectorToken string, reverseToken 
 	// Verify reverse token exists
 	if _, exists := s.tokens[reverseToken]; !exists {
 		return "", fmt.Errorf("reverse token does not exist")
+	}
+
+	// If the connector token already exists, allow idempotent add when it maps
+	// to the same reverse token; otherwise reject.
+	if rt, exists := s.connectorTokens[connectorToken]; exists {
+		if rt == reverseToken {
+			return connectorToken, nil
+		}
+		return "", fmt.Errorf("connector token already exists")
+	}
+
+	// Disallow collisions with existing forward/reverse tokens.
+	if _, exists := s.forwardTokens[connectorToken]; exists {
+		return "", fmt.Errorf("connector token already exists")
+	}
+	if _, exists := s.tokens[connectorToken]; exists {
+		return "", fmt.Errorf("connector token already exists")
 	}
 
 	// Generate SHA256 version of the token
@@ -801,6 +846,14 @@ func (s *LinkSocksServer) handlePendingToken(ctx context.Context, token string) 
 
 // Serve starts the WebSocket server and waits for clients
 func (s *LinkSocksServer) Serve(ctx context.Context) error {
+	// Optional UDP rendezvous server. This must be explicitly enabled so Worker/DO
+	// deployments remain WS-only.
+	if s.directRendezvousEnable {
+		if err := s.startDirectRendezvousUDP(ctx); err != nil {
+			return err
+		}
+	}
+
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return true // Allow all origins
@@ -1105,11 +1158,11 @@ func (s *LinkSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Con
 		metaReverseToken = reverseToken
 	}
 	s.clientMeta[clientID] = &directClientMeta{
-		InternalToken:   internalToken,
-		ReverseToken:    metaReverseToken,
-		Role:            role,
-		SupportsDirect:  false,
-		UpdatedAt:       time.Now(),
+		InternalToken:    internalToken,
+		ReverseToken:     metaReverseToken,
+		Role:             role,
+		SupportsDirect:   false,
+		UpdatedAt:        time.Now(),
 		LastCapabilities: nil,
 		LastRendezvous:   nil,
 		LastStatus:       nil,
@@ -1840,6 +1893,16 @@ func (s *LinkSocksServer) Close() {
 	if s.cancelFunc != nil {
 		s.cancelFunc()
 		s.cancelFunc = nil
+	}
+
+	// Stop optional direct rendezvous UDP listener.
+	if s.directRendezvousCancel != nil {
+		s.directRendezvousCancel()
+		s.directRendezvousCancel = nil
+	}
+	if s.directRendezvousConn != nil {
+		_ = s.directRendezvousConn.Close()
+		s.directRendezvousConn = nil
 	}
 
 	// Close relay if it exists
