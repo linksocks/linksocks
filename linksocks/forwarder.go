@@ -15,7 +15,7 @@ import (
 type DynamicForwarder struct {
 	log                  zerolog.Logger
 	channelID            uuid.UUID
-	ws                   *WSConn
+	ws                   MessageWriter
 	relay                *Relay
 	bufferSize           int
 	enableBatching       bool
@@ -34,7 +34,7 @@ func NewSendManager(
 	ctx context.Context,
 	log zerolog.Logger,
 	channelID uuid.UUID,
-	ws *WSConn,
+	ws MessageWriter,
 	relay *Relay,
 	protocol string,
 	errChan chan<- error,

@@ -149,6 +149,33 @@ curl --socks5 127.0.0.1:1080 http://httpbin.org/ip
 linksocks client -t your_token -u wss://your-worker.your-subdomain.workers.dev -p 9870
 ```
 
+## P2P 直连模式 (QUIC)
+
+在任何基于中继的代理模式下（例如反向代理、代理代理、自主代理模式），你可以开启 P2P 直连特性。当提供者（Provider）和连接者（Connector）之间可以建立直接的 UDP 连通性时，数据将不再经过服务器中转，而是直接通过加密的 QUIC 协议传输，极大降低延迟并提高吞吐量。
+
+**提供者端开启直连：**
+```bash
+linksocks provider -t provider_token -u ws://localhost:8765 --direct-mode auto
+```
+
+**连接者端开启直连：**
+```bash
+linksocks connector -t connector_token -u ws://localhost:8765 -p 1180 --direct-mode auto
+```
+
+如果在建立连接时需要借助 STUN 服务器打洞穿透 NAT，可以指定 STUN 发现选项：
+```bash
+linksocks connector -t connector_token -u ws://localhost:8765 -p 1180 --direct-mode auto --direct-discovery stun
+```
+*提示：开启 STUN 后，程序会自动并发请求内置的公共 STUN 服务器池（包含多个知名公开 STUN 节点），选择最快响应的节点获取公网地址。您也可以使用 `--stun-server` 自定义 STUN 服务器。*
+
+**性能优化提示 (Linux)：**
+在 Linux 系统上运行大流量的 QUIC 直连时，如果收到类似于 `failed to sufficiently increase receive buffer size` 的警告，这是因为系统默认的 UDP 缓冲区较小。虽然程序会尽量处理，但如果您追求最佳性能（7MB 的理想缓冲区），建议您在运行前通过 root 权限修改以下 sysctl 内核参数：
+```bash
+sudo sysctl -w net.core.rmem_max=2500000
+sudo sysctl -w net.core.wmem_max=2500000
+```
+
 ## API 服务器
 
 LinkSocks 服务器提供 HTTP API 用于动态令牌管理，允许您添加/删除令牌并监控连接，无需重启服务器。

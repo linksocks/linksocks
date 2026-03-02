@@ -52,6 +52,10 @@ class Server(_SnakePassthrough):
         upstream_proxy: Optional[str] = None,
         upstream_username: Optional[str] = None,
         upstream_password: Optional[str] = None,
+        direct_enable: Optional[bool] = None,
+        direct_rendezvous_udp: Optional[bool] = None,
+        direct_rendezvous_host: Optional[str] = None,
+        direct_rendezvous_port: Optional[int] = None,
     ) -> None:
         """Initialize the WebSocket SOCKS5 proxy server.
         
@@ -70,6 +74,10 @@ class Server(_SnakePassthrough):
             upstream_proxy: Upstream proxy address for chaining
             upstream_username: Username for upstream proxy authentication
             upstream_password: Password for upstream proxy authentication
+            direct_enable: Enable direct mode connections
+            direct_rendezvous_udp: Use UDP hole punching for direct mode
+            direct_rendezvous_host: Custom rendezvous server host
+            direct_rendezvous_port: Custom rendezvous server port
         """
         opt = backend.DefaultServerOption()
         if logger is None:
@@ -101,6 +109,15 @@ class Server(_SnakePassthrough):
             opt.WithUpstreamProxy(upstream_proxy)
         if upstream_username or upstream_password:
             opt.WithUpstreamAuth(upstream_username or "", upstream_password or "")
+
+        if direct_enable is not None:
+            opt.WithDirectEnable(bool(direct_enable))
+        if direct_rendezvous_udp is not None:
+            opt.WithDirectRendezvousUDP(bool(direct_rendezvous_udp))
+        if direct_rendezvous_host is not None:
+            opt.WithDirectRendezvousHost(direct_rendezvous_host)
+        if direct_rendezvous_port is not None:
+            opt.WithDirectRendezvousPort(direct_rendezvous_port)
 
         self._raw = backend.NewLinkSocksServer(opt)
         self._ctx = None

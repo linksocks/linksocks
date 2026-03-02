@@ -54,6 +54,12 @@ type ProxyTestClientOption struct {
 	Reverse      bool          // Whether to use reverse mode
 	FastOpen     bool          // Whether to enable fast-open mode
 	Reconnect    bool          // Whether to enable auto-reconnection
+
+	// Direct signaling options (optional; defaults keep relay-only behavior).
+	DirectMode       linksocks.DirectMode
+	DirectDiscovery  linksocks.DirectDiscovery
+	StunServers      []string
+	DirectOnlyAction linksocks.DirectOnlyAction
 }
 
 // ProxyTestEnv encapsulates both server and client test environments
@@ -155,6 +161,19 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		WithFastOpen(opt.FastOpen).
 		WithLogger(logger).
 		WithNoEnvProxy(true)
+
+	if opt.DirectMode != "" {
+		clientOpt.WithDirectMode(opt.DirectMode)
+	}
+	if opt.DirectDiscovery != "" {
+		clientOpt.WithDirectDiscovery(opt.DirectDiscovery)
+	}
+	if len(opt.StunServers) > 0 {
+		clientOpt.WithStunServers(opt.StunServers)
+	}
+	if opt.DirectOnlyAction != "" {
+		clientOpt.WithDirectOnlyAction(opt.DirectOnlyAction)
+	}
 
 	if opt.Reconnect {
 		clientOpt.WithReconnect(true)
@@ -290,6 +309,19 @@ func reverseClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		WithFastOpen(opt.FastOpen).
 		WithLogger(logger).
 		WithNoEnvProxy(true)
+
+	if opt.DirectMode != "" {
+		clientOpt.WithDirectMode(opt.DirectMode)
+	}
+	if opt.DirectDiscovery != "" {
+		clientOpt.WithDirectDiscovery(opt.DirectDiscovery)
+	}
+	if len(opt.StunServers) > 0 {
+		clientOpt.WithStunServers(opt.StunServers)
+	}
+	if opt.DirectOnlyAction != "" {
+		clientOpt.WithDirectOnlyAction(opt.DirectOnlyAction)
+	}
 
 	if opt.Reconnect {
 		clientOpt.WithReconnect(true)

@@ -97,6 +97,12 @@ func (cli *CLI) initCommands() {
 		cmd.Flags().BoolP("fast-open", "f", false, "Assume connection success and allow data transfer immediately")
 		cmd.Flags().BoolP("no-env-proxy", "E", false, "Ignore proxy settings from environment variables when connecting to the websocket server")
 
+		// Direct connection options (experimental; default relay-only)
+		cmd.Flags().String("direct-mode", string(DirectModeRelayOnly), "Direct mode (relay-only|direct-only|auto)")
+		cmd.Flags().String("direct-discovery", string(DirectDiscoverySTUN), "Direct discovery method (stun|server|auto)")
+		cmd.Flags().StringArray("stun-server", nil, "STUN server address (host:port), can be specified multiple times; when omitted, built-in STUN pool is probed in parallel")
+		cmd.Flags().String("direct-only-action", string(DirectOnlyActionExit), "Direct-only failure action (exit|refuse)")
+
 		// Update usage to show environment variables
 		cmd.Flags().Lookup("token").Usage += " (env: LINKSOCKS_TOKEN)"
 		cmd.Flags().Lookup("connector-token").Usage += " (env: LINKSOCKS_CONNECTOR_TOKEN)"
@@ -125,6 +131,10 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().StringP("api-key", "k", "", "Enable HTTP API with specified key")
 	serverCmd.Flags().StringP("upstream-proxy", "x", "", "Upstream proxy (e.g., socks5://user:pass@127.0.0.1:1080 or http://user:pass@127.0.0.1:8080)")
 	serverCmd.Flags().BoolP("fast-open", "f", false, "Assume connection success and allow data transfer immediately")
+	serverCmd.Flags().Bool("direct-enable", false, "Enable direct signaling/negotiation (experimental)")
+	serverCmd.Flags().Bool("direct-rendezvous-udp", false, "Enable server-side UDP rendezvous (experimental; non-Worker deployments)")
+	serverCmd.Flags().String("direct-rendezvous-host", "", "UDP rendezvous listen host (default: ws-host)")
+	serverCmd.Flags().Int("direct-rendezvous-port", 0, "UDP rendezvous listen port (default: ws-port)")
 
 	// Update usage to show environment variables
 	serverCmd.Flags().Lookup("token").Usage += " (env: LINKSOCKS_TOKEN)"
@@ -203,6 +213,24 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	fastOpen, _ := cmd.Flags().GetBool("fast-open")
 	noEnvProxy, _ := cmd.Flags().GetBool("no-env-proxy")
 
+	directModeRaw, _ := cmd.Flags().GetString("direct-mode")
+	directDiscoveryRaw, _ := cmd.Flags().GetString("direct-discovery")
+	stunServers, _ := cmd.Flags().GetStringArray("stun-server")
+	directOnlyActionRaw, _ := cmd.Flags().GetString("direct-only-action")
+
+	directMode, err := ParseDirectMode(directModeRaw)
+	if err != nil {
+		return err
+	}
+	directDiscovery, err := ParseDirectDiscovery(directDiscoveryRaw)
+	if err != nil {
+		return err
+	}
+	directOnlyAction, err := ParseDirectOnlyAction(directOnlyActionRaw)
+	if err != nil {
+		return err
+	}
+
 	// Parse proxy URL
 	proxyAddr, proxyUser, proxyPass, proxyType, err := parseProxy(upstreamProxy)
 	if err != nil {
@@ -217,6 +245,15 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	// Setup logging
 	logger := cli.initLogging(debug)
 
+	if directMode != DirectModeRelayOnly {
+		logger.Info().
+			Str("direct_mode", string(directMode)).
+			Str("direct_discovery", string(directDiscovery)).
+			Strs("stun_servers", stunServers).
+			Str("direct_only_action", string(directOnlyAction)).
+			Msg("Direct mode configured")
+	}
+
 	// Create client instance with options
 	clientOpt := DefaultClientOption().
 		WithWSURL(url).
@@ -227,7 +264,11 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 		WithReconnect(!noReconnect).
 		WithLogger(logger).
 		WithThreads(threads).
-		WithNoEnvProxy(noEnvProxy)
+		WithNoEnvProxy(noEnvProxy).
+		WithDirectMode(directMode).
+		WithDirectDiscovery(directDiscovery).
+		WithStunServers(stunServers).
+		WithDirectOnlyAction(directOnlyAction)
 
 	// Add new options
 	if proxyAddr != "" {
@@ -257,10 +298,12 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 
 	// Add connector token if provided
 	if connectorToken != "" && reverse {
-		if _, err := client.AddConnector(connectorToken); err != nil {
+		token, err := client.AddConnector(connectorToken)
+		if err != nil {
 			logger.Fatal().Err(err).Msg("Failed to add connector token")
 			return nil
 		}
+		logger.Info().Str("connector_token", token).Msg("Connector token added successfully")
 	}
 
 	// Wait for either client error or context cancellation
@@ -307,6 +350,10 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 	// Get new flags
 	upstreamProxy, _ := cmd.Flags().GetString("upstream-proxy")
 	fastOpen, _ := cmd.Flags().GetBool("fast-open")
+	directEnable, _ := cmd.Flags().GetBool("direct-enable")
+	directRendezvousUDP, _ := cmd.Flags().GetBool("direct-rendezvous-udp")
+	directRendezvousHost, _ := cmd.Flags().GetString("direct-rendezvous-host")
+	directRendezvousPort, _ := cmd.Flags().GetInt("direct-rendezvous-port")
 
 	// Parse proxy URL
 	proxyAddr, proxyUser, proxyPass, proxyType, err := parseProxy(upstreamProxy)
@@ -321,6 +368,9 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 
 	// Setup logging
 	logger := cli.initLogging(debug)
+	if directEnable {
+		logger.Info().Msg("Direct signaling enabled")
+	}
 
 	// Create server options
 	serverOpt := DefaultServerOption().
@@ -328,7 +378,11 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 		WithWSPort(wsPort).
 		WithSocksHost(socksHost).
 		WithLogger(logger).
-		WithBufferSize(bufferSize)
+		WithBufferSize(bufferSize).
+		WithDirectEnable(directEnable).
+		WithDirectRendezvousUDP(directRendezvousUDP).
+		WithDirectRendezvousHost(directRendezvousHost).
+		WithDirectRendezvousPort(directRendezvousPort)
 
 	// Add new options
 	if proxyAddr != "" {

@@ -22,6 +22,18 @@ import (
 	"github.com/rs/zerolog"
 )
 
+func init() {
+	// quic-go attempts to increase UDP socket buffer sizes for better throughput.
+	// On systems with low rmem/wmem limits or without CAP_NET_ADMIN, it prints a
+	// one-time warning via the standard library logger. We silence that warning
+	// here and rely on our own diagnostics (direct-quic buffer sizing).
+	//
+	// Ref: https://github.com/quic-go/quic-go/wiki/UDP-Buffer-Sizes
+	if _, ok := os.LookupEnv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING"); !ok {
+		_ = os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
+	}
+}
+
 const (
 	MaxRedirects = 5 // Maximum number of WebSocket redirects to follow
 )
@@ -58,6 +70,54 @@ type LinkSocksClient struct {
 	noEnvProxy      bool
 	numPartners     int
 
+	// Direct signaling (experimental)
+	directMode       DirectMode
+	directDiscovery  DirectDiscovery
+	stunServers      []string
+	directOnlyAction DirectOnlyAction
+
+	directStartOnce sync.Once
+	directMu        sync.Mutex
+	directNotifyCh  chan struct{}
+
+	directLocalSessionID  uuid.UUID
+	directLocalCandidates []DirectCandidate
+	directLocalPublicKey  []byte
+	directLocalKeyPair    *directKeyPair
+	directProbeConn       *net.UDPConn
+	directRemotePublicKey []byte
+	directLocalReady      bool
+
+	directRemoteSessionID  uuid.UUID
+	directRemoteCandidates []DirectCandidate
+	// directProbePeer is the observed UDP endpoint of the peer that responded
+	// to the last successful direct probe. It is used to pick a single QUIC dial
+	// target and avoid creating multiple concurrent QUIC connections that may
+	// lead to each side selecting a different active connection.
+	directProbePeer *net.UDPAddr
+
+	directPairSessionID  uuid.UUID
+	directPairSessionKey []byte
+	directPairKeyReady   bool
+	directPairSessionSet bool
+
+	directPendingRendezvous map[uuid.UUID]struct{}
+	directProbing           bool
+	directReady             bool
+	directPeerReady         bool
+	directPeerStatusSession uuid.UUID
+	directDegradedUntil     time.Time
+	directRefuseSocks       bool
+
+	directQUICStartOnce sync.Once
+	directQUICMu        sync.Mutex
+	directQUICManager   *DirectQUICManager
+	directQUICPlane     *DirectQUICDataPlane
+	directQUICReadyCh   chan struct{}
+	// Reserved for future fine-grained QUIC health tracking.
+	directQUICBadUntil time.Time
+	directQUICBadCount int
+
 	websockets     []*WSConn // Multiple WebSocket connections
 	currentIndex   int       // Current WebSocket index for round-robin
 	socksListener  net.Listener
@@ -72,6 +132,117 @@ type LinkSocksClient struct {
 	startOnce  sync.Once
 
 	batchLogger *batchLogger
+}
+
+func (c *LinkSocksClient) directIsUsable(now time.Time) bool {
+	c.directMu.Lock()
+	ready := c.directReady
+	degraded := !c.directDegradedUntil.IsZero() && now.Before(c.directDegradedUntil)
+	c.directMu.Unlock()
+	return ready && !degraded
+}
+
+func (c *LinkSocksClient) directQUICIsActive() bool {
+	c.directQUICMu.Lock()
+	mgr := c.directQUICManager
+	pl := c.directQUICPlane
+	c.directQUICMu.Unlock()
+	if mgr == nil || pl == nil {
+		return false
+	}
+	return mgr.Active() != nil
+}
+
+// IsDirectQUICActive reports whether the direct QUIC dataplane currently has an active connection.
+// Intended for tests and diagnostics.
+func (c *LinkSocksClient) IsDirectQUICActive() bool {
+	return c.directQUICIsActive()
+}
+
+// ForceCloseDirectQUIC closes and clears the current direct QUIC dataplane (if any).
+// Intended for tests and controlled fault injection.
+func (c *LinkSocksClient) ForceCloseDirectQUIC() {
+	c.directQUICMu.Lock()
+	pl := c.directQUICPlane
+	mgr := c.directQUICManager
+	c.directQUICPlane = nil
+	c.directQUICManager = nil
+	c.directQUICMu.Unlock()
+
+	if pl != nil {
+		_ = pl.Close()
+	}
+	if mgr != nil {
+		_ = mgr.Close()
+	}
+}
+
+func (c *LinkSocksClient) directQUICPlaneIfReadyAndUsable(now time.Time) *DirectQUICDataPlane {
+	if c.directMode == DirectModeRelayOnly {
+		return nil
+	}
+	if !c.directIsUsable(now) {
+		return nil
+	}
+
+	c.directQUICMu.Lock()
+	mgr := c.directQUICManager
+	pl := c.directQUICPlane
+	readyCh := c.directQUICReadyCh
+	c.directQUICMu.Unlock()
+
+	if mgr == nil || pl == nil {
+		return nil
+	}
+
+	select {
+	case <-readyCh:
+		// continue
+	default:
+		return nil
+	}
+
+	if mgr.Active() == nil {
+		return nil
+	}
+	return pl
+}
+
+func (c *LinkSocksClient) directMarkDegraded(now time.Time, d time.Duration, reason string) {
+	if d <= 0 {
+		d = 30 * time.Second
+	}
+	c.directMu.Lock()
+	c.directDegradedUntil = now.Add(d)
+	sid := c.directPairSessionID
+	c.directMu.Unlock()
+	_ = c.sendDirectMessage(DirectStatusMessage{SessionID: sid, Status: "degraded", Metrics: DirectMetrics{Reason: reason}})
+}
+
+func (c *LinkSocksClient) directMarkRecovered(now time.Time) {
+	c.directMu.Lock()
+	if c.directDegradedUntil.IsZero() {
+		c.directMu.Unlock()
+		return
+	}
+	// Reduce oscillation by keeping a short cooldown even after recovery.
+	if now.Before(c.directDegradedUntil) {
+		cooldown := now.Add(2 * time.Second)
+		if cooldown.Before(c.directDegradedUntil) {
+			c.directDegradedUntil = cooldown
+		}
+	} else {
+		c.directDegradedUntil = time.Time{}
+	}
+	sid := c.directPairSessionID
+	c.directMu.Unlock()
+	_ = c.sendDirectMessage(DirectStatusMessage{SessionID: sid, Status: "ready"})
+}
+
+// ForceDirectDegraded is intended for tests and controlled fault injection.
+// It marks direct transport as degraded for the provided duration.
+func (c *LinkSocksClient) ForceDirectDegraded(d time.Duration, reason string) {
+	c.directMarkDegraded(time.Now(), d, reason)
 }
 
 // ConnectedChan returns the current connection-ready signal channel.
@@ -114,6 +285,12 @@ type ClientOption struct {
 	UpstreamPassword  string
 	UpstreamProxyType ProxyType
 	NoEnvProxy        bool // Ignore environment proxy settings
+
+	// Direct connection options (experimental; default relay-only).
+	DirectMode       DirectMode
+	DirectDiscovery  DirectDiscovery
+	StunServers      []string
+	DirectOnlyAction DirectOnlyAction
 }
 
 // DefaultClientOption returns default client options
@@ -136,6 +313,11 @@ func DefaultClientOption() *ClientOption {
 		UpstreamUsername: "",
 		UpstreamPassword: "",
 		NoEnvProxy:       false,
+
+		DirectMode:       DirectModeRelayOnly,
+		DirectDiscovery:  DirectDiscoverySTUN,
+		StunServers:      nil,
+		DirectOnlyAction: DirectOnlyActionExit,
 	}
 }
 
@@ -254,6 +436,26 @@ func (o *ClientOption) WithNoEnvProxy(noEnvProxy bool) *ClientOption {
 	return o
 }
 
+func (o *ClientOption) WithDirectMode(mode DirectMode) *ClientOption {
+	o.DirectMode = mode
+	return o
+}
+
+func (o *ClientOption) WithDirectDiscovery(discovery DirectDiscovery) *ClientOption {
+	o.DirectDiscovery = discovery
+	return o
+}
+
+func (o *ClientOption) WithStunServers(servers []string) *ClientOption {
+	o.StunServers = servers
+	return o
+}
+
+func (o *ClientOption) WithDirectOnlyAction(action DirectOnlyAction) *ClientOption {
+	o.DirectOnlyAction = action
+	return o
+}
+
 // NewLinkSocksClient creates a new LinkSocksClient instance
 func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 	if opt == nil {
@@ -299,30 +501,528 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 		WithUpstreamProxyType(opt.UpstreamProxyType)
 
 	client := &LinkSocksClient{
-		instanceID:      uuid.New(),
-		relay:           NewRelay(opt.Logger, relayOpt),
-		log:             opt.Logger,
-		token:           token,
-		wsURL:           opt.WSURL,
-		reverse:         opt.Reverse,
-		socksHost:       opt.SocksHost,
-		socksPort:       opt.SocksPort,
-		socksUsername:   opt.SocksUsername,
-		socksPassword:   opt.SocksPassword,
-		socksWaitServer: opt.SocksWaitServer,
-		reconnect:       opt.Reconnect,
-		reconnectDelay:  opt.ReconnectDelay,
-		errors:          make(chan error, 16),
-		Connected:       make(chan struct{}),
-		Disconnected:    disconnected,
-		IsConnected:     false,
-		numPartners:     0,
-		threads:         opt.Threads,
-		websockets:      make([]*WSConn, 0, opt.Threads),
-		noEnvProxy:      opt.NoEnvProxy,
+		instanceID:              uuid.New(),
+		relay:                   NewRelay(opt.Logger, relayOpt),
+		log:                     opt.Logger,
+		token:                   token,
+		wsURL:                   opt.WSURL,
+		reverse:                 opt.Reverse,
+		socksHost:               opt.SocksHost,
+		socksPort:               opt.SocksPort,
+		socksUsername:           opt.SocksUsername,
+		socksPassword:           opt.SocksPassword,
+		socksWaitServer:         opt.SocksWaitServer,
+		reconnect:               opt.Reconnect,
+		reconnectDelay:          opt.ReconnectDelay,
+		errors:                  make(chan error, 16),
+		Connected:               make(chan struct{}),
+		Disconnected:            disconnected,
+		IsConnected:             false,
+		numPartners:             0,
+		threads:                 opt.Threads,
+		websockets:              make([]*WSConn, 0, opt.Threads),
+		noEnvProxy:              opt.NoEnvProxy,
+		directMode:              opt.DirectMode,
+		directDiscovery:         opt.DirectDiscovery,
+		stunServers:             opt.StunServers,
+		directOnlyAction:        opt.DirectOnlyAction,
+		directNotifyCh:          make(chan struct{}, 1),
+		directLocalSessionID:    uuid.New(),
+		directPendingRendezvous: make(map[uuid.UUID]struct{}),
+		directQUICReadyCh:       make(chan struct{}),
 	}
 
 	return client
+}
+
+func minUUID(a, b uuid.UUID) uuid.UUID {
+	for i := 0; i < len(a); i++ {
+		if a[i] < b[i] {
+			return a
+		}
+		if a[i] > b[i] {
+			return b
+		}
+	}
+	return a
+}
+
+func (c *LinkSocksClient) directNotify() {
+	select {
+	case c.directNotifyCh <- struct{}{}:
+	default:
+	}
+}
+
+func (c *LinkSocksClient) startDirectAgent(ctx context.Context) {
+	if c.directMode == DirectModeRelayOnly {
+		return
+	}
+	c.directStartOnce.Do(func() {
+		go c.directAgent(ctx)
+	})
+}
+
+func (c *LinkSocksClient) startDirectQUICAgent(ctx context.Context) {
+	if c.directMode == DirectModeRelayOnly {
+		return
+	}
+	c.directQUICStartOnce.Do(func() {
+		go c.directQUICAgent(ctx)
+	})
+}
+
+func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
+	// Retry loop with backoff. This is intentionally conservative to avoid
+	// hammering the UDP socket and to tolerate peers coming online later.
+	backoff := 500 * time.Millisecond
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		c.directMu.Lock()
+		ready := c.directReady
+		degraded := !c.directDegradedUntil.IsZero() && time.Now().Before(c.directDegradedUntil)
+		pairSet := c.directPairSessionSet
+		pairSession := c.directPairSessionID
+		localSession := c.directLocalSessionID
+		pairKeyReady := c.directPairKeyReady
+		pairKey := append([]byte(nil), c.directPairSessionKey...)
+		rcands := append([]DirectCandidate(nil), c.directRemoteCandidates...)
+		probePeer := c.directProbePeer
+		peerReady := c.directPeerReady && c.directPeerStatusSession == pairSession
+		c.directMu.Unlock()
+
+		if !ready || !peerReady || degraded || !pairSet || !pairKeyReady || pairSession == uuid.Nil || len(pairKey) == 0 || len(rcands) == 0 {
+			time.Sleep(backoff)
+			continue
+		}
+
+		c.directQUICMu.Lock()
+		plane := c.directQUICPlane
+		mgr := c.directQUICManager
+		c.directQUICMu.Unlock()
+		// If we have a stale QUIC transport registered on the shared UDP socket,
+		// quic-go will panic with "connection already exists" when a new Transport
+		// attempts to Listen on the same local address.
+		//
+		// Close and clear inactive state before reconnecting.
+		if mgr != nil && mgr.Active() == nil {
+			c.ForceCloseDirectQUIC()
+			plane = nil
+			mgr = nil
+		}
+		if plane != nil && mgr != nil && mgr.Active() != nil {
+			// Already ready.
+			c.directMarkRecovered(time.Now())
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		// Reuse the same UDP socket used for probing/candidate advertisement so
+		// peers can dial the correct port.
+		c.directMu.Lock()
+		udpConn := c.directProbeConn
+		c.directMu.Unlock()
+		if udpConn == nil {
+			time.Sleep(backoff)
+			continue
+		}
+
+		mgr, err := NewDirectQUICManager(udpConn, pairSession, pairKey, c.log)
+		if err != nil {
+			c.directMarkDegraded(time.Now(), 10*time.Second, fmt.Sprintf("quic manager init: %v", err))
+			c.log.Debug().Err(err).Msg("Direct QUIC manager init failed")
+			time.Sleep(backoff)
+			continue
+		}
+
+		// Avoid simultaneous dial creating two valid QUIC connections where each peer
+		// picks a different "winner" and then no one serves streams on the other one.
+		//
+		// Use the smaller per-peer session id as the dialer role (it equals pairSession).
+		// The other side only listens and accepts.
+		dialCandidates := directSelectQUICDialCandidates(localSession, pairSession, probePeer, rcands)
+		conn, err := mgr.Connect(ctx, dialCandidates)
+		if err != nil {
+			_ = mgr.Close()
+			c.directMarkDegraded(time.Now(), 15*time.Second, fmt.Sprintf("quic connect: %v", err))
+			c.log.Debug().Err(err).Msg("Direct QUIC connect failed")
+			time.Sleep(backoff)
+			continue
+		}
+
+		plane, err = NewDirectQUICDataPlane(conn, c.log)
+		if err != nil {
+			_ = mgr.Close()
+			c.directMarkDegraded(time.Now(), 15*time.Second, fmt.Sprintf("quic dataplane init: %v", err))
+			c.log.Debug().Err(err).Msg("Direct QUIC dataplane init failed")
+			time.Sleep(backoff)
+			continue
+		}
+
+		// Start accept loop to handle inbound QUIC streams.
+		// This must run on both sides, because either peer can initiate streams.
+		_ = plane.Serve(ctx, func(ctx context.Context, ch *directQUICChannel, req ConnectMessage) error {
+			w := newDirectQUICBoundWriter(plane, ch, "direct-quic")
+
+			msgChan := make(chan BaseMessage, 1000)
+			c.relay.messageQueues.Store(req.ChannelID, msgChan)
+			go c.directQUICChannelReadLoop(ctx, ch)
+			go func() {
+				if err := c.relay.HandleNetworkConnection(ctx, w, req); err != nil && !errors.Is(err, context.Canceled) {
+					c.log.Debug().Err(err).Msg("Error handling direct QUIC network connection")
+				}
+			}()
+			return nil
+		})
+
+		c.directQUICMu.Lock()
+		c.directQUICManager = mgr
+		c.directQUICPlane = plane
+		readyCh := c.directQUICReadyCh
+		c.directQUICMu.Unlock()
+
+		// Auto-cleanup when the QUIC connection is closed, so a future reconnect
+		// doesn't reuse a Transport that is still registered in quic-go's global
+		// conn multiplexer.
+		go func(expected *DirectQUICManager) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-conn.Context().Done():
+			}
+
+			c.directQUICMu.Lock()
+			stillCurrent := c.directQUICManager == expected
+			c.directQUICMu.Unlock()
+			if stillCurrent {
+				c.ForceCloseDirectQUIC()
+			}
+		}(mgr)
+
+		select {
+		case <-readyCh:
+		default:
+			close(readyCh)
+		}
+
+		c.log.Info().Msg("Direct QUIC dataplane ready")
+		c.directMarkRecovered(time.Now())
+		// Slow down once established.
+		backoff = 2 * time.Second
+	}
+}
+
+func directSelectQUICDialCandidates(localSession uuid.UUID, pairSession uuid.UUID, probePeer *net.UDPAddr, rcands []DirectCandidate) []DirectCandidate {
+	if localSession != pairSession {
+		return nil
+	}
+	if probePeer != nil && probePeer.IP != nil && probePeer.Port > 0 {
+		return []DirectCandidate{{Addr: probePeer.IP.String(), Port: probePeer.Port, Kind: "probe"}}
+	}
+	return rcands
+}
+
+func (c *LinkSocksClient) sendDirectMessage(msg BaseMessage) error {
+	ws := c.getNextWebSocket()
+	if ws == nil {
+		return errors.New("direct: not connected")
+	}
+	c.relay.logMessage(msg, "send", ws.Label())
+	return ws.WriteMessage(msg)
+}
+
+func (c *LinkSocksClient) directAgent(ctx context.Context) {
+	var discovery DirectDiscovery
+	var stunServers []string
+	var localSession uuid.UUID
+	var action DirectOnlyAction
+
+	c.directMu.Lock()
+	discovery = c.directDiscovery
+	stunServers = append([]string(nil), c.stunServers...)
+	localSession = c.directLocalSessionID
+	action = c.directOnlyAction
+	c.directMu.Unlock()
+
+	if discovery == DirectDiscoveryAuto {
+		// Prefer STUN when configured; otherwise fall back to server discovery for
+		// local testing and self-hosted deployments.
+		if len(stunServers) > 0 {
+			discovery = DirectDiscoverySTUN
+		} else {
+			discovery = DirectDiscoveryServer
+		}
+	}
+	if discovery != DirectDiscoverySTUN && discovery != DirectDiscoveryServer {
+		c.log.Warn().Str("direct_discovery", string(discovery)).Msg("Direct discovery not supported")
+		return
+	}
+
+	kp, err := newDirectKeyPair()
+	if err != nil {
+		c.log.Warn().Err(err).Msg("Direct keypair generation failed")
+		return
+	}
+
+	c.directMu.Lock()
+	c.directLocalKeyPair = kp
+	c.directLocalPublicKey = append([]byte(nil), kp.pub...)
+	c.directMu.Unlock()
+
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		c.log.Warn().Err(err).Msg("Direct UDP listen failed")
+		return
+	}
+	// Keep this socket for QUIC dataplane to ensure the advertised candidate port
+	// matches the actual QUIC listener.
+	defer func() {
+		c.directMu.Lock()
+		if c.directProbeConn == conn {
+			c.directProbeConn = nil
+		}
+		c.directMu.Unlock()
+		_ = conn.Close()
+	}()
+
+	var localCandidates []DirectCandidate
+	if discovery == DirectDiscoverySTUN {
+		stunRes, err := StunDiscoverFromConn(ctx, conn, &StunDiscoverOption{Servers: stunServers, Timeout: 2 * time.Second, Logger: c.log})
+		if err != nil {
+			c.log.Warn().Err(err).Msg("Direct STUN discovery failed")
+			if c.directMode == DirectModeDirectOnly {
+				if action == DirectOnlyActionExit {
+					c.reportError(fmt.Errorf("direct-only: STUN discovery failed: %w", err))
+					c.Close()
+				} else {
+					c.directMu.Lock()
+					c.directRefuseSocks = true
+					c.directMu.Unlock()
+				}
+			}
+			return
+		}
+		localCandidates = []DirectCandidate{stunRes.Candidate}
+
+		// For local/LAN testing, srflx candidates may be unreachable due to NAT
+		// hairpin restrictions. In that case, also advertise host candidates so
+		// direct probing (and the QUIC dataplane) can succeed.
+		if enable, includeLoopback := directShouldAdvertiseHostCandidates(c.wsURL); enable {
+			hostCands := directBuildHostCandidates(conn, includeLoopback)
+			if len(hostCands) > 0 {
+				localCandidates = append(hostCands, localCandidates...)
+			}
+		}
+	} else {
+		// Server discovery: ask the server-side UDP rendezvous endpoint for the
+		// observed src ip:port (srflx). This avoids leaking private host addresses
+		// by default.
+		u, err := url.Parse(c.wsURL)
+		if err != nil {
+			c.log.Warn().Err(err).Msg("Direct server discovery: invalid ws url")
+			return
+		}
+		h := strings.TrimSpace(u.Hostname())
+		p := u.Port()
+		if h == "" || p == "" {
+			c.log.Warn().Str("ws_url", c.wsURL).Msg("Direct server discovery: missing host/port")
+			return
+		}
+		serverAddr := net.JoinHostPort(h, p)
+		cand, err := DirectRendezvousDiscoverFromConn(ctx, conn, serverAddr, 2*time.Second)
+		if err != nil {
+			c.log.Warn().Err(err).Str("server", serverAddr).Msg("Direct server discovery failed")
+			if c.directMode == DirectModeDirectOnly {
+				if action == DirectOnlyActionExit {
+					c.reportError(fmt.Errorf("direct-only: server discovery failed: %w", err))
+					c.Close()
+				} else {
+					c.directMu.Lock()
+					c.directRefuseSocks = true
+					c.directMu.Unlock()
+				}
+			}
+			return
+		}
+		localCandidates = []DirectCandidate{*cand}
+
+		// For local/LAN testing, also allow explicit host candidates when connecting
+		// to a local/private server endpoint.
+		if enable, includeLoopback := directShouldAdvertiseHostCandidates(c.wsURL); enable {
+			hostCands := directBuildHostCandidates(conn, includeLoopback)
+			if len(hostCands) > 0 {
+				localCandidates = append(hostCands, localCandidates...)
+			}
+		}
+	}
+
+	c.directMu.Lock()
+	c.directProbeConn = conn
+	c.directMu.Unlock()
+
+	c.directMu.Lock()
+	c.directLocalCandidates = localCandidates
+	c.directLocalReady = true
+	pending := make([]uuid.UUID, 0, len(c.directPendingRendezvous))
+	for sid := range c.directPendingRendezvous {
+		pending = append(pending, sid)
+	}
+	c.directPendingRendezvous = make(map[uuid.UUID]struct{})
+	localPub := append([]byte(nil), c.directLocalPublicKey...)
+	c.directMu.Unlock()
+	c.directNotify()
+
+	capMsg := DirectCapabilitiesMessage{SessionID: localSession, Candidates: localCandidates, Discoveries: []string{"stun"}, PublicKey: localPub}
+	if discovery == DirectDiscoveryServer {
+		capMsg.Discoveries = []string{"server"}
+	}
+	if err := c.sendDirectMessage(capMsg); err != nil {
+		c.log.Debug().Err(err).Msg("Failed to send direct capabilities")
+	}
+
+	for _, sid := range pending {
+		rendezvous := DirectRendezvousMessage{SessionID: sid, Candidates: localCandidates, PublicKey: localPub}
+		_ = c.sendDirectMessage(rendezvous)
+	}
+	c.directNotify()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.directNotifyCh:
+			var remoteSession uuid.UUID
+			var remoteCandidates []DirectCandidate
+			var remotePub []byte
+			var pairSession uuid.UUID
+			var pairSet bool
+			var pairKey []byte
+			var pairKeyReady bool
+			var alreadyProbing bool
+			var alreadyReady bool
+
+			c.directMu.Lock()
+			remoteSession = c.directRemoteSessionID
+			remoteCandidates = append([]DirectCandidate(nil), c.directRemoteCandidates...)
+			remotePub = append([]byte(nil), c.directRemotePublicKey...)
+			pairSession = c.directPairSessionID
+			pairSet = c.directPairSessionSet
+			pairKey = append([]byte(nil), c.directPairSessionKey...)
+			pairKeyReady = c.directPairKeyReady
+			alreadyProbing = c.directProbing
+			alreadyReady = c.directReady
+			c.directMu.Unlock()
+
+			if alreadyReady || alreadyProbing {
+				continue
+			}
+			if remoteSession == uuid.Nil {
+				continue
+			}
+			if len(remoteCandidates) == 0 {
+				continue
+			}
+
+			if !pairSet {
+				pairSession = minUUID(localSession, remoteSession)
+				c.directMu.Lock()
+				c.directPairSessionID = pairSession
+				c.directPairSessionSet = true
+				c.directMu.Unlock()
+			}
+
+			if !pairKeyReady {
+				if len(remotePub) != 32 {
+					// Peer does not support LSHP-060 yet; keep relay path.
+					continue
+				}
+				k, err := deriveDirectSessionKey(pairSession, kp.priv, remotePub)
+				if err != nil {
+					c.log.Debug().Err(err).Msg("Direct session key derivation failed")
+					continue
+				}
+				pairKey = k
+				c.directMu.Lock()
+				c.directPairSessionKey = append([]byte(nil), k...)
+				c.directPairKeyReady = true
+				c.directMu.Unlock()
+			}
+
+			prober := NewDirectProber(conn, pairSession, pairKey, c.log)
+			c.directMu.Lock()
+			c.directProbing = true
+			c.directMu.Unlock()
+
+			_ = c.sendDirectMessage(DirectStatusMessage{SessionID: pairSession, Status: "probing"})
+			proberCtx, cancelProber := context.WithCancel(ctx)
+			proberDone := make(chan struct{})
+			go func() {
+				defer close(proberDone)
+				prober.Start(proberCtx)
+			}()
+
+			probeCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+			res, err := prober.Probe(probeCtx, remoteCandidates, 800*time.Millisecond)
+			cancel()
+			cancelProber()
+			// Wait for prober to stop reading from the UDP socket before QUIC reuses it.
+			<-proberDone
+
+			if err == nil && res != nil {
+				c.directMu.Lock()
+				c.directReady = true
+				c.directProbing = false
+				if res.From != nil {
+					peer := *res.From
+					if peer.IP != nil {
+						peer.IP = append([]byte(nil), peer.IP...)
+					}
+					c.directProbePeer = &peer
+				}
+				c.directMu.Unlock()
+
+				_ = c.sendDirectMessage(DirectStatusMessage{
+					SessionID: pairSession,
+					Status:    "ready",
+					Metrics:   DirectMetrics{RTTMs: res.RTT.Milliseconds()},
+				})
+
+				e := c.log.Info().
+					Str("session_id", pairSession.String()).
+					Int64("rtt_ms", res.RTT.Milliseconds()).
+					Str("transport", "direct-probe/udp")
+				if res.From != nil {
+					e = e.Str("peer_addr", res.From.String())
+				}
+				e.Msg("Direct probe ready (UDP reachability confirmed)")
+
+				c.startDirectQUICAgent(ctx)
+				continue
+			}
+
+			c.directMu.Lock()
+			c.directProbing = false
+			c.directMu.Unlock()
+			_ = c.sendDirectMessage(DirectStatusMessage{SessionID: pairSession, Status: "failed", Metrics: DirectMetrics{Reason: err.Error()}})
+			c.log.Warn().Err(err).Str("session_id", pairSession.String()).Msg("Direct probe failed")
+
+			if c.directMode == DirectModeDirectOnly {
+				if action == DirectOnlyActionExit {
+					c.reportError(fmt.Errorf("direct-only: probe failed: %w", err))
+					c.Close()
+					return
+				}
+				c.directMu.Lock()
+				c.directRefuseSocks = true
+				c.directMu.Unlock()
+			}
+		}
+	}
 }
 
 func (c *LinkSocksClient) reportError(err error) {
@@ -359,6 +1059,84 @@ func convertWSPath(wsURL string) string {
 	}
 
 	return u.String()
+}
+
+func directShouldAdvertiseHostCandidates(wsURL string) (enable bool, includeLoopback bool) {
+	u, err := url.Parse(wsURL)
+	if err != nil {
+		return false, false
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return false, false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true, true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// Hostnames could point to public endpoints; avoid leaking private IPs.
+		return false, false
+	}
+	if ip.IsLoopback() {
+		return true, true
+	}
+	if ip.IsPrivate() {
+		return true, false
+	}
+	return false, false
+}
+
+func directBuildHostCandidates(conn *net.UDPConn, includeLoopback bool) []DirectCandidate {
+	if conn == nil {
+		return nil
+	}
+	la, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || la == nil || la.Port <= 0 {
+		return nil
+	}
+	port := la.Port
+
+	seen := make(map[string]struct{})
+	out := make([]DirectCandidate, 0, 8)
+
+	if includeLoopback {
+		ip := "127.0.0.1"
+		seen[ip] = struct{}{}
+		out = append(out, DirectCandidate{Addr: ip, Port: port, Kind: "host"})
+	}
+
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return out
+	}
+	for _, a := range addrs {
+		ipNet, ok := a.(*net.IPNet)
+		if !ok || ipNet.IP == nil {
+			continue
+		}
+		ip := ipNet.IP
+		if ip4 := ip.To4(); ip4 != nil {
+			ip = ip4
+		}
+		// Only advertise IPv4 private addresses.
+		if ip == nil || ip.To4() == nil {
+			continue
+		}
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			continue
+		}
+		if !ip.IsPrivate() {
+			continue
+		}
+		key := ip.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, DirectCandidate{Addr: key, Port: port, Kind: "host"})
+	}
+	return out
 }
 
 // WaitReady start the client and waits for the client to be ready with optional timeout
@@ -730,6 +1508,16 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 		return &nonRetriableError{msg: "authentication failed: invalid token"}
 	}
 
+	// Advertise direct signaling support in a backward-compatible way.
+	if c.directMode != DirectModeRelayOnly {
+		hello := LogMessage{Level: LogLevelDebug, Msg: DirectClientHelloPrefix + "direct_signaling=1"}
+		c.relay.logMessage(hello, "send", wsConn.Label())
+		if err := wsConn.WriteMessage(hello); err != nil {
+			wsConn.Close()
+			return err
+		}
+	}
+
 	c.batchLogger.log("auth_success", c.threads, func(count, total int) {
 		mode := "forward"
 		if c.reverse {
@@ -740,6 +1528,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 
 	if index == 0 {
 		c.setConnectionStatus(true)
+		c.startDirectAgent(ctx)
 	}
 
 	// Measure latency using ping/pong asynchronously
@@ -844,6 +1633,85 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 			c.relay.logMessage(msg, "recv", ws.Label())
 
 			switch m := msg.(type) {
+			case DirectCapabilitiesMessage:
+				c.directMu.Lock()
+				c.directRemoteSessionID = m.SessionID
+				c.directRemoteCandidates = append([]DirectCandidate(nil), m.Candidates...)
+				if len(m.PublicKey) > 0 {
+					c.directRemotePublicKey = append([]byte(nil), m.PublicKey...)
+				}
+				localReady := c.directLocalReady
+				localCandidates := append([]DirectCandidate(nil), c.directLocalCandidates...)
+				localPub := append([]byte(nil), c.directLocalPublicKey...)
+				if !localReady {
+					c.directPendingRendezvous[m.SessionID] = struct{}{}
+				}
+				c.directMu.Unlock()
+
+				c.log.Debug().Str("session_id", m.SessionID.String()).Int("candidates", len(m.Candidates)).Msg("Received direct capabilities")
+				if localReady {
+					rendezvous := DirectRendezvousMessage{SessionID: m.SessionID, Candidates: localCandidates, PublicKey: localPub}
+					c.relay.logMessage(rendezvous, "send", ws.Label())
+					_ = ws.WriteMessage(rendezvous)
+				}
+				c.directNotify()
+
+			case DirectRendezvousMessage:
+				c.directMu.Lock()
+				if m.SessionID == c.directLocalSessionID {
+					c.directRemoteCandidates = append([]DirectCandidate(nil), m.Candidates...)
+					if len(m.PublicKey) > 0 {
+						c.directRemotePublicKey = append([]byte(nil), m.PublicKey...)
+					}
+				}
+				c.directMu.Unlock()
+				c.log.Debug().Str("session_id", m.SessionID.String()).Int("candidates", len(m.Candidates)).Msg("Received direct rendezvous")
+				c.directNotify()
+
+			case DirectStatusMessage:
+				c.log.Debug().Str("session_id", m.SessionID.String()).Str("status", m.Status).Msg("Received direct status")
+				now := time.Now()
+				switch strings.ToLower(strings.TrimSpace(m.Status)) {
+				case "degraded":
+					c.directMu.Lock()
+					// Keep a bounded degraded window to avoid oscillation.
+					until := now.Add(30 * time.Second)
+					if until.After(c.directDegradedUntil) {
+						c.directDegradedUntil = until
+					}
+					c.directMu.Unlock()
+				case "failed":
+					// Peer reported failure. Back off direct usage for a while.
+					c.directMu.Lock()
+					c.directPeerReady = false
+					until := now.Add(30 * time.Second)
+					if until.After(c.directDegradedUntil) {
+						c.directDegradedUntil = until
+					}
+					c.directMu.Unlock()
+					if c.directMode == DirectModeDirectOnly {
+						c.directMu.Lock()
+						c.directRefuseSocks = true
+						action := c.directOnlyAction
+						c.directMu.Unlock()
+						if action == DirectOnlyActionExit {
+							c.reportError(fmt.Errorf("direct-only: peer reported failed"))
+							c.Close()
+						}
+					}
+				case "ready":
+					c.directMu.Lock()
+					c.directPeerReady = true
+					c.directPeerStatusSession = m.SessionID
+					c.directMu.Unlock()
+					c.directMarkRecovered(now)
+				default:
+					// Ignore unknown status.
+				}
+
+			case UnknownMessage:
+				c.log.Trace().Int("binary_type", int(m.BinaryType)).Msg("Dropped unknown binary message")
+
 			case DataMessage:
 				if queue, ok := c.relay.messageQueues.Load(m.ChannelID); ok {
 					select {
@@ -1008,6 +1876,93 @@ func (c *LinkSocksClient) runSocksServer(ctx context.Context) error {
 func (c *LinkSocksClient) handleSocksRequest(ctx context.Context, socksConn net.Conn) {
 	defer socksConn.Close()
 
+	if c.directMode == DirectModeDirectOnly {
+		c.directMu.Lock()
+		refuse := c.directRefuseSocks
+		action := c.directOnlyAction
+		c.directMu.Unlock()
+		if refuse {
+			c.log.Warn().Msg("Direct-only failed, refusing socks request")
+			_ = c.relay.RefuseSocksRequest(socksConn, 0x03)
+			return
+		}
+
+		// Direct-only mode must not silently fall back to relay.
+		// Wait briefly for the direct QUIC dataplane to become ready.
+		c.startDirectQUICAgent(ctx)
+		c.directQUICMu.Lock()
+		readyCh := c.directQUICReadyCh
+		plane := c.directQUICPlane
+		c.directQUICMu.Unlock()
+
+		waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		select {
+		case <-readyCh:
+			now := time.Now()
+			if plane == nil || !c.directIsUsable(now) || !c.directQUICIsActive() {
+				c.directMu.Lock()
+				c.directRefuseSocks = true
+				c.directMu.Unlock()
+				if action == DirectOnlyActionExit {
+					c.reportError(fmt.Errorf("direct-only: direct dataplane not usable"))
+					c.Close()
+					return
+				}
+				_ = c.relay.RefuseSocksRequest(socksConn, 0x03)
+				return
+			}
+			w := newDirectQUICDialWriter(ctx, c, plane, "direct-quic")
+			if err := c.relay.HandleSocksRequest(ctx, w, socksConn, c.socksUsername, c.socksPassword); err != nil && !errors.Is(err, context.Canceled) {
+				if errors.Is(err, io.EOF) {
+					c.log.Debug().Err(err).Msg("Error handling SOCKS request")
+				} else {
+					c.log.Warn().Err(err).Msg("Error handling SOCKS request")
+				}
+			}
+			return
+		case <-waitCtx.Done():
+			c.directMu.Lock()
+			c.directRefuseSocks = true
+			c.directMu.Unlock()
+			if action == DirectOnlyActionExit {
+				c.reportError(fmt.Errorf("direct-only: timeout waiting for direct dataplane"))
+				c.Close()
+				return
+			}
+			_ = c.relay.RefuseSocksRequest(socksConn, 0x03)
+			return
+		}
+	}
+
+	// Prefer direct QUIC dataplane when enabled and ready.
+	if c.directMode != DirectModeRelayOnly {
+		c.startDirectQUICAgent(ctx)
+		c.directQUICMu.Lock()
+		readyCh := c.directQUICReadyCh
+		plane := c.directQUICPlane
+		c.directQUICMu.Unlock()
+		now := time.Now()
+		usable := c.directIsUsable(now)
+
+		select {
+		case <-readyCh:
+			if usable && plane != nil && c.directQUICIsActive() {
+				w := newDirectQUICDialWriter(ctx, c, plane, "direct-quic")
+				if err := c.relay.HandleSocksRequest(ctx, w, socksConn, c.socksUsername, c.socksPassword); err != nil && !errors.Is(err, context.Canceled) {
+					if errors.Is(err, io.EOF) {
+						c.log.Debug().Err(err).Msg("Error handling SOCKS request")
+					} else {
+						c.log.Warn().Err(err).Msg("Error handling SOCKS request")
+					}
+				}
+				return
+			}
+		default:
+			// Not ready; fall back to relay.
+		}
+	}
+
 	// Wait up to 10 seconds for WebSocket connection
 	startTime := time.Now()
 	for time.Since(startTime) < 10*time.Second {
@@ -1045,6 +2000,20 @@ func (c *LinkSocksClient) Close() {
 	// Close relay if it exists
 	if c.relay != nil {
 		c.relay.Close()
+	}
+
+	// Close direct QUIC components if they exist
+	c.directQUICMu.Lock()
+	plane := c.directQUICPlane
+	mgr := c.directQUICManager
+	c.directQUICPlane = nil
+	c.directQUICManager = nil
+	c.directQUICMu.Unlock()
+	if plane != nil {
+		_ = plane.Close()
+	}
+	if mgr != nil {
+		_ = mgr.Close()
 	}
 
 	// Close SOCKS listener if it exists

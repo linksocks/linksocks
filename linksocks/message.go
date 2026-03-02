@@ -49,6 +49,15 @@ LogMessage:
 
 PartnersMessage:
     Version(1) + Type(1) + DataLen(4) + JSON{"count": int}
+
+DirectCapabilitiesMessage:
+	Version(1) + Type(1) + DataLen(4) + JSON{...}
+
+DirectRendezvousMessage:
+	Version(1) + Type(1) + DataLen(4) + JSON{...}
+
+DirectStatusMessage:
+	Version(1) + Type(1) + DataLen(4) + JSON{...}
 */
 
 const (
@@ -56,16 +65,19 @@ const (
 	ProtocolVersion = byte(0x01)
 
 	// Binary message types
-	BinaryTypeAuth              = byte(0x01)
-	BinaryTypeAuthResponse      = byte(0x02)
-	BinaryTypeConnect           = byte(0x03)
-	BinaryTypeData              = byte(0x04)
-	BinaryTypeConnectResponse   = byte(0x05)
-	BinaryTypeDisconnect        = byte(0x06)
-	BinaryTypeConnector         = byte(0x07)
-	BinaryTypeConnectorResponse = byte(0x08)
-	BinaryTypeLog               = byte(0x09)
-	BinaryTypePartners          = byte(0x0A)
+	BinaryTypeAuth               = byte(0x01)
+	BinaryTypeAuthResponse       = byte(0x02)
+	BinaryTypeConnect            = byte(0x03)
+	BinaryTypeData               = byte(0x04)
+	BinaryTypeConnectResponse    = byte(0x05)
+	BinaryTypeDisconnect         = byte(0x06)
+	BinaryTypeConnector          = byte(0x07)
+	BinaryTypeConnectorResponse  = byte(0x08)
+	BinaryTypeLog                = byte(0x09)
+	BinaryTypePartners           = byte(0x0A)
+	BinaryTypeDirectCapabilities = byte(0x0B)
+	BinaryTypeDirectRendezvous   = byte(0x0C)
+	BinaryTypeDirectStatus       = byte(0x0D)
 
 	// Protocol types
 	BinaryProtocolTCP = byte(0x01)
@@ -76,20 +88,29 @@ const (
 	BinaryConnectorOperationRemove = byte(0x02)
 
 	// Type strings
-	TypeAuth              = "auth"
-	TypeAuthResponse      = "auth_response"
-	TypeConnect           = "connect"
-	TypeData              = "data"
-	TypeConnectResponse   = "connect_response"
-	TypeDisconnect        = "disconnect"
-	TypeConnector         = "connector"
-	TypeConnectorResponse = "connector_response"
-	TypeLog               = "log"
-	TypePartners          = "partners"
+	TypeAuth               = "auth"
+	TypeAuthResponse       = "auth_response"
+	TypeConnect            = "connect"
+	TypeData               = "data"
+	TypeConnectResponse    = "connect_response"
+	TypeDisconnect         = "disconnect"
+	TypeConnector          = "connector"
+	TypeConnectorResponse  = "connector_response"
+	TypeLog                = "log"
+	TypePartners           = "partners"
+	TypeDirectCapabilities = "direct_capabilities"
+	TypeDirectRendezvous   = "direct_rendezvous"
+	TypeDirectStatus       = "direct_status"
+	TypeUnknown            = "unknown"
 
 	// Compression flags
 	DataCompressionNone = byte(0x00)
 	DataCompressionGzip = byte(0x01)
+)
+
+const (
+	DirectServerHelloPrefix = "linksocks_server_hello:"
+	DirectClientHelloPrefix = "linksocks_client_hello:"
 )
 
 // BaseMessage defines the common interface for all message types
@@ -207,6 +228,57 @@ type PartnersMessage struct {
 
 func (m PartnersMessage) GetType() string {
 	return TypePartners
+}
+
+type DirectCandidate struct {
+	Addr string `json:"addr"`
+	Port int    `json:"port"`
+	Kind string `json:"kind,omitempty"` // e.g. srflx/relay/host
+}
+
+type DirectMetrics struct {
+	RTTMs  int64  `json:"rtt_ms,omitempty"`
+	Loss   int64  `json:"loss_ppm,omitempty"` // loss in parts-per-million
+	Reason string `json:"reason,omitempty"`
+}
+
+type DirectCapabilitiesMessage struct {
+	SessionID   uuid.UUID         `json:"session_id"`
+	Candidates  []DirectCandidate `json:"candidates,omitempty"`
+	Discoveries []string          `json:"discoveries,omitempty"`
+	PublicKey   []byte            `json:"public_key,omitempty"`
+}
+
+func (m DirectCapabilitiesMessage) GetType() string {
+	return TypeDirectCapabilities
+}
+
+type DirectRendezvousMessage struct {
+	SessionID  uuid.UUID         `json:"session_id"`
+	Candidates []DirectCandidate `json:"candidates,omitempty"`
+	PublicKey  []byte            `json:"public_key,omitempty"`
+}
+
+func (m DirectRendezvousMessage) GetType() string {
+	return TypeDirectRendezvous
+}
+
+type DirectStatusMessage struct {
+	SessionID uuid.UUID     `json:"session_id"`
+	Status    string        `json:"status"` // probing|ready|failed|degraded|disabled
+	Metrics   DirectMetrics `json:"metrics,omitempty"`
+}
+
+func (m DirectStatusMessage) GetType() string {
+	return TypeDirectStatus
+}
+
+type UnknownMessage struct {
+	BinaryType byte `json:"binary_type"`
+}
+
+func (m UnknownMessage) GetType() string {
+	return TypeUnknown
 }
 
 // LogLevel constants for ServerMessage
@@ -446,6 +518,39 @@ func PackMessage(msg BaseMessage) ([]byte, error) {
 		jsonData, err := json.Marshal(m)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal partners message: %w", err)
+		}
+		dataLen := uint32(len(jsonData))
+		buf = append(buf, byte(dataLen>>24), byte(dataLen>>16), byte(dataLen>>8), byte(dataLen))
+		buf = append(buf, jsonData...)
+		return buf, nil
+
+	case DirectCapabilitiesMessage:
+		buf = append(buf, BinaryTypeDirectCapabilities)
+		jsonData, err := json.Marshal(m)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal direct capabilities message: %w", err)
+		}
+		dataLen := uint32(len(jsonData))
+		buf = append(buf, byte(dataLen>>24), byte(dataLen>>16), byte(dataLen>>8), byte(dataLen))
+		buf = append(buf, jsonData...)
+		return buf, nil
+
+	case DirectRendezvousMessage:
+		buf = append(buf, BinaryTypeDirectRendezvous)
+		jsonData, err := json.Marshal(m)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal direct rendezvous message: %w", err)
+		}
+		dataLen := uint32(len(jsonData))
+		buf = append(buf, byte(dataLen>>24), byte(dataLen>>16), byte(dataLen>>8), byte(dataLen))
+		buf = append(buf, jsonData...)
+		return buf, nil
+
+	case DirectStatusMessage:
+		buf = append(buf, BinaryTypeDirectStatus)
+		jsonData, err := json.Marshal(m)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal direct status message: %w", err)
 		}
 		dataLen := uint32(len(jsonData))
 		buf = append(buf, byte(dataLen>>24), byte(dataLen>>16), byte(dataLen>>8), byte(dataLen))
@@ -730,7 +835,53 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 		}
 		return msg, nil
 
+	case BinaryTypeDirectCapabilities:
+		if len(payload) < 4 {
+			return nil, fmt.Errorf("invalid direct capabilities message")
+		}
+		dataLen := uint32(payload[0])<<24 | uint32(payload[1])<<16 | uint32(payload[2])<<8 | uint32(payload[3])
+		if len(payload) < 4+int(dataLen) {
+			return nil, fmt.Errorf("invalid direct capabilities message length")
+		}
+		jsonData := payload[4 : 4+dataLen]
+		var msg DirectCapabilitiesMessage
+		if err := json.Unmarshal(jsonData, &msg); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal direct capabilities message: %w", err)
+		}
+		return msg, nil
+
+	case BinaryTypeDirectRendezvous:
+		if len(payload) < 4 {
+			return nil, fmt.Errorf("invalid direct rendezvous message")
+		}
+		dataLen := uint32(payload[0])<<24 | uint32(payload[1])<<16 | uint32(payload[2])<<8 | uint32(payload[3])
+		if len(payload) < 4+int(dataLen) {
+			return nil, fmt.Errorf("invalid direct rendezvous message length")
+		}
+		jsonData := payload[4 : 4+dataLen]
+		var msg DirectRendezvousMessage
+		if err := json.Unmarshal(jsonData, &msg); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal direct rendezvous message: %w", err)
+		}
+		return msg, nil
+
+	case BinaryTypeDirectStatus:
+		if len(payload) < 4 {
+			return nil, fmt.Errorf("invalid direct status message")
+		}
+		dataLen := uint32(payload[0])<<24 | uint32(payload[1])<<16 | uint32(payload[2])<<8 | uint32(payload[3])
+		if len(payload) < 4+int(dataLen) {
+			return nil, fmt.Errorf("invalid direct status message length")
+		}
+		jsonData := payload[4 : 4+dataLen]
+		var msg DirectStatusMessage
+		if err := json.Unmarshal(jsonData, &msg); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal direct status message: %w", err)
+		}
+		return msg, nil
+
 	default:
-		return nil, fmt.Errorf("unknown binary message type: %d", msgType)
+		// For forward compatibility, return an UnknownMessage so upper layers can safely drop it.
+		return UnknownMessage{BinaryType: msgType}, nil
 	}
 }

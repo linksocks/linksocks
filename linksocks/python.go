@@ -61,8 +61,7 @@ func (c *ContextWithCancel) Context() context.Context {
 
 // NewContext creates a new context from the global context
 func NewContext() context.Context {
-	ctx, _ := context.WithCancel(context.Background())
-	return ctx
+	return context.Background()
 }
 
 // CancelGlobalContext cancels the global context

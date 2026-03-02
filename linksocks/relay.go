@@ -329,7 +329,7 @@ func (r *Relay) RefuseSocksRequest(conn net.Conn, reason byte) error {
 }
 
 // HandleNetworkConnection handles network connection based on protocol type
-func (r *Relay) HandleNetworkConnection(ctx context.Context, ws *WSConn, request ConnectMessage) error {
+func (r *Relay) HandleNetworkConnection(ctx context.Context, ws MessageWriter, request ConnectMessage) error {
 	if request.Protocol == "tcp" {
 		return r.HandleTCPConnection(ctx, ws, request)
 	} else if request.Protocol == "udp" {
@@ -339,7 +339,7 @@ func (r *Relay) HandleNetworkConnection(ctx context.Context, ws *WSConn, request
 }
 
 // HandleTCPConnection handles TCP network connection
-func (r *Relay) HandleTCPConnection(ctx context.Context, ws *WSConn, request ConnectMessage) error {
+func (r *Relay) HandleTCPConnection(ctx context.Context, ws MessageWriter, request ConnectMessage) error {
 	if request.Port <= 0 || request.Port > 65535 {
 		return fmt.Errorf("invalid port number: %d", request.Port)
 	}
@@ -640,7 +640,7 @@ func base64Encode(data []byte) string {
 }
 
 // HandleUDPConnection handles UDP network connection
-func (r *Relay) HandleUDPConnection(ctx context.Context, ws *WSConn, request ConnectMessage) error {
+func (r *Relay) HandleUDPConnection(ctx context.Context, ws MessageWriter, request ConnectMessage) error {
 	// Try dual-stack first
 	localAddr := &net.UDPAddr{
 		IP:   net.IPv6zero,
@@ -690,7 +690,7 @@ func (r *Relay) HandleUDPConnection(ctx context.Context, ws *WSConn, request Con
 }
 
 // HandleSocksRequest handles incoming SOCKS5 client request
-func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn net.Conn, socksUsername string, socksPassword string) error {
+func (r *Relay) HandleSocksRequest(ctx context.Context, ws MessageWriter, socksConn net.Conn, socksUsername string, socksPassword string) error {
 	buffer := make([]byte, 1024)
 
 	// Helper to send SOCKS5 failure response and close connection
@@ -1047,7 +1047,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws *WSConn, socksConn ne
 }
 
 // HandleRemoteTCPForward handles remote TCP forwarding
-func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteConn net.Conn, channelID uuid.UUID) error {
+func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws MessageWriter, remoteConn net.Conn, channelID uuid.UUID) error {
 	// Initialize activity time
 	r.updateActivityTime(channelID)
 
@@ -1159,7 +1159,7 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws *WSConn, remoteCo
 }
 
 // HandleRemoteUDPForward handles remote UDP forwarding
-func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn *net.UDPConn, channelID uuid.UUID) error {
+func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws MessageWriter, udpConn *net.UDPConn, channelID uuid.UUID) error {
 	// Initialize activity time
 	r.updateActivityTime(channelID)
 
@@ -1272,7 +1272,7 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws *WSConn, udpConn 
 }
 
 // HandleSocksTCPForward handles TCP forwarding between SOCKS client and WebSocket
-func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn net.Conn, channelID uuid.UUID) error {
+func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws MessageWriter, socksConn net.Conn, channelID uuid.UUID) error {
 	// Create a child context that can be cancelled
 	ctx, cancel := context.WithCancel(ctx)
 	r.tcpChannels.Store(channelID, cancel)
@@ -1404,7 +1404,7 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws *WSConn, socksConn
 }
 
 // HandleSocksUDPForward handles SOCKS5 UDP forwarding
-func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws *WSConn, udpConn *net.UDPConn, socksConn net.Conn, channelID uuid.UUID) error {
+func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws MessageWriter, udpConn *net.UDPConn, socksConn net.Conn, channelID uuid.UUID) error {
 	// Create a child context that can be cancelled
 	ctx, cancel := context.WithCancel(ctx)
 	r.udpChannels.Store(channelID, cancel)
