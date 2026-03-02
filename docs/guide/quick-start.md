@@ -145,9 +145,35 @@ Deploy LinkSocks server on Cloudflare Workers for serverless operation:
 
 The server will be started in autonomy mode. After deployment, connect using:
 
-
 ```bash
 linksocks client -t your_token -u wss://your-worker.your-subdomain.workers.dev -p 9870
+```
+
+## P2P Direct Mode (QUIC)
+
+In any relay-based proxy mode (e.g., Reverse Proxy, Agent Proxy, Autonomy Mode), you can enable P2P Direct Mode. When the provider and the connector can establish direct UDP connectivity, the data is no longer relayed through the server but is transmitted directly over the encrypted QUIC protocol, greatly reducing latency and increasing throughput.
+
+**Provider Side Enabling Direct Mode:**
+```bash
+linksocks provider -t provider_token -u ws://localhost:8765 --direct-mode auto
+```
+
+**Connector Side Enabling Direct Mode:**
+```bash
+linksocks connector -t connector_token -u ws://localhost:8765 -p 1180 --direct-mode auto
+```
+
+If you need NAT traversal (hole punching) via STUN servers to establish the connection, specify the STUN discovery option:
+```bash
+linksocks connector -t connector_token -u ws://localhost:8765 -p 1180 --direct-mode auto --direct-discovery stun
+```
+*Note: Once STUN is enabled without specifying a server, the program will concurrently probe a built-in pool of public STUN servers and pick the fastest responding node. You can also specify a custom STUN server with `--stun-server`.*
+
+**Performance Optimization Tip (Linux):**
+When running high-throughput QUIC direct connections on Linux, you might see a warning like `failed to sufficiently increase receive buffer size` due to small default UDP buffers. Although the program will function, if you want the best performance (the ideal 7MB buffer), we recommend modifying the following `sysctl` kernel parameters before running:
+```bash
+sudo sysctl -w net.core.rmem_max=2500000
+sudo sysctl -w net.core.wmem_max=2500000
 ```
 
 ## API Server
