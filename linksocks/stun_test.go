@@ -143,3 +143,70 @@ func TestStunDiscover_ParallelPickFastest(t *testing.T) {
 	require.Equal(t, 40001, res.Port)
 	require.Equal(t, "srflx", res.Candidate.Kind)
 }
+
+func TestStunDiscoverFromConn_ParallelPickFastest(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	fastConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	defer fastConn.Close()
+
+	slowConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
+	require.NoError(t, err)
+	defer slowConn.Close()
+
+	serve := func(c *net.UDPConn, delay time.Duration, mappedIP net.IP, mappedPort int) {
+		buf := make([]byte, 1500)
+		for {
+			_ = c.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			n, ra, err := c.ReadFromUDP(buf)
+			if err != nil {
+				ne, ok := err.(net.Error)
+				if ok && ne.Timeout() {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+						continue
+					}
+				}
+				return
+			}
+			if n < 20 {
+				continue
+			}
+			var txID [12]byte
+			copy(txID[:], buf[8:20])
+			resp := buildStunBindingResponseXorMapped(txID, mappedIP, mappedPort)
+			time.Sleep(delay)
+			_, _ = c.WriteToUDP(resp, ra)
+		}
+	}
+
+	go serve(fastConn, 10*time.Millisecond, net.IPv4(203, 0, 113, 10), 51010)
+	go serve(slowConn, 120*time.Millisecond, net.IPv4(203, 0, 113, 20), 52020)
+
+	sharedConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(0, 0, 0, 0), Port: 0})
+	require.NoError(t, err)
+	defer sharedConn.Close()
+
+	opt := DefaultStunDiscoverOption()
+	opt.Timeout = 800 * time.Millisecond
+	opt.Servers = []string{fastConn.LocalAddr().String(), slowConn.LocalAddr().String()}
+
+	res, err := StunDiscoverFromConn(ctx, sharedConn, opt)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.Equal(t, "203.0.113.10", res.Addr)
+	require.Equal(t, 51010, res.Port)
+	require.Equal(t, "srflx", res.Candidate.Kind)
+}
+
+func TestDefaultStunServers_ContainsRequestedServers(t *testing.T) {
+	servers := defaultStunServers()
+	require.Contains(t, servers, "stun.miwifi.com:3478")
+	require.Contains(t, servers, "stun.chat.bilibili.com:3478")
+	require.Contains(t, servers, "stun.cloudflare.com:3478")
+	require.Contains(t, servers, "stun.qq.com:3478")
+}
