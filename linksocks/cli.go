@@ -100,7 +100,7 @@ func (cli *CLI) initCommands() {
 		// Direct connection options (experimental; default relay-only)
 		cmd.Flags().String("direct-mode", string(DirectModeRelayOnly), "Direct mode (relay-only|direct-only|auto)")
 		cmd.Flags().String("direct-discovery", string(DirectDiscoverySTUN), "Direct discovery method (stun|server|auto)")
-		cmd.Flags().StringArray("stun-server", nil, "STUN server address (host:port), can be specified multiple times")
+		cmd.Flags().StringArray("stun-server", nil, "STUN server address (host:port), can be specified multiple times; when omitted, built-in STUN pool is probed in parallel")
 		cmd.Flags().String("direct-only-action", string(DirectOnlyActionExit), "Direct-only failure action (exit|refuse)")
 
 		// Update usage to show environment variables

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -284,9 +285,19 @@ type StunDiscoverOption struct {
 	Logger  zerolog.Logger
 }
 
+func defaultStunServers() []string {
+	return []string{
+		"stun.miwifi.com:3478",
+		"stun.chat.bilibili.com:3478",
+		"stun.cloudflare.com:3478",
+		"stun.l.google.com:19302",
+		"stun.qq.com:3478",
+	}
+}
+
 func DefaultStunDiscoverOption() *StunDiscoverOption {
 	return &StunDiscoverOption{
-		Servers: nil,
+		Servers: defaultStunServers(),
 		Timeout: 2 * time.Second,
 		Logger:  zerolog.Nop(),
 	}
@@ -299,17 +310,21 @@ func StunDiscover(ctx context.Context, opt *StunDiscoverOption) (*StunResult, er
 	if opt.Timeout <= 0 {
 		opt.Timeout = 2 * time.Second
 	}
-	if len(opt.Servers) == 0 {
+	servers := opt.Servers
+	if len(servers) == 0 {
+		servers = defaultStunServers()
+	}
+	if len(servers) == 0 {
 		return nil, errors.New("stun: no servers")
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	resultCh := make(chan *StunResult, len(opt.Servers))
-	errCh := make(chan error, len(opt.Servers))
+	resultCh := make(chan *StunResult, len(servers))
+	errCh := make(chan error, len(servers))
 
-	for _, s := range opt.Servers {
+	for _, s := range servers {
 		server := s
 		go func() {
 			res, err := StunDiscoverOne(ctx, server, opt.Timeout)
@@ -327,16 +342,12 @@ func StunDiscover(ctx context.Context, opt *StunDiscoverOption) (*StunResult, er
 		}()
 	}
 
-	var best *StunResult
 	var lastErr error
-	remaining := len(opt.Servers)
+	remaining := len(servers)
 
 	for remaining > 0 {
 		select {
 		case <-ctx.Done():
-			if best != nil {
-				return best, nil
-			}
 			if lastErr != nil {
 				return nil, lastErr
 			}
@@ -347,10 +358,14 @@ func StunDiscover(ctx context.Context, opt *StunDiscoverOption) (*StunResult, er
 			if res == nil {
 				continue
 			}
-			if best == nil || res.RTT < best.RTT {
-				best = res
-			}
-			// Keep waiting for potentially faster responses until all return or ctx is done.
+			opt.Logger.Debug().
+				Str("server", res.Server).
+				Str("addr", res.Addr).
+				Int("port", res.Port).
+				Int64("rtt_ms", res.RTT.Milliseconds()).
+				Msg("STUN srflx discovered")
+			// Return the first successful response to minimize startup latency.
+			return res, nil
 
 		case err := <-errCh:
 			remaining--
@@ -358,11 +373,6 @@ func StunDiscover(ctx context.Context, opt *StunDiscoverOption) (*StunResult, er
 				lastErr = err
 			}
 		}
-	}
-
-	if best != nil {
-		opt.Logger.Debug().Str("server", best.Server).Str("addr", best.Addr).Int("port", best.Port).Int64("rtt_ms", best.RTT.Milliseconds()).Msg("STUN srflx discovered")
-		return best, nil
 	}
 
 	if lastErr != nil {
@@ -384,7 +394,11 @@ func StunDiscoverFromConn(ctx context.Context, conn *net.UDPConn, opt *StunDisco
 	if opt.Timeout <= 0 {
 		opt.Timeout = 2 * time.Second
 	}
-	if len(opt.Servers) == 0 {
+	servers := opt.Servers
+	if len(servers) == 0 {
+		servers = defaultStunServers()
+	}
+	if len(servers) == 0 {
 		return nil, errors.New("stun: no servers")
 	}
 
@@ -396,26 +410,41 @@ func StunDiscoverFromConn(ctx context.Context, conn *net.UDPConn, opt *StunDisco
 		disabled bool
 	}
 
-	pendings := make([]pendingReq, 0, len(opt.Servers))
-	for _, s := range opt.Servers {
-		server := normalizeStunServer(s)
-		if server == "" {
-			continue
-		}
-		addr, err := net.ResolveUDPAddr("udp", server)
-		if err != nil {
-			continue
-		}
-		var txID [12]byte
-		if _, err := rand.Read(txID[:]); err != nil {
-			return nil, fmt.Errorf("stun: rand: %w", err)
-		}
-		req := BuildStunBindingRequest(txID)
-		sentAt := time.Now()
-		if _, err := conn.WriteToUDP(req, addr); err != nil {
-			continue
-		}
-		pendings = append(pendings, pendingReq{server: server, addr: addr, txID: txID, sentAt: sentAt})
+	pendingCh := make(chan pendingReq, len(servers))
+	var wg sync.WaitGroup
+	for _, s := range servers {
+		serverRaw := s
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			server := normalizeStunServer(serverRaw)
+			if server == "" {
+				return
+			}
+			addr, err := net.ResolveUDPAddr("udp", server)
+			if err != nil {
+				return
+			}
+			var txID [12]byte
+			if _, err := rand.Read(txID[:]); err != nil {
+				return
+			}
+			req := BuildStunBindingRequest(txID)
+			sentAt := time.Now()
+			if _, err := conn.WriteToUDP(req, addr); err != nil {
+				return
+			}
+			pendingCh <- pendingReq{server: server, addr: addr, txID: txID, sentAt: sentAt}
+		}()
+	}
+	wg.Wait()
+	close(pendingCh)
+
+	pendings := make([]pendingReq, 0, len(servers))
+	idxByTxID := make(map[[12]byte]int, len(servers))
+	for p := range pendingCh {
+		idxByTxID[p.txID] = len(pendings)
+		pendings = append(pendings, p)
 	}
 
 	if len(pendings) == 0 {
@@ -435,17 +464,13 @@ func StunDiscoverFromConn(ctx context.Context, conn *net.UDPConn, opt *StunDisco
 		_ = conn.SetReadDeadline(time.Time{})
 	}()
 
-	remaining := len(pendings)
 	buf := make([]byte, 1500)
-	var best *StunResult
 	var lastErr error
+	remaining := len(pendings)
 
 	for remaining > 0 {
 		select {
 		case <-ctx.Done():
-			if best != nil {
-				return best, nil
-			}
 			if lastErr != nil {
 				return nil, lastErr
 			}
@@ -455,8 +480,12 @@ func StunDiscoverFromConn(ctx context.Context, conn *net.UDPConn, opt *StunDisco
 
 		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			if best != nil {
-				return best, nil
+			ne, ok := err.(net.Error)
+			if ok && ne.Timeout() {
+				if lastErr != nil {
+					return nil, lastErr
+				}
+				return nil, errors.New("stun: timeout")
 			}
 			return nil, fmt.Errorf("stun: read: %w", err)
 		}
@@ -466,21 +495,15 @@ func StunDiscoverFromConn(ctx context.Context, conn *net.UDPConn, opt *StunDisco
 			continue
 		}
 
-		matched := -1
-		for i := range pendings {
-			if pendings[i].disabled {
-				continue
-			}
-			if pendings[i].txID == rxTxID {
-				matched = i
-				break
-			}
-		}
-		if matched < 0 {
+		matched, ok := idxByTxID[rxTxID]
+		if !ok {
 			continue
 		}
 
 		pending := &pendings[matched]
+		if pending.disabled {
+			continue
+		}
 		pending.disabled = true
 		remaining--
 
@@ -502,15 +525,13 @@ func StunDiscoverFromConn(ctx context.Context, conn *net.UDPConn, opt *StunDisco
 				Kind: "srflx",
 			},
 		}
-
-		if best == nil || res.RTT < best.RTT {
-			best = res
-		}
-	}
-
-	if best != nil {
-		opt.Logger.Debug().Str("server", best.Server).Str("addr", best.Addr).Int("port", best.Port).Int64("rtt_ms", best.RTT.Milliseconds()).Msg("STUN srflx discovered")
-		return best, nil
+		opt.Logger.Debug().
+			Str("server", res.Server).
+			Str("addr", res.Addr).
+			Int("port", res.Port).
+			Int64("rtt_ms", res.RTT.Milliseconds()).
+			Msg("STUN srflx discovered")
+		return res, nil
 	}
 	if lastErr != nil {
 		return nil, lastErr
