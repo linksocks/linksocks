@@ -50,6 +50,10 @@ def version():
 @click.option("--upstream-proxy", "-x", help="Upstream SOCKS5 proxy (socks5://[user:pass@]host[:port])")
 @click.option("--fast-open", "-f", is_flag=True, default=False, help="Assume connection success and allow data transfer immediately")
 @click.option("--no-env-proxy", "-E", is_flag=True, default=False, help="Ignore proxy env vars for WebSocket connection")
+@click.option("--direct-mode", help="Direct mode: disable, auto, direct-only")
+@click.option("--direct-discovery", help="Direct discovery method: server, stun, auto")
+@click.option("--stun-server", multiple=True, help="STUN servers to use")
+@click.option("--direct-only-action", help="Action when direct connection fails: refuse, exit")
 def client(
     token: Optional[str],
     url: str,
@@ -66,6 +70,10 @@ def client(
     upstream_proxy: Optional[str],
     fast_open: bool,
     no_env_proxy: bool,
+    direct_mode: Optional[str],
+    direct_discovery: Optional[str],
+    stun_server: tuple,
+    direct_only_action: Optional[str],
 ):
     """Start SOCKS5 over WebSocket proxy client."""
     from ._client import Client
@@ -118,6 +126,10 @@ def client(
             threads=threads,
             fast_open=fast_open,
             no_env_proxy=no_env_proxy,
+            direct_mode=direct_mode,
+            direct_discovery=direct_discovery,
+            stun_servers=list(stun_server) if stun_server else None,
+            direct_only_action=direct_only_action,
         )
 
         # Run client
@@ -152,6 +164,10 @@ def client(
 @click.option("--api-key", "-k", help="Enable HTTP API with specified key")
 @click.option("--upstream-proxy", "-x", help="Upstream SOCKS5 proxy (socks5://[user:pass@]host[:port])")
 @click.option("--fast-open", "-f", is_flag=True, default=False, help="Assume connection success and allow data transfer immediately")
+@click.option("--direct-enable", is_flag=True, default=False, help="Enable direct connections via UDP hole punching")
+@click.option("--direct-rendezvous-udp", is_flag=True, default=False, help="Enable UDP hole punching for direct connections")
+@click.option("--direct-rendezvous-host", help="Custom rendezvous server host")
+@click.option("--direct-rendezvous-port", type=int, help="Custom rendezvous server port")
 def server(
     ws_host: str,
     ws_port: int,
@@ -169,6 +185,10 @@ def server(
     api_key: Optional[str],
     upstream_proxy: Optional[str],
     fast_open: bool,
+    direct_enable: bool,
+    direct_rendezvous_udp: bool,
+    direct_rendezvous_host: Optional[str],
+    direct_rendezvous_port: Optional[int],
 ):
     """Start SOCKS5 over WebSocket proxy server."""
     from ._server import Server
@@ -210,6 +230,10 @@ def server(
             buffer_size=buffer_size,
             api_key=api_key,
             fast_open=fast_open,
+            direct_enable=direct_enable,
+            direct_rendezvous_udp=direct_rendezvous_udp,
+            direct_rendezvous_host=direct_rendezvous_host,
+            direct_rendezvous_port=direct_rendezvous_port,
         )
 
         # Configure tokens if no API key

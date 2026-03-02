@@ -57,6 +57,10 @@ class Client(_SnakePassthrough):
         upstream_username: Optional[str] = None,
         upstream_password: Optional[str] = None,
         no_env_proxy: Optional[bool] = None,
+        direct_mode: Optional[str] = None,
+        direct_discovery: Optional[str] = None,
+        stun_servers: Optional[list[str]] = None,
+        direct_only_action: Optional[str] = None,
     ) -> None:
         """Initialize the WebSocket SOCKS5 proxy client.
         
@@ -81,6 +85,10 @@ class Client(_SnakePassthrough):
             upstream_username: Username for upstream proxy authentication
             upstream_password: Password for upstream proxy authentication
             no_env_proxy: Whether to ignore proxy environment variables
+            direct_mode: Direct mode type (auto, always, never)
+            direct_discovery: Direct discovery type (stun, turn, none)
+            stun_servers: List of STUN servers to use
+            direct_only_action: Action to take if direct mode fails
         """
         opt = backend.DefaultClientOption()
         if logger is None:
@@ -122,6 +130,15 @@ class Client(_SnakePassthrough):
             opt.WithUpstreamAuth(upstream_username or "", upstream_password or "")
         if no_env_proxy is not None:
             opt.WithNoEnvProxy(bool(no_env_proxy))
+
+        if direct_mode is not None:
+            opt.WithDirectMode(direct_mode)
+        if direct_discovery is not None:
+            opt.WithDirectDiscovery(direct_discovery)
+        if stun_servers is not None:
+            opt.WithStunServers(stun_servers)
+        if direct_only_action is not None:
+            opt.WithDirectOnlyAction(direct_only_action)
 
         self._raw = backend.NewLinkSocksClient(token, opt)
         self._ctx = None
