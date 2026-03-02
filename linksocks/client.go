@@ -22,6 +22,18 @@ import (
 	"github.com/rs/zerolog"
 )
 
+func init() {
+	// quic-go attempts to increase UDP socket buffer sizes for better throughput.
+	// On systems with low rmem/wmem limits or without CAP_NET_ADMIN, it prints a
+	// one-time warning via the standard library logger. We silence that warning
+	// here and rely on our own diagnostics (direct-quic buffer sizing).
+	//
+	// Ref: https://github.com/quic-go/quic-go/wiki/UDP-Buffer-Sizes
+	if _, ok := os.LookupEnv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING"); !ok {
+		_ = os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
+	}
+}
+
 const (
 	MaxRedirects = 5 // Maximum number of WebSocket redirects to follow
 )
@@ -78,6 +90,11 @@ type LinkSocksClient struct {
 
 	directRemoteSessionID  uuid.UUID
 	directRemoteCandidates []DirectCandidate
+	// directProbePeer is the observed UDP endpoint of the peer that responded
+	// to the last successful direct probe. It is used to pick a single QUIC dial
+	// target and avoid creating multiple concurrent QUIC connections that may
+	// lead to each side selecting a different active connection.
+	directProbePeer *net.UDPAddr
 
 	directPairSessionID  uuid.UUID
 	directPairSessionKey []byte
@@ -575,6 +592,7 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 		pairKeyReady := c.directPairKeyReady
 		pairKey := append([]byte(nil), c.directPairSessionKey...)
 		rcands := append([]DirectCandidate(nil), c.directRemoteCandidates...)
+		probePeer := c.directProbePeer
 		peerReady := c.directPeerReady && c.directPeerStatusSession == pairSession
 		c.directMu.Unlock()
 
@@ -587,6 +605,16 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 		plane := c.directQUICPlane
 		mgr := c.directQUICManager
 		c.directQUICMu.Unlock()
+		// If we have a stale QUIC transport registered on the shared UDP socket,
+		// quic-go will panic with "connection already exists" when a new Transport
+		// attempts to Listen on the same local address.
+		//
+		// Close and clear inactive state before reconnecting.
+		if mgr != nil && mgr.Active() == nil {
+			c.ForceCloseDirectQUIC()
+			plane = nil
+			mgr = nil
+		}
 		if plane != nil && mgr != nil && mgr.Active() != nil {
 			// Already ready.
 			c.directMarkRecovered(time.Now())
@@ -617,10 +645,7 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 		//
 		// Use the smaller per-peer session id as the dialer role (it equals pairSession).
 		// The other side only listens and accepts.
-		var dialCandidates []DirectCandidate
-		if localSession == pairSession {
-			dialCandidates = rcands
-		}
+		dialCandidates := directSelectQUICDialCandidates(localSession, pairSession, probePeer, rcands)
 		conn, err := mgr.Connect(ctx, dialCandidates)
 		if err != nil {
 			_ = mgr.Close()
@@ -660,6 +685,25 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 		c.directQUICPlane = plane
 		readyCh := c.directQUICReadyCh
 		c.directQUICMu.Unlock()
+
+		// Auto-cleanup when the QUIC connection is closed, so a future reconnect
+		// doesn't reuse a Transport that is still registered in quic-go's global
+		// conn multiplexer.
+		go func(expected *DirectQUICManager) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-conn.Context().Done():
+			}
+
+			c.directQUICMu.Lock()
+			stillCurrent := c.directQUICManager == expected
+			c.directQUICMu.Unlock()
+			if stillCurrent {
+				c.ForceCloseDirectQUIC()
+			}
+		}(mgr)
+
 		select {
 		case <-readyCh:
 		default:
@@ -671,6 +715,16 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 		// Slow down once established.
 		backoff = 2 * time.Second
 	}
+}
+
+func directSelectQUICDialCandidates(localSession uuid.UUID, pairSession uuid.UUID, probePeer *net.UDPAddr, rcands []DirectCandidate) []DirectCandidate {
+	if localSession != pairSession {
+		return nil
+	}
+	if probePeer != nil && probePeer.IP != nil && probePeer.Port > 0 {
+		return []DirectCandidate{{Addr: probePeer.IP.String(), Port: probePeer.Port, Kind: "probe"}}
+	}
+	return rcands
 }
 
 func (c *LinkSocksClient) sendDirectMessage(msg BaseMessage) error {
@@ -923,9 +977,30 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 				c.directMu.Lock()
 				c.directReady = true
 				c.directProbing = false
+				if res.From != nil {
+					peer := *res.From
+					if peer.IP != nil {
+						peer.IP = append([]byte(nil), peer.IP...)
+					}
+					c.directProbePeer = &peer
+				}
 				c.directMu.Unlock()
-				_ = c.sendDirectMessage(DirectStatusMessage{SessionID: pairSession, Status: "ready", Metrics: DirectMetrics{RTTMs: res.RTT.Milliseconds()}})
-				c.log.Info().Str("session_id", pairSession.String()).Int64("rtt_ms", res.RTT.Milliseconds()).Msg("Direct probe ready")
+
+				_ = c.sendDirectMessage(DirectStatusMessage{
+					SessionID: pairSession,
+					Status:    "ready",
+					Metrics:   DirectMetrics{RTTMs: res.RTT.Milliseconds()},
+				})
+
+				e := c.log.Info().
+					Str("session_id", pairSession.String()).
+					Int64("rtt_ms", res.RTT.Milliseconds()).
+					Str("transport", "direct-probe/udp")
+				if res.From != nil {
+					e = e.Str("peer_addr", res.From.String())
+				}
+				e.Msg("Direct probe ready (UDP reachability confirmed)")
+
 				c.startDirectQUICAgent(ctx)
 				continue
 			}
