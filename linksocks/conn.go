@@ -90,7 +90,7 @@ func NewWSConn(conn *websocket.Conn, label string, logger zerolog.Logger) *WSCon
 		logger.
 			Trace().
 			Int64("rtt_ms", rtt.Milliseconds()).
-			Msg("Received pong, RTT measured")
+			Msg("WebSocket pong received, RTT measured")
 
 		return conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	})
