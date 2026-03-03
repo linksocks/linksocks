@@ -114,6 +114,15 @@ func (c *WSConn) ReadMessage() (BaseMessage, error) {
 	return ParseMessage(data)
 }
 
+// ReadMessageWithVersion reads a BaseMessage and returns the peer's protocol version
+func (c *WSConn) ReadMessageWithVersion() (BaseMessage, byte, error) {
+	_, data, err := c.conn.ReadMessage()
+	if err != nil {
+		return nil, 0, err
+	}
+	return ParseMessageWithVersion(data)
+}
+
 // WriteMessage writes a BaseMessage to the websocket connection
 func (c *WSConn) WriteMessage(msg BaseMessage) error {
 	data, err := PackMessage(msg)

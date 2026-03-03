@@ -166,21 +166,21 @@ type ServerOption struct {
 // DefaultServerOption returns default server options
 func DefaultServerOption() *ServerOption {
 	return &ServerOption{
-		WSHost:           "0.0.0.0",
-		WSPort:           8765,
-		SocksHost:        "127.0.0.1",
-		PortPool:         NewPortPoolFromRange(1024, 10240),
-		SocksWaitClient:  true,
-		Logger:           zerolog.New(os.Stdout).With().Timestamp().Logger(),
-		BufferSize:       DefaultBufferSize,
-		APIKey:           "",
-		ChannelTimeout:   DefaultChannelTimeout,
-		ConnectTimeout:   DefaultConnectTimeout,
-		FastOpen:         false,
-		UpstreamProxy:    "",
-		UpstreamUsername: "",
-		UpstreamPassword: "",
-		DirectEnable:     false,
+		WSHost:                 "0.0.0.0",
+		WSPort:                 8765,
+		SocksHost:              "127.0.0.1",
+		PortPool:               NewPortPoolFromRange(1024, 10240),
+		SocksWaitClient:        true,
+		Logger:                 zerolog.New(os.Stdout).With().Timestamp().Logger(),
+		BufferSize:             DefaultBufferSize,
+		APIKey:                 "",
+		ChannelTimeout:         DefaultChannelTimeout,
+		ConnectTimeout:         DefaultConnectTimeout,
+		FastOpen:               false,
+		UpstreamProxy:          "",
+		UpstreamUsername:       "",
+		UpstreamPassword:       "",
+		DirectEnable:           false,
 		DirectRendezvousEnable: false,
 		DirectRendezvousHost:   "",
 		DirectRendezvousPort:   0,
@@ -308,31 +308,31 @@ func NewLinkSocksServer(opt *ServerOption) *LinkSocksServer {
 		WithUpstreamProxyType(opt.UpstreamProxyType)
 
 	s := &LinkSocksServer{
-		relay:           NewRelay(opt.Logger, relayOpt),
-		log:             opt.Logger,
-		wsHost:          opt.WSHost,
-		wsPort:          opt.WSPort,
-		socksHost:       opt.SocksHost,
-		portPool:        opt.PortPool,
-		ready:           make(chan struct{}),
-		clients:         make(map[uuid.UUID]*WSConn),
-		forwardTokens:   make(map[string]struct{}),
-		tokens:          make(map[string]int),
-		tokenClients:    make(map[string][]clientInfo),
-		tokenIndexes:    make(map[string]int),
-		connectorTokens: make(map[string]string),
-		connCache:       newConnectorCache(),
-		tokenOptions:    make(map[string]*ReverseTokenOptions),
-		socksTasks:      make(map[int]context.CancelFunc),
-		socksWaitClient: opt.SocksWaitClient,
-		waitingSockets:  make(map[int]*waitingSocket),
-		socketManager:   NewSocketManager(opt.SocksHost, opt.Logger),
-		apiKey:          opt.APIKey,
-		internalTokens:  make(map[string][]string),
-		sha256TokenMap:  make(map[string]string),
-		errors:          make(chan error, 16),
-		directEnable:    opt.DirectEnable,
-		clientMeta:      make(map[uuid.UUID]*directClientMeta),
+		relay:                  NewRelay(opt.Logger, relayOpt),
+		log:                    opt.Logger,
+		wsHost:                 opt.WSHost,
+		wsPort:                 opt.WSPort,
+		socksHost:              opt.SocksHost,
+		portPool:               opt.PortPool,
+		ready:                  make(chan struct{}),
+		clients:                make(map[uuid.UUID]*WSConn),
+		forwardTokens:          make(map[string]struct{}),
+		tokens:                 make(map[string]int),
+		tokenClients:           make(map[string][]clientInfo),
+		tokenIndexes:           make(map[string]int),
+		connectorTokens:        make(map[string]string),
+		connCache:              newConnectorCache(),
+		tokenOptions:           make(map[string]*ReverseTokenOptions),
+		socksTasks:             make(map[int]context.CancelFunc),
+		socksWaitClient:        opt.SocksWaitClient,
+		waitingSockets:         make(map[int]*waitingSocket),
+		socketManager:          NewSocketManager(opt.SocksHost, opt.Logger),
+		apiKey:                 opt.APIKey,
+		internalTokens:         make(map[string][]string),
+		sha256TokenMap:         make(map[string]string),
+		errors:                 make(chan error, 16),
+		directEnable:           opt.DirectEnable,
+		clientMeta:             make(map[uuid.UUID]*directClientMeta),
 		directRendezvousEnable: opt.DirectRendezvousEnable,
 		directRendezvousHost:   opt.DirectRendezvousHost,
 		directRendezvousPort:   opt.DirectRendezvousPort,
@@ -1084,13 +1084,20 @@ func (s *LinkSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Con
 		}
 	} else {
 		// Traditional authentication for requests without query parameters
-		msg, err := wsConn.ReadMessage()
+		msg, peerVersion, err := wsConn.ReadMessageWithVersion()
 		if err != nil {
 			s.log.Debug().Err(err).Msg("Failed to read auth message")
-			authResponse := AuthResponseMessage{Success: false, Error: "invalid auth message"}
+			authResponse := AuthResponseMessage{Success: false, Error: "invalid auth message: " + err.Error()}
 			s.relay.logMessage(authResponse, "send", wsConn.Label())
 			wsConn.WriteMessage(authResponse)
 			return
+		}
+
+		if (peerVersion & 0x0f) != (ProtocolVersion & 0x0f) {
+			s.log.Warn().
+				Uint8("peer_minor_version", peerVersion&0x0f).
+				Uint8("server_minor_version", ProtocolVersion&0x0f).
+				Msg("Minor protocol version mismatch detected; connection allowed but features may differ")
 		}
 
 		s.relay.logMessage(msg, "recv", wsConn.Label())

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -16,6 +17,20 @@ import (
 /*
 All messages start with:
     Version(1) + Type(1)
+
+Note on ProtocolVersion:
+    The 1-byte ProtocolVersion encodes both major and minor version parts:
+    - High nibble (bits 4-7): Major version
+    - Low nibble (bits 0-3): Minor version
+
+    Example: 0x01 means Major=0, Minor=1.
+
+    Versioning rules:
+    - Minor version update: Adding new semantics that don't break wire compatibility.
+      A newer peer talking to an older peer MUST NOT trigger parse errors, and an older
+      peer talking to a newer peer MUST remain compatible (though features may differ).
+    - Major version update: Disruptive changes that break compatibility.
+      Major version mismatches SHOULD NOT be allowed to connect and MUST be explicitly warned/rejected.
 
 AuthMessage:
     Version(1) + Type(1) + TokenLen(1) + Token(N) + Reverse(1) + Instance(16)
@@ -61,7 +76,25 @@ DirectStatusMessage:
 */
 
 const (
-	// Protocol version
+	// ProtocolVersion is packed as a single byte: 0xMN.
+	//
+	// Encoding:
+	//   - M (high nibble) is the MAJOR version
+	//   - N (low nibble) is the MINOR version
+	//
+	// Example: 0x01 => major=0, minor=1.
+	//
+	// Versioning rules:
+	//   - Bump MINOR when changing/adding semantics in a way that remains wire-compatible
+	//     in both directions: a newer peer talking to an older peer MUST NOT trigger parse
+	//     errors, and an older peer talking to a newer peer MUST remain compatible (features
+	//     may differ).
+	//   - Bump MAJOR for breaking wire-incompatible changes.
+	//
+	// Connection policy:
+	//   - Different MAJOR versions MUST NOT connect.
+	//   - Different MINOR versions MAY connect, but SHOULD be clearly reported during the
+	//     connection/auth phase.
 	ProtocolVersion = byte(0x01)
 
 	// Binary message types
@@ -107,6 +140,18 @@ const (
 	DataCompressionNone = byte(0x00)
 	DataCompressionGzip = byte(0x01)
 )
+
+func protocolMajor(v byte) byte {
+	return (v >> 4) & 0x0F
+}
+
+func protocolMinor(v byte) byte {
+	return v & 0x0F
+}
+
+func protocolVersionDebugString(v byte) string {
+	return fmt.Sprintf("0x%02X (major=%d minor=%d)", v, protocolMajor(v), protocolMinor(v))
+}
 
 const (
 	DirectServerHelloPrefix = "linksocks_server_hello:"
@@ -562,27 +607,73 @@ func PackMessage(msg BaseMessage) ([]byte, error) {
 	}
 }
 
-// ParseMessage parses a binary message
-func ParseMessage(data []byte) (BaseMessage, error) {
+// ParseProtocolVersionParam parses a peer-reported protocol version string.
+//
+// Supported formats:
+//   - "0x01" / "0X01" (hex)
+//   - "01" (hex byte)
+//   - "1" (decimal)
+func ParseProtocolVersionParam(s string) (byte, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty protocol version")
+	}
+
+	// Prefer explicit hex.
+	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		u, err := strconv.ParseUint(s[2:], 16, 8)
+		if err != nil {
+			return 0, fmt.Errorf("invalid protocol version hex: %w", err)
+		}
+		return byte(u), nil
+	}
+
+	// If it's exactly 2 hex digits, interpret as a byte.
+	if len(s) == 2 {
+		if u, err := strconv.ParseUint(s, 16, 8); err == nil {
+			return byte(u), nil
+		}
+	}
+
+	// Otherwise, parse as decimal.
+	u, err := strconv.ParseUint(s, 10, 8)
+	if err != nil {
+		return 0, fmt.Errorf("invalid protocol version: %w", err)
+	}
+	return byte(u), nil
+}
+
+// ParseMessageWithVersion parses a binary message and returns the peer-reported
+// protocol version byte.
+func ParseMessageWithVersion(data []byte) (BaseMessage, byte, error) {
 	if len(data) < 2 { // Version + Type
-		return nil, fmt.Errorf("message too short")
+		return nil, 0, fmt.Errorf("message too short")
 	}
 
 	version := data[0]
-	if version != ProtocolVersion {
-		return nil, fmt.Errorf("unsupported protocol version: %d, data: %x", version, data)
+	if protocolMajor(version) != protocolMajor(ProtocolVersion) {
+		return nil, version, fmt.Errorf(
+			"unsupported protocol major version: peer=%s local=%s",
+			protocolVersionDebugString(version),
+			protocolVersionDebugString(ProtocolVersion),
+		)
 	}
 
 	msgType := data[1]
 	payload := data[2:]
 
+	msg, err := parseMessageBody(msgType, payload)
+	return msg, version, err
+}
+
+func parseMessageBody(msgType byte, payload []byte) (BaseMessage, error) {
 	switch msgType {
 	case BinaryTypeAuth:
 		if len(payload) < 1 {
 			return nil, fmt.Errorf("invalid auth message")
 		}
 		tokenLen := int(payload[0])
-		if len(payload) < 1+tokenLen+1+16 { // +16 for Instance UUID
+		if len(payload) < 1+tokenLen+1+16 { // TokenLen(1) + Token(N) + Reverse(1) + Instance(16)
 			return nil, fmt.Errorf("invalid auth message length")
 		}
 		token := string(payload[1 : 1+tokenLen])
@@ -591,20 +682,14 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid Instance: %w", err)
 		}
-		return AuthMessage{
-			Token:    token,
-			Reverse:  reverse,
-			Instance: instance,
-		}, nil
+		return AuthMessage{Token: token, Reverse: reverse, Instance: instance}, nil
 
 	case BinaryTypeAuthResponse:
 		if len(payload) < 1 {
 			return nil, fmt.Errorf("invalid auth response message")
 		}
 		success := byteToBool(payload[0])
-		msg := AuthResponseMessage{
-			Success: success,
-		}
+		msg := AuthResponseMessage{Success: success}
 		if !success && len(payload) > 1 {
 			errorLen := int(payload[1])
 			if len(payload) < 2+errorLen {
@@ -623,21 +708,18 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid ChannelID: %w", err)
 		}
-		msg := ConnectMessage{
-			Protocol:  protocol,
-			ChannelID: channelID,
-		}
+		msg := ConnectMessage{Protocol: protocol, ChannelID: channelID}
 		if protocol == "tcp" {
-			payload = payload[17:]
-			if len(payload) < 1 {
+			rest := payload[17:]
+			if len(rest) < 1 {
 				return nil, fmt.Errorf("invalid tcp connect message")
 			}
-			addrLen := int(payload[0])
-			if len(payload) < 1+addrLen+2 {
+			addrLen := int(rest[0])
+			if len(rest) < 1+addrLen+2 {
 				return nil, fmt.Errorf("invalid tcp connect message length")
 			}
-			msg.Address = string(payload[1 : 1+addrLen])
-			msg.Port = int(uint16(payload[1+addrLen])<<8 | uint16(payload[1+addrLen+1]))
+			msg.Address = string(rest[1 : 1+addrLen])
+			msg.Port = int(uint16(rest[1+addrLen])<<8 | uint16(rest[1+addrLen+1]))
 		}
 		return msg, nil
 
@@ -650,10 +732,7 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid ChannelID: %w", err)
 		}
-		msg := ConnectResponseMessage{
-			Success:   success,
-			ChannelID: channelID,
-		}
+		msg := ConnectResponseMessage{Success: success, ChannelID: channelID}
 		if !success {
 			if len(payload) < 18 {
 				return nil, fmt.Errorf("invalid connect response error length")
@@ -681,7 +760,6 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 			return nil, fmt.Errorf("invalid data message length")
 		}
 
-		// Handle decompression
 		rawData := payload[22 : 22+dataLen]
 		var decompressedData []byte
 		if compression == DataCompressionGzip {
@@ -691,6 +769,7 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 			}
 			decompressedData, err = io.ReadAll(r)
 			if err != nil {
+				_ = r.Close()
 				return nil, fmt.Errorf("gzip decompression failed: %w", err)
 			}
 			if err := r.Close(); err != nil {
@@ -700,30 +779,29 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 			decompressedData = rawData
 		}
 
-		msg := DataMessage{
-			Protocol:    protocol,
-			ChannelID:   channelID,
-			Compression: compression,
-			Data:        decompressedData,
-		}
+		msg := DataMessage{Protocol: protocol, ChannelID: channelID, Compression: compression, Data: decompressedData}
 		if protocol == "udp" {
-			payload = payload[22+int(dataLen):]
-			if len(payload) < 1 {
+			rest := payload[22+int(dataLen):]
+			if len(rest) < 1 {
 				return nil, fmt.Errorf("invalid udp data message")
 			}
-			addrLen := int(payload[0])
-			if len(payload) < 1+addrLen+2+1 {
+			addrLen := int(rest[0])
+			if len(rest) < 1+addrLen+2+1 { // +1 for TargetAddrLen
 				return nil, fmt.Errorf("invalid udp data message length")
 			}
-			msg.Address = string(payload[1 : 1+addrLen])
-			msg.Port = int(uint16(payload[1+addrLen])<<8 | uint16(payload[1+addrLen+1]))
-			payload = payload[1+addrLen+2:]
-			targetAddrLen := int(payload[0])
-			if len(payload) < 1+targetAddrLen+2 {
+			msg.Address = string(rest[1 : 1+addrLen])
+			msg.Port = int(uint16(rest[1+addrLen])<<8 | uint16(rest[1+addrLen+1]))
+
+			rest = rest[1+addrLen+2:]
+			if len(rest) < 1 {
+				return nil, fmt.Errorf("invalid udp data message")
+			}
+			targetAddrLen := int(rest[0])
+			if len(rest) < 1+targetAddrLen+2 {
 				return nil, fmt.Errorf("invalid udp data message target address")
 			}
-			msg.TargetAddr = string(payload[1 : 1+targetAddrLen])
-			msg.TargetPort = int(uint16(payload[1+targetAddrLen])<<8 | uint16(payload[1+targetAddrLen+1]))
+			msg.TargetAddr = string(rest[1 : 1+targetAddrLen])
+			msg.TargetPort = int(uint16(rest[1+targetAddrLen])<<8 | uint16(rest[1+targetAddrLen+1]))
 		}
 		return msg, nil
 
@@ -751,28 +829,28 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 		if len(payload) < 16 { // ChannelID(16)
 			return nil, fmt.Errorf("invalid connector message")
 		}
+
 		channelID, err := uuid.Parse(bytesToUUID(payload[:16]))
 		if err != nil {
 			return nil, fmt.Errorf("invalid ChannelID: %w", err)
 		}
-		payload = payload[16:]
-		if len(payload) < 1 {
+
+		rest := payload[16:]
+		if len(rest) < 1 {
 			return nil, fmt.Errorf("invalid connector message length")
 		}
-		tokenLen := int(payload[0])
-		if len(payload) < 1+tokenLen+1 { // +1 for operation
+
+		tokenLen := int(rest[0])
+		if len(rest) < 1+tokenLen+1 { // TokenLen(1) + Token(N) + Operation(1)
 			return nil, fmt.Errorf("invalid connector message length")
 		}
-		token := string(payload[1 : 1+tokenLen])
-		operation := bytesToOperation(payload[1+tokenLen])
-		if operation == "" {
+
+		token := string(rest[1 : 1+tokenLen])
+		operation := bytesToOperation(rest[1+tokenLen])
+		if len(operation) == 0 {
 			return nil, fmt.Errorf("invalid operation type")
 		}
-		return ConnectorMessage{
-			ChannelID:      channelID,
-			ConnectorToken: token,
-			Operation:      operation,
-		}, nil
+		return ConnectorMessage{ChannelID: channelID, ConnectorToken: token, Operation: operation}, nil
 
 	case BinaryTypeConnectorResponse:
 		if len(payload) < 17 { // ChannelID(16) + Success(1)
@@ -783,10 +861,7 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 			return nil, fmt.Errorf("invalid ChannelID: %w", err)
 		}
 		success := byteToBool(payload[16])
-		msg := ConnectorResponseMessage{
-			Success:   success,
-			ChannelID: channelID,
-		}
+		msg := ConnectorResponseMessage{Success: success, ChannelID: channelID}
 		if !success {
 			if len(payload) < 18 {
 				return nil, fmt.Errorf("invalid connector response error length")
@@ -836,7 +911,7 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 		return msg, nil
 
 	case BinaryTypeDirectCapabilities:
-		if len(payload) < 4 {
+		if len(payload) < 4 { // DataLen(4)
 			return nil, fmt.Errorf("invalid direct capabilities message")
 		}
 		dataLen := uint32(payload[0])<<24 | uint32(payload[1])<<16 | uint32(payload[2])<<8 | uint32(payload[3])
@@ -851,7 +926,7 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 		return msg, nil
 
 	case BinaryTypeDirectRendezvous:
-		if len(payload) < 4 {
+		if len(payload) < 4 { // DataLen(4)
 			return nil, fmt.Errorf("invalid direct rendezvous message")
 		}
 		dataLen := uint32(payload[0])<<24 | uint32(payload[1])<<16 | uint32(payload[2])<<8 | uint32(payload[3])
@@ -866,7 +941,7 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 		return msg, nil
 
 	case BinaryTypeDirectStatus:
-		if len(payload) < 4 {
+		if len(payload) < 4 { // DataLen(4)
 			return nil, fmt.Errorf("invalid direct status message")
 		}
 		dataLen := uint32(payload[0])<<24 | uint32(payload[1])<<16 | uint32(payload[2])<<8 | uint32(payload[3])
@@ -884,4 +959,14 @@ func ParseMessage(data []byte) (BaseMessage, error) {
 		// For forward compatibility, return an UnknownMessage so upper layers can safely drop it.
 		return UnknownMessage{BinaryType: msgType}, nil
 	}
+}
+
+// ParseMessage parses a binary message.
+//
+// Compatibility policy:
+//   - Major mismatch is rejected.
+//   - Minor mismatch is accepted by design; see ProtocolVersion docs.
+func ParseMessage(data []byte) (BaseMessage, error) {
+	msg, _, err := ParseMessageWithVersion(data)
+	return msg, err
 }
