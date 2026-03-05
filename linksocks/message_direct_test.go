@@ -12,6 +12,7 @@ func TestPackParse_DirectCapabilities_RoundTrip(t *testing.T) {
 		SessionID: sessionID,
 		Candidates: []DirectCandidate{
 			{Addr: "1.2.3.4", Port: 1234, Kind: "srflx"},
+			{Addr: "2001:db8::1", Port: 2345, Kind: "srflx"},
 		},
 		Discoveries: []string{"stun"},
 	}
@@ -33,7 +34,13 @@ func TestPackParse_DirectCapabilities_RoundTrip(t *testing.T) {
 	if got.SessionID != sessionID {
 		t.Fatalf("session_id mismatch: got %s want %s", got.SessionID, sessionID)
 	}
-	if len(got.Candidates) != 1 || got.Candidates[0].Addr != "1.2.3.4" || got.Candidates[0].Port != 1234 {
+	if len(got.Candidates) != 2 {
+		t.Fatalf("candidates len mismatch: %+v", got.Candidates)
+	}
+	if got.Candidates[0].Addr != "1.2.3.4" || got.Candidates[0].Port != 1234 {
+		t.Fatalf("candidates[0] mismatch: %+v", got.Candidates[0])
+	}
+	if got.Candidates[1].Addr != "2001:db8::1" || got.Candidates[1].Port != 2345 {
 		t.Fatalf("candidates mismatch: %+v", got.Candidates)
 	}
 	if len(got.Discoveries) != 1 || got.Discoveries[0] != "stun" {

@@ -368,6 +368,69 @@ func (o *ClientOption) WithWSURL(url string) *ClientOption {
 	return o
 }
 
+func directBuildPublicIPv6Candidates(conn *net.UDPConn) []DirectCandidate {
+	if conn == nil {
+		return nil
+	}
+	la, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || la == nil || la.Port <= 0 {
+		return nil
+	}
+	// Only advertise IPv6 candidates when the underlying socket is IPv6-capable.
+	if la.IP != nil {
+		if ip4 := la.IP.To4(); ip4 != nil {
+			return nil
+		}
+	}
+
+	port := la.Port
+	seen := make(map[string]struct{})
+	out := make([]DirectCandidate, 0, 4)
+
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	for _, a := range addrs {
+		var ip net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		default:
+			continue
+		}
+		if ip == nil {
+			continue
+		}
+		if ip.To4() != nil {
+			continue
+		}
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			continue
+		}
+		if !ip.IsGlobalUnicast() {
+			continue
+		}
+		// Exclude unique-local / private address ranges.
+		if ip.IsPrivate() {
+			continue
+		}
+
+		s := ip.String()
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, DirectCandidate{Addr: s, Port: port, Kind: "srflx"})
+	}
+	return out
+}
+
 // WithReverse sets the reverse proxy mode
 func (o *ClientOption) WithReverse(reverse bool) *ClientOption {
 	o.Reverse = reverse
@@ -904,7 +967,10 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 	c.directLocalPublicKey = append([]byte(nil), kp.pub...)
 	c.directMu.Unlock()
 
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	conn, err := listenUDPDualStack(ctx, 0)
+	if err != nil {
+		conn, err = net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	}
 	if err != nil {
 		c.log.Warn().Err(err).Msg("Direct UDP listen failed")
 		return
@@ -1030,6 +1096,12 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 		}
 	}
 
+	// If the host has a public IPv6 address and the socket is IPv6-capable,
+	// include it in advertised candidates.
+	if v6 := directBuildPublicIPv6Candidates(conn); len(v6) > 0 {
+		localCandidates = directDedupCandidates(append(localCandidates, v6...))
+	}
+
 	c.directMu.Lock()
 	c.directProbeConn = conn
 	c.directMu.Unlock()
@@ -1138,6 +1210,9 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 						if len(hostCands) > 0 {
 							newCandidates = directDedupCandidates(append(hostCands, newCandidates...))
 						}
+					}
+					if v6 := directBuildPublicIPv6Candidates(conn); len(v6) > 0 {
+						newCandidates = directDedupCandidates(append(newCandidates, v6...))
 					}
 					broadcastLocalCandidates(newCandidates, "stun-refresh")
 					needRefresh = false
@@ -2640,7 +2715,6 @@ func (c *LinkSocksClient) Close() {
 	if mgr != nil {
 		_ = mgr.Close()
 	}
-
 	// Close SOCKS listener if it exists
 	if c.socksListener != nil {
 		if err := c.socksListener.Close(); err != nil {

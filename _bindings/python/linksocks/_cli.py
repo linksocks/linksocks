@@ -52,8 +52,13 @@ def version():
 @click.option("--no-env-proxy", "-E", is_flag=True, default=False, help="Ignore proxy env vars for WebSocket connection")
 @click.option("--direct-mode", help="Direct mode: disable, auto, direct-only")
 @click.option("--direct-discovery", help="Direct discovery method: server, stun, auto")
+@click.option("--direct-host-candidates", help="Advertise host candidates: auto, never, always")
 @click.option("--stun-server", multiple=True, help="STUN servers to use")
 @click.option("--direct-only-action", help="Action when direct connection fails: refuse, exit")
+@click.option("--direct-upnp", is_flag=True, default=False, help="Enable UPnP port mapping for direct mode")
+@click.option("--direct-upnp-lease", default=None, help="Lease duration for UPnP port mapping (e.g. 30m, 10s)")
+@click.option("--direct-upnp-keep", is_flag=True, default=False, help="Keep UPnP port mapping on exit")
+@click.option("--direct-upnp-external-port", type=int, default=None, help="External port for UPnP mapping (default: same as internal port)")
 def client(
     token: Optional[str],
     url: str,
@@ -72,8 +77,13 @@ def client(
     no_env_proxy: bool,
     direct_mode: Optional[str],
     direct_discovery: Optional[str],
+    direct_host_candidates: Optional[str],
     stun_server: tuple,
     direct_only_action: Optional[str],
+    direct_upnp: bool,
+    direct_upnp_lease: Optional[str],
+    direct_upnp_keep: bool,
+    direct_upnp_external_port: Optional[int],
 ):
     """Start SOCKS5 over WebSocket proxy client."""
     from ._client import Client
@@ -128,8 +138,13 @@ def client(
             no_env_proxy=no_env_proxy,
             direct_mode=direct_mode,
             direct_discovery=direct_discovery,
+            direct_host_candidates=direct_host_candidates,
             stun_servers=list(stun_server) if stun_server else None,
             direct_only_action=direct_only_action,
+            direct_upnp=direct_upnp,
+            direct_upnp_lease=direct_upnp_lease,
+            direct_upnp_keep=direct_upnp_keep,
+            direct_upnp_external_port=direct_upnp_external_port,
         )
 
         # Run client

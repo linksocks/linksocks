@@ -344,7 +344,7 @@ func (m *DirectQUICManager) Connect(ctx context.Context, candidates []DirectCand
 		if cand.Addr == "" || cand.Port <= 0 {
 			continue
 		}
-		addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", cand.Addr, cand.Port))
+		addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(cand.Addr, fmt.Sprintf("%d", cand.Port)))
 		if err != nil {
 			continue
 		}

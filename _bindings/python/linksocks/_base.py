@@ -216,6 +216,33 @@ class _FFIClientOption:
     def WithNoEnvProxy(self, v: bool) -> None:
         self._cfg[_json_key("no_env_proxy")] = bool(v)
 
+    def WithDirectMode(self, v: str) -> None:
+        self._cfg[_json_key("direct_mode")] = str(v)
+
+    def WithDirectDiscovery(self, v: str) -> None:
+        self._cfg[_json_key("direct_discovery")] = str(v)
+
+    def WithStunServers(self, v: List[str]) -> None:
+        self._cfg[_json_key("stun_servers")] = list(v)
+
+    def WithDirectOnlyAction(self, v: str) -> None:
+        self._cfg[_json_key("direct_only_action")] = str(v)
+
+    def WithDirectHostCandidatesMode(self, v: str) -> None:
+        self._cfg[_json_key("direct_host_candidates")] = str(v)
+
+    def WithDirectUPnP(self, v: bool) -> None:
+        self._cfg[_json_key("direct_upnp")] = bool(v)
+
+    def WithDirectUPnPLease(self, v: int) -> None:
+        self._cfg[_json_key("direct_upnp_lease_ns")] = int(v)
+
+    def WithDirectUPnPKeep(self, v: bool) -> None:
+        self._cfg[_json_key("direct_upnp_keep")] = bool(v)
+
+    def WithDirectUPnPExtPort(self, v: int) -> None:
+        self._cfg[_json_key("direct_upnp_external_port")] = int(v)
+
     def to_cfg(self) -> Dict[str, Any]:
         return dict(self._cfg)
 

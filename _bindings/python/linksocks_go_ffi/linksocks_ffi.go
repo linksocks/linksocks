@@ -179,29 +179,34 @@ type reverseTokenOptions struct {
 }
 
 type clientConfig struct {
-	WSURL            string   `json:"ws_url"`
-	Reverse          *bool    `json:"reverse"`
-	SocksHost        string   `json:"socks_host"`
-	SocksPort        *int     `json:"socks_port"`
-	SocksUsername    string   `json:"socks_username"`
-	SocksPassword    string   `json:"socks_password"`
-	SocksWaitServer  *bool    `json:"socks_wait_server"`
-	Reconnect        *bool    `json:"reconnect"`
-	ReconnectDelayNs *int64   `json:"reconnect_delay_ns"`
-	BufferSize       *int     `json:"buffer_size"`
-	ChannelTimeoutNs *int64   `json:"channel_timeout_ns"`
-	ConnectTimeoutNs *int64   `json:"connect_timeout_ns"`
-	Threads          *int     `json:"threads"`
-	FastOpen         *bool    `json:"fast_open"`
-	UpstreamProxy    string   `json:"upstream_proxy"`
-	UpstreamUsername string   `json:"upstream_username"`
-	UpstreamPassword string   `json:"upstream_password"`
-	NoEnvProxy       *bool    `json:"no_env_proxy"`
-	DirectMode       string   `json:"direct_mode"`
-	DirectDiscovery  string   `json:"direct_discovery"`
-	StunServers      []string `json:"stun_servers"`
-	DirectOnlyAction string   `json:"direct_only_action"`
-	LoggerID         string   `json:"logger_id"`
+	WSURL             string   `json:"ws_url"`
+	Reverse           *bool    `json:"reverse"`
+	SocksHost         string   `json:"socks_host"`
+	SocksPort         *int     `json:"socks_port"`
+	SocksUsername     string   `json:"socks_username"`
+	SocksPassword     string   `json:"socks_password"`
+	SocksWaitServer   *bool    `json:"socks_wait_server"`
+	Reconnect         *bool    `json:"reconnect"`
+	ReconnectDelayNs  *int64   `json:"reconnect_delay_ns"`
+	BufferSize        *int     `json:"buffer_size"`
+	ChannelTimeoutNs  *int64   `json:"channel_timeout_ns"`
+	ConnectTimeoutNs  *int64   `json:"connect_timeout_ns"`
+	Threads           *int     `json:"threads"`
+	FastOpen          *bool    `json:"fast_open"`
+	UpstreamProxy     string   `json:"upstream_proxy"`
+	UpstreamUsername  string   `json:"upstream_username"`
+	UpstreamPassword  string   `json:"upstream_password"`
+	NoEnvProxy        *bool    `json:"no_env_proxy"`
+	DirectMode        string   `json:"direct_mode"`
+	DirectDiscovery   string   `json:"direct_discovery"`
+	DirectHostCands   string   `json:"direct_host_candidates"`
+	StunServers       []string `json:"stun_servers"`
+	DirectOnlyAction  string   `json:"direct_only_action"`
+	DirectUPnP        *bool    `json:"direct_upnp"`
+	DirectUPnPLease   *int64   `json:"direct_upnp_lease_ns"`
+	DirectUPnPKeep    *bool    `json:"direct_upnp_keep"`
+	DirectUPnPExtPort *int     `json:"direct_upnp_external_port"`
+	LoggerID          string   `json:"logger_id"`
 }
 
 //export linksocks_server_new
@@ -466,6 +471,25 @@ func linksocks_client_new(token *C.char, cfgJSON *C.char, out *C.uint64_t) *C.ch
 			return errStr(err)
 		}
 		opt.WithDirectOnlyAction(a)
+	}
+	if cfg.DirectHostCands != "" {
+		m, err := linksocks.ParseDirectHostCandidatesMode(cfg.DirectHostCands)
+		if err != nil {
+			return errStr(err)
+		}
+		opt.WithDirectHostCandidatesMode(m)
+	}
+	if cfg.DirectUPnP != nil {
+		opt.WithDirectUPnP(*cfg.DirectUPnP)
+	}
+	if cfg.DirectUPnPLease != nil {
+		opt.WithDirectUPnPLease(time.Duration(*cfg.DirectUPnPLease))
+	}
+	if cfg.DirectUPnPKeep != nil {
+		opt.WithDirectUPnPKeep(*cfg.DirectUPnPKeep)
+	}
+	if cfg.DirectUPnPExtPort != nil {
+		opt.WithDirectUPnPExtPort(*cfg.DirectUPnPExtPort)
 	}
 	if cfg.NoEnvProxy != nil {
 		opt.WithNoEnvProxy(*cfg.NoEnvProxy)

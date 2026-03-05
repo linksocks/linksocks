@@ -59,8 +59,13 @@ class Client(_SnakePassthrough):
         no_env_proxy: Optional[bool] = None,
         direct_mode: Optional[str] = None,
         direct_discovery: Optional[str] = None,
+        direct_host_candidates: Optional[str] = None,
         stun_servers: Optional[list[str]] = None,
         direct_only_action: Optional[str] = None,
+        direct_upnp: Optional[bool] = None,
+        direct_upnp_lease: Optional[DurationLike] = None,
+        direct_upnp_keep: Optional[bool] = None,
+        direct_upnp_external_port: Optional[int] = None,
     ) -> None:
         """Initialize the WebSocket SOCKS5 proxy client.
         
@@ -87,8 +92,13 @@ class Client(_SnakePassthrough):
             no_env_proxy: Whether to ignore proxy environment variables
             direct_mode: Direct mode type (auto, always, never)
             direct_discovery: Direct discovery type (stun, turn, none)
+            direct_host_candidates: Advertise host candidates (auto|never|always)
             stun_servers: List of STUN servers to use
             direct_only_action: Action to take if direct mode fails
+            direct_upnp: Enable UPnP port mapping for direct mode
+            direct_upnp_lease: Lease duration for UPnP port mapping
+            direct_upnp_keep: Keep UPnP port mapping on exit
+            direct_upnp_external_port: External port for UPnP mapping
         """
         opt = backend.DefaultClientOption()
         if logger is None:
@@ -135,10 +145,20 @@ class Client(_SnakePassthrough):
             opt.WithDirectMode(direct_mode)
         if direct_discovery is not None:
             opt.WithDirectDiscovery(direct_discovery)
+        if direct_host_candidates is not None:
+            opt.WithDirectHostCandidatesMode(direct_host_candidates)
         if stun_servers is not None:
             opt.WithStunServers(stun_servers)
         if direct_only_action is not None:
             opt.WithDirectOnlyAction(direct_only_action)
+        if direct_upnp is not None:
+            opt.WithDirectUPnP(bool(direct_upnp))
+        if direct_upnp_lease is not None:
+            opt.WithDirectUPnPLease(_to_duration(direct_upnp_lease))
+        if direct_upnp_keep is not None:
+            opt.WithDirectUPnPKeep(bool(direct_upnp_keep))
+        if direct_upnp_external_port is not None:
+            opt.WithDirectUPnPExtPort(int(direct_upnp_external_port))
 
         self._raw = backend.NewLinkSocksClient(token, opt)
         self._ctx = None
