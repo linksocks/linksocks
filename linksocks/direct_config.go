@@ -9,6 +9,8 @@ type DirectMode string
 
 type DirectDiscovery string
 
+type DirectHostCandidatesMode string
+
 type DirectOnlyAction string
 
 const (
@@ -26,6 +28,12 @@ const (
 const (
 	DirectOnlyActionExit   DirectOnlyAction = "exit"
 	DirectOnlyActionRefuse DirectOnlyAction = "refuse"
+)
+
+const (
+	DirectHostCandidatesAuto   DirectHostCandidatesMode = "auto"
+	DirectHostCandidatesNever  DirectHostCandidatesMode = "never"
+	DirectHostCandidatesAlways DirectHostCandidatesMode = "always"
 )
 
 func ParseDirectMode(v string) (DirectMode, error) {
@@ -55,5 +63,15 @@ func ParseDirectOnlyAction(v string) (DirectOnlyAction, error) {
 		return a, nil
 	default:
 		return "", fmt.Errorf("invalid direct-only-action: %q (supported: %s|%s)", v, DirectOnlyActionExit, DirectOnlyActionRefuse)
+	}
+}
+
+func ParseDirectHostCandidatesMode(v string) (DirectHostCandidatesMode, error) {
+	m := DirectHostCandidatesMode(strings.TrimSpace(strings.ToLower(v)))
+	switch m {
+	case DirectHostCandidatesAuto, DirectHostCandidatesNever, DirectHostCandidatesAlways:
+		return m, nil
+	default:
+		return "", fmt.Errorf("invalid direct-host-candidates: %q (supported: %s|%s|%s)", v, DirectHostCandidatesAuto, DirectHostCandidatesNever, DirectHostCandidatesAlways)
 	}
 }

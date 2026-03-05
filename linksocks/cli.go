@@ -100,8 +100,13 @@ func (cli *CLI) initCommands() {
 		// Direct connection options (experimental; default relay-only)
 		cmd.Flags().String("direct-mode", string(DirectModeRelayOnly), "Direct mode (relay-only|direct-only|auto)")
 		cmd.Flags().String("direct-discovery", string(DirectDiscoverySTUN), "Direct discovery method (stun|server|auto)")
+		cmd.Flags().String("direct-host-candidates", string(DirectHostCandidatesAuto), "Advertise host candidates (auto|never|always)")
 		cmd.Flags().StringArray("stun-server", nil, "STUN server address (host:port), can be specified multiple times; when omitted, built-in STUN pool is probed in parallel")
 		cmd.Flags().String("direct-only-action", string(DirectOnlyActionExit), "Direct-only failure action (exit|refuse)")
+		cmd.Flags().Bool("direct-upnp", false, "Enable UPnP port mapping for direct mode (experimental)")
+		cmd.Flags().Duration("direct-upnp-lease", 30*time.Minute, "Lease duration for UPnP port mapping")
+		cmd.Flags().Bool("direct-upnp-keep", false, "Keep UPnP port mapping on exit")
+		cmd.Flags().Int("direct-upnp-external-port", 0, "External port for UPnP mapping (default: same as internal port)")
 
 		// Update usage to show environment variables
 		cmd.Flags().Lookup("token").Usage += " (env: LINKSOCKS_TOKEN)"
@@ -215,8 +220,13 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 
 	directModeRaw, _ := cmd.Flags().GetString("direct-mode")
 	directDiscoveryRaw, _ := cmd.Flags().GetString("direct-discovery")
+	directHostCandsRaw, _ := cmd.Flags().GetString("direct-host-candidates")
 	stunServers, _ := cmd.Flags().GetStringArray("stun-server")
 	directOnlyActionRaw, _ := cmd.Flags().GetString("direct-only-action")
+	directUPnP, _ := cmd.Flags().GetBool("direct-upnp")
+	directUPnPLease, _ := cmd.Flags().GetDuration("direct-upnp-lease")
+	directUPnPKeep, _ := cmd.Flags().GetBool("direct-upnp-keep")
+	directUPnPExtPort, _ := cmd.Flags().GetInt("direct-upnp-external-port")
 
 	directMode, err := ParseDirectMode(directModeRaw)
 	if err != nil {
@@ -227,6 +237,10 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	directOnlyAction, err := ParseDirectOnlyAction(directOnlyActionRaw)
+	if err != nil {
+		return err
+	}
+	directHostCands, err := ParseDirectHostCandidatesMode(directHostCandsRaw)
 	if err != nil {
 		return err
 	}
@@ -246,9 +260,10 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	logger := cli.initLogging(debug)
 
 	if directMode != DirectModeRelayOnly {
-		logger.Info().
+		logger.Debug().
 			Str("direct_mode", string(directMode)).
 			Str("direct_discovery", string(directDiscovery)).
+			Str("direct_host_candidates", string(directHostCands)).
 			Strs("stun_servers", stunServers).
 			Str("direct_only_action", string(directOnlyAction)).
 			Msg("Direct mode configured")
@@ -268,7 +283,12 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 		WithDirectMode(directMode).
 		WithDirectDiscovery(directDiscovery).
 		WithStunServers(stunServers).
-		WithDirectOnlyAction(directOnlyAction)
+		WithDirectOnlyAction(directOnlyAction).
+		WithDirectHostCandidatesMode(directHostCands).
+		WithDirectUPnP(directUPnP).
+		WithDirectUPnPLease(directUPnPLease).
+		WithDirectUPnPKeep(directUPnPKeep).
+		WithDirectUPnPExtPort(directUPnPExtPort)
 
 	// Add new options
 	if proxyAddr != "" {
