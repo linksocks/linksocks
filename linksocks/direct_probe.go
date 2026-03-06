@@ -182,6 +182,10 @@ func (p *DirectProber) Start(ctx context.Context) {
 					resp.HasMAC = true
 				}
 				_, _ = p.conn.WriteToUDP(packDirectProbePacket(resp), from)
+				// If we can receive a valid probe request from the peer (and respond),
+				// the UDP path is already usable. Mark ready so the higher-level direct
+				// agent can stop retrying and proceed.
+				p.markReady(from)
 
 			case directProbeTypeResponse:
 				p.markReady(from)

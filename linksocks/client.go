@@ -1461,6 +1461,10 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 					Metrics:   DirectMetrics{RTTMs: res.RTT.Milliseconds()},
 				})
 
+				role := "listener"
+				if localSession == pairSession {
+					role = "dialer"
+				}
 				logSess := pairSession
 				if remoteSession != uuid.Nil {
 					logSess = remoteSession
@@ -1468,6 +1472,7 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 				if c.directUserLogShouldEmit(logSess, "ready", "") {
 					e := c.log.Info().
 						Str("session_id", pairSession.String()).
+						Str("role", role).
 						Int64("rtt_ms", res.RTT.Milliseconds()).
 						Str("transport", "direct-probe/udp")
 					if remoteSession != uuid.Nil {
@@ -1530,6 +1535,10 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 			c.directProbeLastFailReason = reason
 			c.directMu.Unlock()
 			c.log.Debug().Err(err).Str("session_id", pairSession.String()).Dur("retry_in", backoff).Int("fail_count", failCount).Msg("Direct probe failed")
+			role := "listener"
+			if localSession == pairSession {
+				role = "dialer"
+			}
 			logSess := pairSession
 			if remoteSession != uuid.Nil {
 				logSess = remoteSession
@@ -1544,7 +1553,7 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 				remoteForLog = append([]DirectCandidate(nil), c.directRemoteCandidates...)
 				c.directMu.Unlock()
 
-				lf := c.log.Info().Str("session_id", pairSession.String())
+				lf := c.log.Info().Str("session_id", pairSession.String()).Str("role", role)
 				if remoteSession != uuid.Nil {
 					lf = lf.Str("remote_session_id", remoteSession.String())
 				}
