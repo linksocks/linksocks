@@ -879,8 +879,18 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 		if dialer {
 			role = "dialer"
 		}
-		if c.directUserLogShouldEmit(pairSession, "ready") {
+		c.directMu.Lock()
+		remoteSess := c.directRemoteSessionID
+		c.directMu.Unlock()
+		logSess := pairSession
+		if remoteSess != uuid.Nil {
+			logSess = remoteSess
+		}
+		if c.directUserLogShouldEmit(logSess, "ready", "") {
 			e := c.log.Info().Str("session_id", pairSession.String()).Str("transport", "direct-quic").Str("role", role)
+			if remoteSess != uuid.Nil {
+				e = e.Str("remote_session_id", remoteSess.String())
+			}
 			if peerAddr != "" {
 				e = e.Str("peer_addr", peerAddr)
 			}
@@ -1138,7 +1148,7 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 		c.directMu.Unlock()
 		c.directNotify()
 		if changed {
-			c.log.Info().
+			c.log.Debug().
 				Str("reason", reason).
 				Int("candidates", len(cands)).
 				Int("host_candidates", hostCount).
@@ -1276,7 +1286,7 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 							}
 						}
 						c.directMu.Unlock()
-						c.log.Info().Str("public_addr", localSrflx).Msg("Direct host candidates enabled")
+						c.log.Debug().Str("public_addr", localSrflx).Msg("Direct host candidates enabled")
 					} else {
 						// Keep awaiting when host candidates were enabled earlier.
 						if awaitSess != uuid.Nil && c.directAwaitHostSess == uuid.Nil {
@@ -1441,11 +1451,18 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 					Metrics:   DirectMetrics{RTTMs: res.RTT.Milliseconds()},
 				})
 
-				if c.directUserLogShouldEmit(pairSession, "ready") {
+				logSess := pairSession
+				if remoteSession != uuid.Nil {
+					logSess = remoteSession
+				}
+				if c.directUserLogShouldEmit(logSess, "ready", "") {
 					e := c.log.Info().
 						Str("session_id", pairSession.String()).
 						Int64("rtt_ms", res.RTT.Milliseconds()).
 						Str("transport", "direct-probe/udp")
+					if remoteSession != uuid.Nil {
+						e = e.Str("remote_session_id", remoteSession.String())
+					}
 					if res.From != nil {
 						e = e.Str("peer_addr", res.From.String())
 					}
@@ -1503,11 +1520,19 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 			c.directProbeLastFailReason = reason
 			c.directMu.Unlock()
 			c.log.Debug().Err(err).Str("session_id", pairSession.String()).Dur("retry_in", backoff).Int("fail_count", failCount).Msg("Direct probe failed")
-			if !deferFail && c.directUserLogShouldEmit(pairSession, "failed") {
+			logSess := pairSession
+			if remoteSession != uuid.Nil {
+				logSess = remoteSession
+			}
+			if !deferFail && c.directUserLogShouldEmit(logSess, "failed", reason) {
 				lf := c.log.Info().Str("session_id", pairSession.String())
+				if remoteSession != uuid.Nil {
+					lf = lf.Str("remote_session_id", remoteSession.String())
+				}
 				if reason != "" {
 					lf = lf.Str("reason", reason)
 				}
+				lf = lf.Interface("local_candidates", localCandidatesSnap).Interface("remote_candidates", remoteCandidates)
 				lf.Msg("Direct connectivity failed")
 			}
 
@@ -1672,10 +1697,11 @@ func directHostIPSnapshot() string {
 	return strings.Join(ips, ",")
 }
 
-func (c *LinkSocksClient) directUserLogShouldEmit(session uuid.UUID, state string) bool {
+func (c *LinkSocksClient) directUserLogShouldEmit(session uuid.UUID, state string, reason string) bool {
 	if session == uuid.Nil || strings.TrimSpace(state) == "" {
 		return false
 	}
+	reason = strings.TrimSpace(reason)
 
 	c.directMu.Lock()
 	defer c.directMu.Unlock()
@@ -1685,9 +1711,14 @@ func (c *LinkSocksClient) directUserLogShouldEmit(session uuid.UUID, state strin
 		c.directUserLogReason = ""
 	}
 	if c.directUserLogState == state {
-		return false
+		// Allow re-emit when the reason changes, so users can see meaningful
+		// progress (e.g. switching from probe failure to QUIC timeout).
+		if reason == "" || reason == c.directUserLogReason {
+			return false
+		}
 	}
 	c.directUserLogState = state
+	c.directUserLogReason = reason
 	return true
 }
 

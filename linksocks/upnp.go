@@ -1,4 +1,3 @@
-// filepath: /home/zzs/it/linksocks/linksocks/upnp.go
 package linksocks
 
 import (
@@ -152,7 +151,21 @@ func MapUPnPUDP(ctx context.Context, internalPort int, opt upnpMappingOption, lo
 
 	const proto = "UDP"
 	const remoteHost = ""
+
 	internalClient := ip.String()
+	// Some IGDs (e.g. miniupnpd in secure mode) may reject an explicit
+	// NewInternalClient if it doesn't match the request source IP. Allow falling
+	// back to an empty internal client which lets the IGD infer it.
+	internalClients := []string{internalClient, ""}
+
+	leaseSecondsCandidates := []uint32{leaseSeconds}
+	if leaseSeconds != 0 {
+		// Some IGDs only accept permanent leases (0), or ignore lease duration.
+		leaseSecondsCandidates = append(leaseSecondsCandidates, 0)
+	}
+
+	usedInternalClient := internalClient
+	usedLeaseSeconds := leaseSeconds
 
 	var selected upnpPortMapper
 	var lastErr error
@@ -160,11 +173,23 @@ func MapUPnPUDP(ctx context.Context, internalPort int, opt upnpMappingOption, lo
 		if svc == nil {
 			continue
 		}
-		if err := svc.AddPortMapping(remoteHost, uint16(externalPort), proto, uint16(internalPort), internalClient, true, desc, leaseSeconds); err == nil {
-			selected = svc
+		for _, lc := range leaseSecondsCandidates {
+			for _, ic := range internalClients {
+				if err := svc.AddPortMapping(remoteHost, uint16(externalPort), proto, uint16(internalPort), ic, true, desc, lc); err == nil {
+					selected = svc
+					usedInternalClient = ic
+					usedLeaseSeconds = lc
+					break
+				} else {
+					lastErr = err
+				}
+			}
+			if selected != nil {
+				break
+			}
+		}
+		if selected != nil {
 			break
-		} else {
-			lastErr = err
 		}
 	}
 	if selected == nil {
@@ -190,7 +215,7 @@ func MapUPnPUDP(ctx context.Context, internalPort int, opt upnpMappingOption, lo
 		_ = m.Close()
 	}
 
-	if opt.AutoRenew && opt.Lease > 0 {
+	if opt.AutoRenew && usedLeaseSeconds > 0 {
 		interval := opt.Lease / 2
 		if interval < 30*time.Second {
 			interval = 30 * time.Second
@@ -203,7 +228,7 @@ func MapUPnPUDP(ctx context.Context, internalPort int, opt upnpMappingOption, lo
 				case <-stopCtx.Done():
 					return
 				case <-t.C:
-					_ = m.mapper.AddPortMapping(remoteHost, m.externalPort, proto, uint16(internalPort), internalClient, true, desc, leaseSeconds)
+					_ = m.mapper.AddPortMapping(remoteHost, m.externalPort, proto, uint16(internalPort), usedInternalClient, true, desc, usedLeaseSeconds)
 				}
 			}
 		}()
