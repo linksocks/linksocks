@@ -1691,6 +1691,14 @@ func (c *LinkSocksClient) directUserLogShouldEmit(session uuid.UUID, state strin
 	return true
 }
 
+func (c *LinkSocksClient) directResetUserLog() {
+	c.directMu.Lock()
+	c.directUserLogSess = uuid.Nil
+	c.directUserLogState = ""
+	c.directUserLogReason = ""
+	c.directMu.Unlock()
+}
+
 func (c *LinkSocksClient) reportError(err error) {
 	if err == nil {
 		return
@@ -2847,6 +2855,9 @@ func (c *LinkSocksClient) setConnectionStatus(connected bool) {
 	}
 
 	c.IsConnected = connected
+	if connected {
+		c.directResetUserLog()
+	}
 
 	if connected {
 		// Reset Connected channel if it was previously closed
