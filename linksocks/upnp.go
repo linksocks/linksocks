@@ -1,15 +1,15 @@
 package linksocks
 
 import (
-"context"
-"errors"
-"fmt"
-"net"
-"time"
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"time"
 
-"github.com/huin/goupnp/dcps/internetgateway1"
-"github.com/huin/goupnp/dcps/internetgateway2"
-"github.com/rs/zerolog"
+	"github.com/huin/goupnp/dcps/internetgateway1"
+	"github.com/huin/goupnp/dcps/internetgateway2"
+	"github.com/rs/zerolog"
 )
 
 type upnpPortMapper interface {
