@@ -151,21 +151,7 @@ func MapUPnPUDP(ctx context.Context, internalPort int, opt upnpMappingOption, lo
 
 	const proto = "UDP"
 	const remoteHost = ""
-
 	internalClient := ip.String()
-	// Some IGDs (e.g. miniupnpd in secure mode) may reject an explicit
-	// NewInternalClient if it doesn't match the request source IP. Allow falling
-	// back to an empty internal client which lets the IGD infer it.
-	internalClients := []string{internalClient, ""}
-
-	leaseSecondsCandidates := []uint32{leaseSeconds}
-	if leaseSeconds != 0 {
-		// Some IGDs only accept permanent leases (0), or ignore lease duration.
-		leaseSecondsCandidates = append(leaseSecondsCandidates, 0)
-	}
-
-	usedInternalClient := internalClient
-	usedLeaseSeconds := leaseSeconds
 
 	var selected upnpPortMapper
 	var lastErr error
@@ -173,30 +159,18 @@ func MapUPnPUDP(ctx context.Context, internalPort int, opt upnpMappingOption, lo
 		if svc == nil {
 			continue
 		}
-		for _, lc := range leaseSecondsCandidates {
-			for _, ic := range internalClients {
-				if err := svc.AddPortMapping(remoteHost, uint16(externalPort), proto, uint16(internalPort), ic, true, desc, lc); err == nil {
-					selected = svc
-					usedInternalClient = ic
-					usedLeaseSeconds = lc
-					break
-				} else {
-					lastErr = err
-				}
-			}
-			if selected != nil {
-				break
-			}
-		}
-		if selected != nil {
+		if err := svc.AddPortMapping(remoteHost, uint16(externalPort), proto, uint16(internalPort), internalClient, true, desc, leaseSeconds); err == nil {
+			selected = svc
 			break
+		} else {
+			lastErr = err
 		}
 	}
 	if selected == nil {
 		if lastErr == nil {
 			lastErr = errors.New("upnp: add port mapping failed")
 		}
-		return nil, nil, lastErr
+		return nil, nil, fmt.Errorf("upnp: add port mapping failed (internal_client=%s internal_port=%d external_port=%d protocol=%s lease_seconds=%d description=%q): %w", internalClient, internalPort, externalPort, proto, leaseSeconds, desc, lastErr)
 	}
 
 	m := &upnpMapping{
@@ -215,7 +189,7 @@ func MapUPnPUDP(ctx context.Context, internalPort int, opt upnpMappingOption, lo
 		_ = m.Close()
 	}
 
-	if opt.AutoRenew && usedLeaseSeconds > 0 {
+	if opt.AutoRenew && opt.Lease > 0 {
 		interval := opt.Lease / 2
 		if interval < 30*time.Second {
 			interval = 30 * time.Second
@@ -228,7 +202,7 @@ func MapUPnPUDP(ctx context.Context, internalPort int, opt upnpMappingOption, lo
 				case <-stopCtx.Done():
 					return
 				case <-t.C:
-					_ = m.mapper.AddPortMapping(remoteHost, m.externalPort, proto, uint16(internalPort), usedInternalClient, true, desc, usedLeaseSeconds)
+					_ = m.mapper.AddPortMapping(remoteHost, m.externalPort, proto, uint16(internalPort), internalClient, true, desc, leaseSeconds)
 				}
 			}
 		}()

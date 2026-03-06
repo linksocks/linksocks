@@ -990,6 +990,10 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 
 	if c.directUPnP {
 		localPort := conn.LocalAddr().(*net.UDPAddr).Port
+		requestedExternalPort := c.directUPnPExtPort
+		if requestedExternalPort <= 0 {
+			requestedExternalPort = localPort
+		}
 		m, cleanup, err := MapUPnPUDP(ctx, localPort, upnpMappingOption{
 			ExternalPort: c.directUPnPExtPort,
 			Lease:        c.directUPnPLease,
@@ -997,7 +1001,13 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 			AutoRenew:    true,
 		}, c.log)
 		if err != nil {
-			c.log.Warn().Err(err).Msg("Direct UPnP mapping failed")
+			c.log.Warn().
+				Err(err).
+				Int("internal_port", localPort).
+				Int("requested_external_port", requestedExternalPort).
+				Dur("lease", c.directUPnPLease).
+				Bool("keep", c.directUPnPKeep).
+				Msg("Direct UPnP mapping failed")
 		} else {
 			upnpExternalPort = int(m.externalPort)
 			defer cleanup()
