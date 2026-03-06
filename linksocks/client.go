@@ -1535,6 +1535,15 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 				logSess = remoteSession
 			}
 			if !deferFail && c.directUserLogShouldEmit(logSess, "failed", reason) {
+				// Use the current stored candidates for user-visible logs, because the
+				// local snapshot may be stale if we just enabled/advertised host candidates.
+				var localForLog []DirectCandidate
+				var remoteForLog []DirectCandidate
+				c.directMu.Lock()
+				localForLog = append([]DirectCandidate(nil), c.directLocalCandidates...)
+				remoteForLog = append([]DirectCandidate(nil), c.directRemoteCandidates...)
+				c.directMu.Unlock()
+
 				lf := c.log.Info().Str("session_id", pairSession.String())
 				if remoteSession != uuid.Nil {
 					lf = lf.Str("remote_session_id", remoteSession.String())
@@ -1542,7 +1551,7 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 				if reason != "" {
 					lf = lf.Str("reason", reason)
 				}
-				lf = lf.Interface("local_candidates", localCandidatesSnap).Interface("remote_candidates", remoteCandidates)
+				lf = lf.Interface("local_candidates", localForLog).Interface("remote_candidates", remoteForLog)
 				lf.Msg("Direct connectivity failed")
 			}
 
