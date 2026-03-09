@@ -1,6 +1,7 @@
 package linksocks
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -54,4 +55,11 @@ func (bl *batchLogger) log(key string, total int, logFn func(count, total int)) 
 			delete(bl.messages, key)
 		}
 	})
+}
+
+func formatBatchProgressSuffix(count, total int) string {
+	if total <= 1 {
+		return ""
+	}
+	return fmt.Sprintf(" (%d/%d)", count, total)
 }

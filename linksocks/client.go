@@ -2015,7 +2015,7 @@ func (c *LinkSocksClient) startForward(ctx context.Context) error {
 							return
 						}
 						c.batchLogger.log("retry_error", c.threads, func(count, total int) {
-							c.log.Warn().Err(err).Msgf("Connection error, retrying... (%d/%d)", count, total)
+							c.log.Warn().Err(err).Msg("Connection error, retrying..." + formatBatchProgressSuffix(count, total))
 						})
 						time.Sleep(c.reconnectDelay)
 					}
@@ -2071,7 +2071,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 				c.log.Info().
 					Str("http_proxy", httpProxy).
 					Str("https_proxy", httpsProxy).
-					Msgf("Using proxy from environment to connect to the server (%d/%d)", count, total)
+					Msg("Using proxy from environment to connect to the server" + formatBatchProgressSuffix(count, total))
 			})
 		}
 	}
@@ -2173,11 +2173,11 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 				statusMsg = resp.Status
 			}
 			c.batchLogger.log("handshake_error", c.threads, func(count, total int) {
-				c.log.Warn().Err(err).Str("status", statusMsg).Msgf("WebSocket handshake failed (%d/%d)", count, total)
+				c.log.Warn().Err(err).Str("status", statusMsg).Msg("WebSocket handshake failed" + formatBatchProgressSuffix(count, total))
 			})
 		} else {
 			c.batchLogger.log("dial_error", c.threads, func(count, total int) {
-				c.log.Warn().Err(err).Msgf("Failed to dial WebSocket (%d/%d)", count, total)
+				c.log.Warn().Err(err).Msg("Failed to dial WebSocket" + formatBatchProgressSuffix(count, total))
 			})
 		}
 		return err
@@ -2205,7 +2205,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 		if err := wsConn.WriteMessage(authMsg); err != nil {
 			wsConn.Close()
 			c.batchLogger.log("auth_send_error", c.threads, func(count, total int) {
-				c.log.Warn().Err(err).Msgf("Failed to send auth message (%d/%d)", count, total)
+				c.log.Warn().Err(err).Msg("Failed to send auth message" + formatBatchProgressSuffix(count, total))
 			})
 			return err
 		}
@@ -2216,7 +2216,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 	if err != nil {
 		wsConn.Close()
 		c.batchLogger.log("auth_read_error", c.threads, func(count, total int) {
-			c.log.Warn().Err(err).Msgf("Failed to read auth response (%d/%d)", count, total)
+			c.log.Warn().Err(err).Msg("Failed to read auth response" + formatBatchProgressSuffix(count, total))
 		})
 		return err
 	}
@@ -2230,7 +2230,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 
 	if !authResponse.Success {
 		c.batchLogger.log("auth_failed", c.threads, func(count, total int) {
-			c.log.Error().Msgf("Authentication failed (%d/%d)", count, total)
+			c.log.Error().Msg("Authentication failed" + formatBatchProgressSuffix(count, total))
 		})
 		wsConn.Close()
 		// Return a non-retriable error to prevent reconnection attempts
@@ -2256,7 +2256,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 		if c.reverse {
 			mode = "reverse"
 		}
-		c.log.Info().Msgf("Authentication successful for %s proxy (%d/%d)", mode, count, total)
+		c.log.Info().Msg(fmt.Sprintf("Authentication successful for %s proxy", mode) + formatBatchProgressSuffix(count, total))
 	})
 
 	if index == 0 {
@@ -2271,7 +2271,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 			c.log.Debug().Err(err).Msg("Latency measurement failed")
 			return
 		}
-		c.log.Info().Msgf("Server latency: %s", latency.Round(time.Millisecond))
+		c.log.Info().Msgf("Server ready, latency: %s", latency.Round(time.Millisecond))
 	}()
 
 	errChan := make(chan error, 2)
@@ -2329,7 +2329,7 @@ func (c *LinkSocksClient) startReverse(ctx context.Context) error {
 							return
 						}
 						c.batchLogger.log("retry_error", c.threads, func(count, total int) {
-							c.log.Warn().Err(err).Msgf("Connection error, retrying... (%d/%d)", count, total)
+							c.log.Warn().Err(err).Msg("Connection error, retrying..." + formatBatchProgressSuffix(count, total))
 						})
 						time.Sleep(c.reconnectDelay)
 					}
