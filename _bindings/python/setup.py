@@ -573,6 +573,11 @@ try:
 except Exception:
     _bdist_wheel = None
 
+try:
+    from setuptools.command.editable_wheel import editable_wheel as _editable_wheel
+except Exception:
+    _editable_wheel = None
+
 
 class BdistWheelFFI(_bdist_wheel if _bdist_wheel is not None else object):
     def finalize_options(self):
@@ -588,6 +593,16 @@ class BdistWheelFFI(_bdist_wheel if _bdist_wheel is not None else object):
             return ("py3", "none", "any")
         _python, _abi, plat = super().get_tag()
         return ("py3", "none", plat)
+
+
+class EditableWheelEnsureBindings(_editable_wheel if _editable_wheel is not None else object):
+    """Ensure bindings exist for PEP 660 editable installs."""
+
+    def run(self):
+        ensure_python_bindings()
+        if _editable_wheel is None:
+            return
+        super().run()
 
 class BinaryDistribution(setuptools.Distribution):
     def has_ext_modules(_):
@@ -741,6 +756,7 @@ setup(
         "build_py": BuildPyEnsureBindings,
         "develop": DevelopEnsureBindings,
         "install": InstallEnsureBindings,
+        **({"editable_wheel": EditableWheelEnsureBindings} if _editable_wheel is not None else {}),
         **({"bdist_wheel": BdistWheelFFI} if _bdist_wheel is not None else {}),
     },
 )
