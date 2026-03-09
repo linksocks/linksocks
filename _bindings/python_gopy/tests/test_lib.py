@@ -20,6 +20,48 @@ test_logger = logging.getLogger(__name__)
 start_time_limit = 60
 
 
+def test_wait_ready_concurrent_timeout_paths_do_not_crash():
+    from linksockslib import linksocks
+    import threading
+
+    server_opt = linksocks.DefaultServerOption()
+    server_opt.WithWSPort(get_free_port())
+    server = linksocks.NewLinkSocksServer(server_opt)
+
+    client_opt = linksocks.DefaultClientOption()
+    client_opt.WithWSURL("ws://127.0.0.1:1")
+    client_opt.WithNoEnvProxy(True)
+    client = linksocks.NewLinkSocksClient("token", client_opt)
+
+    timeout = max(1, int(0.001 * linksocks.Second()))
+
+    def stress_server() -> None:
+        for _ in range(50):
+            try:
+                server.WaitReady(linksocks.NewContext(), timeout)
+            except Exception:
+                pass
+
+    def stress_client() -> None:
+        for _ in range(50):
+            try:
+                client.WaitReady(linksocks.NewContext(), timeout)
+            except Exception:
+                pass
+
+    threads = [threading.Thread(target=stress_server) for _ in range(3)]
+    threads.extend(threading.Thread(target=stress_client) for _ in range(3))
+
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    finally:
+        client.Close()
+        server.Close()
+
+
 @contextlib.asynccontextmanager
 async def forward_server(
     token: Optional[str] = "<token>",
