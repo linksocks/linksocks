@@ -1,0 +1,3 @@
+[submodule "linksocks.js"]
+	path = linksocks.js
+	url = git@github.com:linksocks/linksocks.js.git
