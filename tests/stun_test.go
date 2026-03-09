@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	stunUnitTypeBindingResponse   uint16 = 0x0101
+	stunUnitTypeBindingResponse  uint16 = 0x0101
 	stunUnitAttrXorMappedAddress uint16 = 0x0020
 	stunUnitMagicCookie          uint32 = 0x2112A442
 )
