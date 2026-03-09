@@ -151,23 +151,9 @@ linksocks client -t your_token -u wss://your-worker.your-subdomain.workers.dev -
 
 ## P2P Direct Mode (QUIC)
 
-In any relay-based proxy mode (e.g., Reverse Proxy, Agent Proxy, Autonomy Mode), you can enable P2P Direct Mode. When the provider and the connector can establish direct UDP connectivity, the data is no longer relayed through the server but is transmitted directly over the encrypted QUIC protocol, greatly reducing latency and increasing throughput.
+In any relay-based proxy mode (e.g., Reverse Proxy, Agent Proxy, Autonomy Mode), P2P Direct Mode is enabled by default with `--direct-mode auto`, and candidate discovery defaults to `--direct-discovery stun`. When the provider and the connector can establish direct UDP connectivity, the data is no longer relayed through the server but is transmitted directly over the encrypted QUIC protocol, greatly reducing latency and increasing throughput.
 
-**Provider Side Enabling Direct Mode:**
-```bash
-linksocks provider -t provider_token -u ws://localhost:8765 --direct-mode auto
-```
-
-**Connector Side Enabling Direct Mode:**
-```bash
-linksocks connector -t connector_token -u ws://localhost:8765 -p 1180 --direct-mode auto
-```
-
-If you need NAT traversal (hole punching) via STUN servers to establish the connection, specify the STUN discovery option:
-```bash
-linksocks connector -t connector_token -u ws://localhost:8765 -p 1180 --direct-mode auto --direct-discovery stun
-```
-*Note: Once STUN is enabled without specifying a server, the program will concurrently probe a built-in pool of public STUN servers and pick the fastest responding node. You can also specify a custom STUN server with `--stun-server`.*
+*Note: With the default STUN discovery enabled and no server specified, the program concurrently probes a built-in pool of public STUN servers and picks the fastest responding node. You can also specify a custom STUN server with `--stun-server`, or override the defaults with `--direct-mode` and `--direct-discovery` when needed.*
 
 **Performance Optimization Tip (Linux):**
 When running high-throughput QUIC direct connections on Linux, you might see a warning like `failed to sufficiently increase receive buffer size` due to small default UDP buffers. Although the program will function, if you want the best performance (the ideal 7MB buffer), we recommend modifying the following `sysctl` kernel parameters before running:

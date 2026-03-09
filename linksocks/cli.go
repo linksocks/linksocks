@@ -108,8 +108,8 @@ func (cli *CLI) initCommands() {
 		cmd.Flags().BoolP("fast-open", "f", false, "Assume connection success and allow data transfer immediately")
 		cmd.Flags().BoolP("no-env-proxy", "E", false, "Ignore proxy settings from environment variables when connecting to the websocket server")
 
-		// Direct connection options (experimental; default relay-only)
-		cmd.Flags().String("direct-mode", string(DirectModeRelayOnly), "Direct mode (relay-only|direct-only|auto)")
+		// Direct connection options (default auto with STUN discovery)
+		cmd.Flags().String("direct-mode", string(DirectModeAuto), "Direct mode (relay-only|direct-only|auto)")
 		cmd.Flags().String("direct-discovery", string(DirectDiscoverySTUN), "Direct discovery method (stun|server|auto)")
 		cmd.Flags().String("direct-host-candidates", string(DirectHostCandidatesAuto), "Advertise host candidates (auto|never|always)")
 		cmd.Flags().StringArray("stun-server", nil, "STUN server address (host:port), can be specified multiple times; when omitted, built-in STUN pool is probed in parallel")

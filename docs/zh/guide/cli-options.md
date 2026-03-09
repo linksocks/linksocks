@@ -85,7 +85,7 @@
 | `--upstream-proxy` | `-x` | | 连接 WebSocket 服务端时使用的上游代理 |
 | `--no-env-proxy` | `-E` | `false` | 忽略环境变量中的代理配置 |
 | `--fast-open` | `-f` | `false` | 在远端完全确认前就允许开始传输数据 |
-| `--direct-mode` | | `relay-only` | `relay-only`、`auto` 或 `direct-only` |
+| `--direct-mode` | | `auto` | `relay-only`、`auto` 或 `direct-only` |
 | `--direct-discovery` | | `stun` | 直连候选地址发现方式 |
 | `--direct-host-candidates` | | `auto` | 主机地址候选公布策略 |
 | `--stun-server` | | 内置地址池 | 额外 STUN 服务器，可重复指定 |

@@ -85,7 +85,7 @@ Use `client` as the general-purpose command:
 | `--upstream-proxy` | `-x` | | Outbound proxy used to reach the WebSocket server |
 | `--no-env-proxy` | `-E` | `false` | Ignore proxy environment variables |
 | `--fast-open` | `-f` | `false` | Allow data transfer before the remote side is fully confirmed |
-| `--direct-mode` | | `relay-only` | `relay-only`, `auto`, or `direct-only` |
+| `--direct-mode` | | `auto` | `relay-only`, `auto`, or `direct-only` |
 | `--direct-discovery` | | `stun` | Direct candidate discovery method |
 | `--direct-host-candidates` | | `auto` | Host candidate advertisement policy |
 | `--stun-server` | | built-in pool | Additional STUN server, repeatable |

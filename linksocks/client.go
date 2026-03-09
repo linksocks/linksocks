@@ -315,7 +315,7 @@ type ClientOption struct {
 	UpstreamProxyType ProxyType
 	NoEnvProxy        bool // Ignore environment proxy settings
 
-	// Direct connection options (experimental; default relay-only).
+	// Direct connection options (default auto with STUN discovery)
 	DirectMode       DirectMode
 	DirectDiscovery  DirectDiscovery
 	StunServers      []string
@@ -349,7 +349,7 @@ func DefaultClientOption() *ClientOption {
 		UpstreamPassword: "",
 		NoEnvProxy:       false,
 
-		DirectMode:       DirectModeRelayOnly,
+		DirectMode:       DirectModeAuto,
 		DirectDiscovery:  DirectDiscoverySTUN,
 		StunServers:      nil,
 		DirectOnlyAction: DirectOnlyActionExit,
