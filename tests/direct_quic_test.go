@@ -1,4 +1,4 @@
-package linksocks
+package tests
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/linksocks/linksocks/linksocks"
 	"github.com/quic-go/quic-go"
 	"github.com/rs/zerolog"
 )
@@ -24,7 +25,7 @@ func TestDirectQUICManager_Connect_Loopback(t *testing.T) {
 		key[i] = byte(i + 1)
 	}
 
-	mgr, err := NewDirectQUICManager(pc, sid, key, zerolog.Nop())
+	mgr, err := linksocks.NewDirectQUICManager(pc, sid, key, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("NewDirectQUICManager: %v", err)
 	}
@@ -38,7 +39,7 @@ func TestDirectQUICManager_Connect_Loopback(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 
-	c, err := mgr.Connect(ctx, []DirectCandidate{{Addr: udpAddr.IP.String(), Port: udpAddr.Port, Kind: "srflx"}})
+	c, err := mgr.Connect(ctx, []linksocks.DirectCandidate{{Addr: udpAddr.IP.String(), Port: udpAddr.Port, Kind: "srflx"}})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestDirectQUICManager_Connect_InvalidKey(t *testing.T) {
 	defer pc.Close()
 
 	sid := uuid.New()
-	mgr, err := NewDirectQUICManager(pc, sid, nil, zerolog.Nop())
+	mgr, err := linksocks.NewDirectQUICManager(pc, sid, nil, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("NewDirectQUICManager: %v", err)
 	}

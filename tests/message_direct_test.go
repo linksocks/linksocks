@@ -1,33 +1,34 @@
-package linksocks
+package tests
 
 import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/linksocks/linksocks/linksocks"
 )
 
 func TestPackParse_DirectCapabilities_RoundTrip(t *testing.T) {
 	sessionID := uuid.New()
-	m := DirectCapabilitiesMessage{
+	m := linksocks.DirectCapabilitiesMessage{
 		SessionID: sessionID,
-		Candidates: []DirectCandidate{
+		Candidates: []linksocks.DirectCandidate{
 			{Addr: "1.2.3.4", Port: 1234, Kind: "srflx"},
 			{Addr: "2001:db8::1", Port: 2345, Kind: "srflx"},
 		},
 		Discoveries: []string{"stun"},
 	}
 
-	b, err := PackMessage(m)
+	b, err := linksocks.PackMessage(m)
 	if err != nil {
 		t.Fatalf("PackMessage: %v", err)
 	}
 
-	out, err := ParseMessage(b)
+	out, err := linksocks.ParseMessage(b)
 	if err != nil {
 		t.Fatalf("ParseMessage: %v", err)
 	}
 
-	got, ok := out.(DirectCapabilitiesMessage)
+	got, ok := out.(linksocks.DirectCapabilitiesMessage)
 	if !ok {
 		t.Fatalf("type mismatch: %T", out)
 	}
@@ -50,24 +51,24 @@ func TestPackParse_DirectCapabilities_RoundTrip(t *testing.T) {
 
 func TestPackParse_DirectRendezvous_RoundTrip(t *testing.T) {
 	sessionID := uuid.New()
-	m := DirectRendezvousMessage{
+	m := linksocks.DirectRendezvousMessage{
 		SessionID: sessionID,
-		Candidates: []DirectCandidate{
+		Candidates: []linksocks.DirectCandidate{
 			{Addr: "8.8.8.8", Port: 3478, Kind: "srflx"},
 		},
 	}
 
-	b, err := PackMessage(m)
+	b, err := linksocks.PackMessage(m)
 	if err != nil {
 		t.Fatalf("PackMessage: %v", err)
 	}
 
-	out, err := ParseMessage(b)
+	out, err := linksocks.ParseMessage(b)
 	if err != nil {
 		t.Fatalf("ParseMessage: %v", err)
 	}
 
-	got, ok := out.(DirectRendezvousMessage)
+	got, ok := out.(linksocks.DirectRendezvousMessage)
 	if !ok {
 		t.Fatalf("type mismatch: %T", out)
 	}
@@ -81,27 +82,27 @@ func TestPackParse_DirectRendezvous_RoundTrip(t *testing.T) {
 
 func TestPackParse_DirectStatus_RoundTrip(t *testing.T) {
 	sessionID := uuid.New()
-	m := DirectStatusMessage{
+	m := linksocks.DirectStatusMessage{
 		SessionID: sessionID,
 		Status:    "ready",
-		Metrics: DirectMetrics{
+		Metrics: linksocks.DirectMetrics{
 			RTTMs:  12,
 			Loss:   100,
 			Reason: "ok",
 		},
 	}
 
-	b, err := PackMessage(m)
+	b, err := linksocks.PackMessage(m)
 	if err != nil {
 		t.Fatalf("PackMessage: %v", err)
 	}
 
-	out, err := ParseMessage(b)
+	out, err := linksocks.ParseMessage(b)
 	if err != nil {
 		t.Fatalf("ParseMessage: %v", err)
 	}
 
-	got, ok := out.(DirectStatusMessage)
+	got, ok := out.(linksocks.DirectStatusMessage)
 	if !ok {
 		t.Fatalf("type mismatch: %T", out)
 	}
@@ -117,12 +118,12 @@ func TestPackParse_DirectStatus_RoundTrip(t *testing.T) {
 }
 
 func TestParseMessage_UnknownType_ReturnsUnknownMessage(t *testing.T) {
-	b := []byte{ProtocolVersion, 0xFE}
-	out, err := ParseMessage(b)
+	b := []byte{linksocks.ProtocolVersion, 0xFE}
+	out, err := linksocks.ParseMessage(b)
 	if err != nil {
 		t.Fatalf("ParseMessage: %v", err)
 	}
-	got, ok := out.(UnknownMessage)
+	got, ok := out.(linksocks.UnknownMessage)
 	if !ok {
 		t.Fatalf("type mismatch: %T", out)
 	}

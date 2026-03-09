@@ -1,6 +1,8 @@
-package linksocks
+package tests
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestFormatBatchProgressSuffix(t *testing.T) {
 	tests := []struct {
