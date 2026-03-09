@@ -30,6 +30,7 @@ type ProxyTestServerOption struct {
 	Token             string
 	ConnectorToken    string
 	ConnectorAutonomy bool
+	ConnectorWait     time.Duration
 	PortPool          *linksocks.PortPool
 	LoggerPrefix      string
 	LogLevel          zerolog.Level
@@ -115,6 +116,7 @@ func forwardServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 
 		// Set FastOpen
 		serverOpt.WithFastOpen(opt.FastOpen)
+		serverOpt.WithConnectorWait(opt.ConnectorWait)
 	}
 	server := linksocks.NewLinkSocksServer(serverOpt)
 	token, err = server.AddForwardToken(token)
@@ -251,6 +253,7 @@ func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 
 		// Set FastOpen
 		serverOpt.WithFastOpen(opt.FastOpen)
+		serverOpt.WithConnectorWait(opt.ConnectorWait)
 	}
 
 	server := linksocks.NewLinkSocksServer(serverOpt)

@@ -41,6 +41,7 @@ type LinkSocksServer struct {
 	socksHost       string
 	portPool        *PortPool
 	socksWaitClient bool
+	connectorWait   time.Duration
 
 	// Client connections
 	clients map[uuid.UUID]*WSConn // Maps client ID to WebSocket connection
@@ -142,6 +143,7 @@ type ServerOption struct {
 	SocksHost         string
 	PortPool          *PortPool
 	SocksWaitClient   bool
+	ConnectorWait     time.Duration
 	Logger            zerolog.Logger
 	BufferSize        int
 	APIKey            string
@@ -157,7 +159,6 @@ type ServerOption struct {
 	DirectEnable bool
 
 	// Optional server-side UDP rendezvous (minimal STUN subset).
-	// Disabled by default. Intended for non-Worker deployments.
 	DirectRendezvousEnable bool
 	DirectRendezvousHost   string
 	DirectRendezvousPort   int
@@ -171,6 +172,7 @@ func DefaultServerOption() *ServerOption {
 		SocksHost:              "127.0.0.1",
 		PortPool:               NewPortPoolFromRange(1024, 10240),
 		SocksWaitClient:        true,
+		ConnectorWait:          5 * time.Second,
 		Logger:                 zerolog.New(os.Stdout).With().Timestamp().Logger(),
 		BufferSize:             DefaultBufferSize,
 		APIKey:                 "",
@@ -214,6 +216,12 @@ func (o *ServerOption) WithPortPool(pool *PortPool) *ServerOption {
 // WithSocksWaitClient sets whether to wait for client before starting SOCKS server
 func (o *ServerOption) WithSocksWaitClient(wait bool) *ServerOption {
 	o.SocksWaitClient = wait
+	return o
+}
+
+// WithConnectorWait sets how long connector requests wait for a reverse client.
+func (o *ServerOption) WithConnectorWait(timeout time.Duration) *ServerOption {
+	o.ConnectorWait = timeout
 	return o
 }
 
@@ -325,6 +333,7 @@ func NewLinkSocksServer(opt *ServerOption) *LinkSocksServer {
 		tokenOptions:           make(map[string]*ReverseTokenOptions),
 		socksTasks:             make(map[int]context.CancelFunc),
 		socksWaitClient:        opt.SocksWaitClient,
+		connectorWait:          opt.ConnectorWait,
 		waitingSockets:         make(map[int]*waitingSocket),
 		socketManager:          NewSocketManager(opt.SocksHost, opt.Logger),
 		apiKey:                 opt.APIKey,
@@ -846,8 +855,7 @@ func (s *LinkSocksServer) handlePendingToken(ctx context.Context, token string) 
 
 // Serve starts the WebSocket server and waits for clients
 func (s *LinkSocksServer) Serve(ctx context.Context) error {
-	// Optional UDP rendezvous server. This must be explicitly enabled so Worker/DO
-	// deployments remain WS-only.
+	// Optional UDP rendezvous server.
 	if s.directRendezvousEnable {
 		if err := s.startDirectRendezvousUDP(ctx); err != nil {
 			return err
@@ -1552,7 +1560,7 @@ func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WS
 
 			case ConnectMessage:
 				go func(m ConnectMessage) {
-					reverseWS, err := s.getNextWebSocket(reverseToken)
+					reverseWS, err := s.waitForNextWebSocket(ctx, reverseToken, s.connectorWait)
 					if err != nil {
 						s.log.Debug().Err(err).Msg("Refusing connector connect")
 						// Send failure response back to connector
@@ -1764,6 +1772,32 @@ func (s *LinkSocksServer) getNextWebSocket(token string) (*WSConn, error) {
 		return clients[currentIndex].Conn, nil
 	}
 	return clients[0].Conn, nil
+}
+
+func (s *LinkSocksServer) waitForNextWebSocket(ctx context.Context, token string, timeout time.Duration) (*WSConn, error) {
+	ws, err := s.getNextWebSocket(token)
+	if err == nil || timeout <= 0 {
+		return ws, err
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+			return nil, err
+		case <-ticker.C:
+			ws, err = s.getNextWebSocket(token)
+			if err == nil {
+				return ws, nil
+			}
+		}
+	}
 }
 
 // waitForClients waits for clients to be available for the given token

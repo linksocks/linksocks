@@ -27,6 +27,51 @@ def test_import_wrapper():
     assert Server is not None and Client is not None
 
 
+def test_server_connector_wait_provider_option(monkeypatch):
+    import linksocks._server as server_module
+
+    captured = {}
+
+    class DummyOption:
+        def WithLogger(self, _logger):
+            captured["logger"] = True
+
+        def WithConnectorWait(self, value):
+            captured["connector_wait"] = value
+
+    class DummyLogger:
+        def __init__(self, py_logger, logger_id):
+            self.py_logger = py_logger
+            self.go_logger = object()
+
+        def cleanup(self):
+            return None
+
+    class DummyRawServer:
+        def Close(self):
+            return None
+
+    monkeypatch.setattr(server_module, "BufferZerologLogger", DummyLogger)
+    monkeypatch.setattr(server_module.backend, "DefaultServerOption", lambda: DummyOption())
+    monkeypatch.setattr(server_module.backend, "NewLinkSocksServer", lambda opt: DummyRawServer())
+
+    srv = server_module.Server(connector_wait_provider="250ms")
+    try:
+        assert captured["logger"] is True
+        assert captured["connector_wait"] == server_module._to_duration("250ms")
+    finally:
+        srv.close()
+
+
+def test_ffi_server_option_connector_wait_serialization():
+    from linksocks._base import _FFIServerOption, _to_duration
+
+    opt = _FFIServerOption()
+    opt.WithConnectorWait(_to_duration("250ms"))
+
+    assert opt.to_cfg()["connector_wait_ns"] == _to_duration("250ms")
+
+
 def test_forward_basic(website):
     from linksocks import Server, Client
 

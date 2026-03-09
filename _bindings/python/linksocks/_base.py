@@ -137,6 +137,9 @@ class _FFIServerOption:
     def WithConnectTimeout(self, v: int) -> None:
         self._cfg[_json_key("connect_timeout_ns")] = int(v)
 
+    def WithConnectorWait(self, v: int) -> None:
+        self._cfg[_json_key("connector_wait_ns")] = int(v)
+
     def WithFastOpen(self, v: bool) -> None:
         self._cfg[_json_key("fast_open")] = bool(v)
 

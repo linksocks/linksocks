@@ -2,6 +2,7 @@ package tests
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -121,5 +122,51 @@ func TestMixedFastOpenConnector(t *testing.T) {
 			require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort}))
 			require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: client2.SocksPort}))
 		})
+	}
+}
+
+func TestConnectorWaitsForProviderReconnect(t *testing.T) {
+	server := reverseServer(t, &ProxyTestServerOption{
+		ConnectorToken: "CONNECTOR",
+		ConnectorWait:  2 * time.Second,
+	})
+	defer server.Close()
+
+	provider := reverseClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        server.Token,
+		LoggerPrefix: "CLT1",
+	})
+
+	connector := forwardClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        "CONNECTOR",
+		LoggerPrefix: "CLT2",
+	})
+	defer connector.Close()
+
+	provider.Close()
+	require.Eventually(t, func() bool {
+		return server.Server.GetTokenClientCount(server.Token) == 0
+	}, 5*time.Second, 50*time.Millisecond)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- testWebConnection(globalHTTPServer, &ProxyConfig{Port: connector.SocksPort})
+	}()
+
+	time.Sleep(300 * time.Millisecond)
+	provider = reverseClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        server.Token,
+		LoggerPrefix: "CLT3",
+	})
+	defer provider.Close()
+
+	select {
+	case err := <-errCh:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for connector request to complete")
 	}
 }

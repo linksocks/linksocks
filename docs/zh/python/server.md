@@ -64,6 +64,7 @@ Server(
     api_key: Optional[str] = None,
     channel_timeout: Optional[DurationLike] = None,
     connect_timeout: Optional[DurationLike] = None,
+    connector_wait_provider: Optional[DurationLike] = None,
     fast_open: Optional[bool] = None,
     upstream_proxy: Optional[str] = None,
     upstream_username: Optional[str] = None,
@@ -85,6 +86,7 @@ Server(
 | `api_key` | `str` | `None` | HTTP 管理接口的 API 密钥 |
 | `channel_timeout` | `DurationLike` | `30.0` | WebSocket 通道超时 |
 | `connect_timeout` | `DurationLike` | `10.0` | 出站连接超时 |
+| `connector_wait_provider` | `DurationLike` | `5.0` | 连接器请求在失败前等待 provider 重连的时间 |
 | `fast_open` | `bool` | `False` | 快速打开：立即 SOCKS5 成功；节省一个 RTT。参见 /zh/guide/fast-open |
 | `upstream_proxy` | `str` | `None` | 上游代理地址 |
 | `upstream_username` | `str` | `None` | 上游代理用户名 |

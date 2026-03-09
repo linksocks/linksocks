@@ -64,6 +64,7 @@ Server(
     api_key: Optional[str] = None,
     channel_timeout: Optional[DurationLike] = None,
     connect_timeout: Optional[DurationLike] = None,
+    connector_wait_provider: Optional[DurationLike] = None,
     fast_open: Optional[bool] = None,
     upstream_proxy: Optional[str] = None,
     upstream_username: Optional[str] = None,
@@ -85,6 +86,7 @@ Server(
 | `api_key` | `str` | `None` | API key for HTTP management interface |
 | `channel_timeout` | `DurationLike` | `30.0` | Timeout for WebSocket channels |
 | `connect_timeout` | `DurationLike` | `10.0` | Timeout for outbound connections |
+| `connector_wait_provider` | `DurationLike` | `5.0` | How long connector requests wait for a provider to reconnect before failing |
 | `fast_open` | `bool` | `False` | Fast Open: immediate SOCKS5 success; saves one RTT. See /guide/fast-open |
 | `upstream_proxy` | `str` | `None` | Upstream proxy address |
 | `upstream_username` | `str` | `None` | Username for upstream proxy |

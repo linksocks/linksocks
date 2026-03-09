@@ -159,6 +159,7 @@ type serverConfig struct {
 	APIKey               string `json:"api_key"`
 	ChannelTimeoutNs     *int64 `json:"channel_timeout_ns"`
 	ConnectTimeoutNs     *int64 `json:"connect_timeout_ns"`
+	ConnectorWaitNs      *int64 `json:"connector_wait_ns"`
 	FastOpen             *bool  `json:"fast_open"`
 	UpstreamProxy        string `json:"upstream_proxy"`
 	UpstreamUsername     string `json:"upstream_username"`
@@ -248,6 +249,9 @@ func linksocks_server_new(cfgJSON *C.char, out *C.uint64_t) *C.char {
 	}
 	if cfg.ConnectTimeoutNs != nil {
 		opt.WithConnectTimeout(time.Duration(*cfg.ConnectTimeoutNs))
+	}
+	if cfg.ConnectorWaitNs != nil {
+		opt.WithConnectorWait(time.Duration(*cfg.ConnectorWaitNs))
 	}
 	if cfg.FastOpen != nil {
 		opt.WithFastOpen(*cfg.FastOpen)

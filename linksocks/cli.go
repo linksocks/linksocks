@@ -136,6 +136,7 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().StringP("api-key", "k", "", "Enable HTTP API with specified key")
 	serverCmd.Flags().StringP("upstream-proxy", "x", "", "Upstream proxy (e.g., socks5://user:pass@127.0.0.1:1080 or http://user:pass@127.0.0.1:8080)")
 	serverCmd.Flags().BoolP("fast-open", "f", false, "Assume connection success and allow data transfer immediately")
+	serverCmd.Flags().Duration("connector-wait-provider", 5*time.Second, "How long connector requests wait for a provider to reconnect before failing")
 	serverCmd.Flags().Bool("direct-enable", false, "Enable direct signaling/negotiation (experimental)")
 	serverCmd.Flags().Bool("direct-rendezvous-udp", false, "Enable server-side UDP rendezvous (experimental; non-Worker deployments)")
 	serverCmd.Flags().String("direct-rendezvous-host", "", "UDP rendezvous listen host (default: ws-host)")
@@ -370,6 +371,7 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 	// Get new flags
 	upstreamProxy, _ := cmd.Flags().GetString("upstream-proxy")
 	fastOpen, _ := cmd.Flags().GetBool("fast-open")
+	connectorWaitProvider, _ := cmd.Flags().GetDuration("connector-wait-provider")
 	directEnable, _ := cmd.Flags().GetBool("direct-enable")
 	directRendezvousUDP, _ := cmd.Flags().GetBool("direct-rendezvous-udp")
 	directRendezvousHost, _ := cmd.Flags().GetString("direct-rendezvous-host")
@@ -397,6 +399,7 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 		WithWSHost(wsHost).
 		WithWSPort(wsPort).
 		WithSocksHost(socksHost).
+		WithConnectorWait(connectorWaitProvider).
 		WithLogger(logger).
 		WithBufferSize(bufferSize).
 		WithDirectEnable(directEnable).

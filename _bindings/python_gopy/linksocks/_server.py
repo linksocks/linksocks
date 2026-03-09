@@ -31,6 +31,7 @@ class Server(_SnakePassthrough):
         api_key: Optional[str] = None,
         channel_timeout: Optional[DurationLike] = None,
         connect_timeout: Optional[DurationLike] = None,
+        connector_wait_provider: Optional[DurationLike] = None,
         fast_open: Optional[bool] = None,
         upstream_proxy: Optional[str] = None,
         upstream_username: Optional[str] = None,
@@ -59,6 +60,8 @@ class Server(_SnakePassthrough):
             opt.WithChannelTimeout(_to_duration(channel_timeout))
         if connect_timeout is not None:
             opt.WithConnectTimeout(_to_duration(connect_timeout))
+        if connector_wait_provider is not None:
+            opt.WithConnectorWait(_to_duration(connector_wait_provider))
         if fast_open is not None:
             opt.WithFastOpen(bool(fast_open))
         if upstream_proxy is not None:

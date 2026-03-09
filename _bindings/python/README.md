@@ -110,6 +110,7 @@ server = Server(
     api_key="your_api_key",      # Enable HTTP API
     channel_timeout=30.0,        # WebSocket channel timeout (seconds)
     connect_timeout=10.0,        # Connection timeout (seconds)
+    connector_wait_provider=5.0, # Connector wait for provider reconnect (seconds)
     fast_open=False,             # Enable fast open optimization
     upstream_proxy="socks5://proxy:1080",  # Upstream proxy
     upstream_username="user",    # Upstream proxy username
