@@ -4,15 +4,24 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // CLI represents the command-line interface for LinkSocks
 type CLI struct {
 	rootCmd *cobra.Command
+}
+
+type cliHelpConfig struct {
+	Overview   string
+	KeyFlags   []string
+	OtherFlags []string
+	Examples   []string
 }
 
 // NewCLI creates a new CLI instance
@@ -35,6 +44,8 @@ func (cli *CLI) initCommands() {
 	cli.rootCmd = &cobra.Command{
 		Use:          "linksocks",
 		Short:        "SOCKS5 over WebSocket proxy tool",
+		Long:         "LinkSocks can run as a forward proxy, reverse proxy provider, or agent-style connector setup.",
+		Example:      strings.TrimSpace("linksocks server -t my_token\nlinksocks client -t my_token -u ws://localhost:8765 -p 9870\n\nlinksocks server -t my_token -r -p 9870\nlinksocks provider -t my_token -u ws://localhost:8765\n\nlinksocks server -t provider_token -c connector_token -r -p 9870\nlinksocks connector -t connector_token -u ws://localhost:8765 -p 1180"),
 		SilenceUsage: true,
 	}
 
@@ -118,6 +129,9 @@ func (cli *CLI) initCommands() {
 	addClientFlags(clientCmd)
 	addClientFlags(connectorCmd)
 	addClientFlags(providerCmd)
+	clientCmd.Flags().SortFlags = false
+	connectorCmd.Flags().SortFlags = false
+	providerCmd.Flags().SortFlags = false
 
 	// Server flags
 	serverCmd.Flags().StringP("ws-host", "H", "0.0.0.0", "WebSocket server listen address")
@@ -138,7 +152,7 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().BoolP("fast-open", "f", false, "Assume connection success and allow data transfer immediately")
 	serverCmd.Flags().Duration("connector-wait-provider", 5*time.Second, "How long connector requests wait for a provider to reconnect before failing")
 	serverCmd.Flags().Bool("direct-enable", false, "Enable direct signaling/negotiation (experimental)")
-	serverCmd.Flags().Bool("direct-rendezvous-udp", false, "Enable server-side UDP rendezvous (experimental; non-Worker deployments)")
+	serverCmd.Flags().Bool("direct-rendezvous-udp", false, "Enable server-side UDP rendezvous (experimental)")
 	serverCmd.Flags().String("direct-rendezvous-host", "", "UDP rendezvous listen host (default: ws-host)")
 	serverCmd.Flags().Int("direct-rendezvous-port", 0, "UDP rendezvous listen port (default: ws-port)")
 
@@ -146,9 +160,118 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().Lookup("token").Usage += " (env: LINKSOCKS_TOKEN)"
 	serverCmd.Flags().Lookup("connector-token").Usage += " (env: LINKSOCKS_CONNECTOR_TOKEN)"
 	serverCmd.Flags().Lookup("socks-password").Usage += " (env: LINKSOCKS_SOCKS_PASSWORD)"
+	serverCmd.Flags().SortFlags = false
+
+	cli.configureCommandHelp(clientCmd, cliHelpConfig{
+		Overview:   "Use client for the local SOCKS endpoint in forward mode. In reverse deployments, client -r acts as the provider that exits through its local network.",
+		KeyFlags:   []string{"token", "url", "reverse", "socks-port", "socks-host"},
+		OtherFlags: []string{"connector-token", "socks-username", "socks-password", "socks-no-wait", "no-reconnect", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "debug", "help"},
+		Examples: []string{
+			"# Forward proxy\nlinksocks client -t my_token -u ws://localhost:8765 -p 9870",
+			"# Reverse provider\nlinksocks client -t my_token -u ws://localhost:8765 -r",
+			"# Connector alias\nlinksocks connector -t connector_token -u ws://localhost:8765 -p 1180",
+		},
+	})
+	cli.configureCommandHelp(providerCmd, cliHelpConfig{
+		Overview:   "Provider is a shortcut for client -r. Use it when this machine should provide outbound network access for a reverse proxy deployment.",
+		KeyFlags:   []string{"token", "url"},
+		OtherFlags: []string{"connector-token", "no-reconnect", "fast-open", "upstream-proxy", "no-env-proxy", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "threads", "debug", "help"},
+		Examples: []string{
+			"# Basic provider\nlinksocks provider -t my_token -u ws://localhost:8765",
+			"# Provider with autonomy\nlinksocks provider -t my_token -c my_connector -u ws://localhost:8765",
+		},
+	})
+	cli.configureCommandHelp(connectorCmd, cliHelpConfig{
+		Overview:   "Connector is an alias for client and is commonly used with a connector token to expose a local SOCKS5 port that reaches a reverse provider.",
+		KeyFlags:   []string{"token", "url", "socks-port", "socks-host"},
+		OtherFlags: []string{"socks-username", "socks-password", "socks-no-wait", "no-reconnect", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "debug", "help"},
+		Examples: []string{
+			"# Connector side of agent mode\nlinksocks connector -t connector_token -u ws://localhost:8765 -p 1180",
+		},
+	})
+	cli.configureCommandHelp(serverCmd, cliHelpConfig{
+		Overview:   "Use server to run the WebSocket relay. Add -r when the SOCKS5 listener should live on the server side for reverse or agent deployments.",
+		KeyFlags:   []string{"token", "ws-host", "ws-port", "reverse", "socks-port", "socks-host"},
+		OtherFlags: []string{"connector-token", "connector-autonomy", "socks-username", "socks-password", "socks-nowait", "api-key", "buffer-size", "upstream-proxy", "fast-open", "connector-wait-provider", "direct-enable", "direct-rendezvous-udp", "direct-rendezvous-host", "direct-rendezvous-port", "debug", "help"},
+		Examples: []string{
+			"# Forward relay\nlinksocks server -t my_token",
+			"# Reverse proxy\nlinksocks server -t my_token -r -p 9870",
+			"# Agent mode\nlinksocks server -t provider_token -c connector_token -r -p 9870",
+			"# Autonomy mode\nlinksocks server -t provider_token -r -a",
+		},
+	})
 
 	// Add commands to root
 	cli.rootCmd.AddCommand(clientCmd, connectorCmd, providerCmd, serverCmd, versionCmd)
+}
+
+func (cli *CLI) configureCommandHelp(cmd *cobra.Command, config cliHelpConfig) {
+	cmd.SetHelpFunc(func(current *cobra.Command, args []string) {
+		out := current.OutOrStdout()
+
+		if current.Short != "" {
+			fmt.Fprintln(out, current.Short)
+			fmt.Fprintln(out)
+		}
+
+		if config.Overview != "" {
+			fmt.Fprintln(out, config.Overview)
+			fmt.Fprintln(out)
+		}
+
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintf(out, "  %s\n", current.UseLine())
+
+		for _, section := range []struct {
+			title string
+			flags []string
+		}{
+			{title: "Key flags", flags: config.KeyFlags},
+			{title: "Other flags", flags: config.OtherFlags},
+		} {
+			usages := cli.flagUsages(current, section.flags)
+			if usages == "" {
+				continue
+			}
+
+			fmt.Fprintf(out, "\n%s:\n%s\n", section.title, usages)
+		}
+
+		if len(config.Examples) > 0 {
+			fmt.Fprintln(out, "\nExamples:")
+			for i, example := range config.Examples {
+				if i > 0 {
+					fmt.Fprintln(out)
+				}
+				fmt.Fprintln(out, indentBlock(strings.TrimSpace(example), "  "))
+			}
+		}
+	})
+}
+
+func (cli *CLI) flagUsages(cmd *cobra.Command, flagNames []string) string {
+	if len(flagNames) == 0 {
+		return ""
+	}
+
+	flagSet := pflag.NewFlagSet(cmd.Name(), pflag.ContinueOnError)
+	flagSet.SortFlags = false
+
+	for _, name := range flagNames {
+		if flag := cmd.Flags().Lookup(name); flag != nil {
+			flagSet.AddFlag(flag)
+		}
+	}
+
+	return strings.TrimRight(flagSet.FlagUsagesWrapped(100), "\n")
+}
+
+func indentBlock(text, prefix string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = prefix + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 // parseProxy parses a proxy URL and returns address, username, password, and proxy type

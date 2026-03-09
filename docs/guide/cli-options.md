@@ -1,187 +1,161 @@
 # Command-line Options
 
-LinkSocks is a versatile SOCKS proxy implementation over the WebSocket protocol, supporting both forward and reverse proxy configurations. This guide provides detailed instructions on how to use LinkSocks via the command line.
+Read this page from top to bottom:
 
-## Basic Commands
+1. Pick a mode.
+2. Fill in the key flags.
+3. Add other flags only when needed.
 
-LinkSocks provides two primary commands: `server` and `client`.
+## Modes at a Glance
 
-### Server
+| Mode | Commands | Purpose |
+|------|----------|---------|
+| Forward proxy | `linksocks server` + `linksocks client` | SOCKS5 listens on the client side |
+| Reverse proxy | `linksocks server -r` + `linksocks client -r` | SOCKS5 listens on the server side |
+| Agent mode | `linksocks server -r -c ...` + `linksocks provider` + `linksocks connector` | Separate provider and connector access |
+| Autonomy mode | `linksocks server -r -a` + `linksocks provider -c ...` + `linksocks connector` | Provider manages its own connector token |
+| Direct transport | Add `--direct-*` flags to compatible clients and `--direct-enable` on server | Prefer peer-to-peer transport when available |
 
-Starts the LinkSocks server which listens for incoming WebSocket connections and manages SOCKS proxy services.
+## Server Command
 
-### Client
+The `server` command runs the WebSocket relay. Add `-r` when the SOCKS5 listener should be exposed on the server side.
 
-Starts the LinkSocks client which connects to the server and provides SOCKS proxy functionality to the local machine.
-
-## Server Options
-
-### Basic Options
-
-| Parameter | Short | Default | Description |
-|-----------|-------|---------|-------------|
-| `--ws-host` | `-H` | `0.0.0.0` | WebSocket server listen address |
-| `--ws-port` | `-P` | `8765` | WebSocket server listen port |
-| `--token` | `-t` | | Authentication token (auto-generate if empty) |
-| `--reverse` | `-r` | `false` | Enable reverse proxy mode |
-
-### SOCKS5 Options (Reverse Mode)
+### Key Flags
 
 | Parameter | Short | Default | Description |
 |-----------|-------|---------|-------------|
-| `--socks-host` | `-s` | `127.0.0.1` | SOCKS5 server listen address |
-| `--socks-port` | `-p` | `9870` | SOCKS5 server listen port |
-| `--socks-username` | `-n` | | SOCKS5 authentication username |
-| `--socks-password` | `-w` | | SOCKS5 authentication password |
-| `--socks-nowait` | `-i` | `false` | Start SOCKS server immediately |
+| `--token` | `-t` | auto-generated when omitted on server-managed modes | Main authentication token. Also supports `LINKSOCKS_TOKEN`. |
+| `--ws-host` | `-H` | `0.0.0.0` | WebSocket listen host |
+| `--ws-port` | `-P` | `8765` | WebSocket listen port |
+| `--reverse` | `-r` | `false` | Switch from forward relay mode to reverse/agent mode |
+| `--socks-host` | `-s` | `127.0.0.1` | SOCKS5 listen host in reverse mode |
+| `--socks-port` | `-p` | `9870` | SOCKS5 listen port in reverse mode |
 
-### Agent Proxy Options
-
-| Parameter | Short | Default | Description |
-|-----------|-------|---------|-------------|
-| `--connector-token` | `-c` | | Connector token for agent proxy |
-| `--connector-autonomy` | `-a` | `false` | Allow clients to manage connector tokens |
-
-### Performance Options
+### Other Flags
 
 | Parameter | Short | Default | Description |
 |-----------|-------|---------|-------------|
-| `--buffer-size` | `-b` | `32768` | Buffer size for data transfer |
-| `--fast-open` | `-f` | `false` | Enable fast open optimization (see: [Fast Open Mode](/guide/fast-open)) |
-| `--upstream-proxy` | `-x` | | Upstream SOCKS5 proxy URL |
+| `--connector-token` | `-c` | auto-generated when omitted | Connector token for agent mode. Also supports `LINKSOCKS_CONNECTOR_TOKEN`. |
+| `--connector-autonomy` | `-a` | `false` | Let providers manage connector tokens themselves |
+| `--socks-username` | `-n` | | SOCKS5 username for reverse mode |
+| `--socks-password` | `-w` | | SOCKS5 password for reverse mode. Also supports `LINKSOCKS_SOCKS_PASSWORD`. |
+| `--socks-nowait` | `-i` | `false` | Start SOCKS5 immediately without waiting for a provider |
 
-### Management Options
+| `--api-key` | `-k` | | Enable the HTTP API |
+| `--buffer-size` | `-b` | `1048576` | Transfer buffer size |
+| `--upstream-proxy` | `-x` | | Outbound proxy for server-side connections |
+| `--fast-open` | `-f` | `false` | Allow data transfer before the remote side is fully confirmed |
+| `--connector-wait-provider` | | `5s` | How long a connector waits for a provider to reconnect |
+| `--direct-enable` | | `false` | Enable direct signaling for compatible clients |
+| `--direct-rendezvous-udp` | | `false` | Enable server-side UDP rendezvous. Requires a real UDP listener and is not supported on Cloudflare Workers. |
+| `--direct-rendezvous-host` | | `ws-host` | Rendezvous UDP host |
+| `--direct-rendezvous-port` | | `ws-port` | Rendezvous UDP port |
+| `--debug` | `-d` | | Debug logging, use `-dd` for trace |
+
+## Client, Provider, and Connector Commands
+
+Use `client` as the general-purpose command:
+
+- `linksocks client` = forward proxy client
+- `linksocks client -r` = reverse provider
+- `linksocks provider` = shortcut for `linksocks client -r`
+- `linksocks connector` = client alias typically used with connector tokens
+
+### Key Flags
 
 | Parameter | Short | Default | Description |
 |-----------|-------|---------|-------------|
-| `--api-key` | `-k` | | Enable HTTP API with specified key |
-| `--debug` | `-d` | | Debug logging (use -dd for trace) |
-
-## Client Parameters
-
-### Basic Options
-
-| Parameter | Short | Default | Description |
-|-----------|-------|---------|-------------|
-| `--token` | `-t` | `anonymous` | Authentication token (uses 'anonymous' if not provided) |
+| `--token` | `-t` | | Authentication token. Also supports `LINKSOCKS_TOKEN`. |
 | `--url` | `-u` | `ws://localhost:8765` | WebSocket server URL |
-| `--reverse` | `-r` | `false` | Enable reverse proxy mode |
-| `--connector-token` | `-c` | | Connector token for agent proxy |
+| `--reverse` | `-r` | `false` | Turn `client` into a reverse provider |
+| `--socks-host` | `-s` | `127.0.0.1` | Local SOCKS5 listen host for forward or connector mode |
+| `--socks-port` | `-p` | `9870` | Local SOCKS5 listen port for forward or connector mode |
 
-### SOCKS5 Options (Forward Mode)
-
-| Parameter | Short | Default | Description |
-|-----------|-------|---------|-------------|
-| `--socks-host` | `-s` | `127.0.0.1` | SOCKS5 server listen address |
-| `--socks-port` | `-p` | `9870` | SOCKS5 server listen port |
-| `--socks-username` | `-n` | | SOCKS5 authentication username |
-| `--socks-password` | `-w` | | SOCKS5 authentication password |
-| `--socks-no-wait` | `-i` | `false` | Start SOCKS server immediately |
-
-### Connection Options
+### Other Flags
 
 | Parameter | Short | Default | Description |
 |-----------|-------|---------|-------------|
-| `--no-reconnect` | `-R` | `false` | Stop when server disconnects |
-| `--threads` | `-T` | `1` | Number of WebSocket connections |
-| `--fast-open` | `-f` | `false` | Enable fast open optimization (see: [Fast Open](/guide/fast-open)) |
-| `--upstream-proxy` | `-x` | | Upstream SOCKS5 proxy URL |
+| `--connector-token` | `-c` | | Connector token for agent/autonomy mode. Also supports `LINKSOCKS_CONNECTOR_TOKEN`. |
+| `--socks-username` | `-n` | | Local SOCKS5 username |
+| `--socks-password` | `-w` | | Local SOCKS5 password. Also supports `LINKSOCKS_SOCKS_PASSWORD`. |
+| `--socks-no-wait` | `-i` | `false` | Start SOCKS5 immediately |
+| `--no-reconnect` | `-R` | `false` | Exit when the server disconnects |
+
+| `--threads` | `-T` | `1` | Number of transfer threads |
+| `--upstream-proxy` | `-x` | | Outbound proxy used to reach the WebSocket server |
 | `--no-env-proxy` | `-E` | `false` | Ignore proxy environment variables |
+| `--fast-open` | `-f` | `false` | Allow data transfer before the remote side is fully confirmed |
+| `--direct-mode` | | `relay-only` | `relay-only`, `auto`, or `direct-only` |
+| `--direct-discovery` | | `stun` | Direct candidate discovery method |
+| `--direct-host-candidates` | | `auto` | Host candidate advertisement policy |
+| `--stun-server` | | built-in pool | Additional STUN server, repeatable |
+| `--direct-only-action` | | `exit` | What to do when `direct-only` cannot connect |
+| `--direct-upnp` | | `false` | Enable UPnP mapping for direct transport |
+| `--direct-upnp-lease` | | `30m` | UPnP lease duration |
+| `--direct-upnp-keep` | | `false` | Keep UPnP mapping on exit |
+| `--direct-upnp-external-port` | | `0` | Explicit UPnP external port |
+| `--debug` | `-d` | | Debug logging, use `-dd` for trace |
 
-### Debug Options
+## Mode Recipes
 
-| Parameter | Short | Default | Description |
-|-----------|-------|---------|-------------|
-| `--debug` | `-d` | | Debug logging (use -dd for trace) |
-
-<!-- Environment Variables section removed -->
-
-## Upstream Proxy Format
-
-The `--upstream-proxy` parameter accepts SOCKS5 URLs:
-
-```
-socks5://[username[:password]@]host[:port]
-```
-
-**Examples:**
-- `socks5://proxy.example.com:1080`
-- `socks5://user:pass@proxy.example.com:1080`
-- `socks5://proxy.example.com` (defaults to port 1080)
-
-<!-- Trim overly long examples; keep minimal combos only -->
-## Common Parameter Combinations
-
-### Forward Proxy
+### 1. Forward Proxy
 
 ```bash
-# Basic forward proxy
 linksocks server -t my_token
 linksocks client -t my_token -u ws://localhost:8765 -p 9870
-
-# With authentication
-linksocks client -t my_token -u ws://localhost:8765 -n user -w pass
-
-# With upstream proxy
-linksocks client -t my_token -u ws://localhost:8765 -x socks5://upstream:1080
 ```
 
-### Reverse Proxy
+### 2. Reverse Proxy
 
 ```bash
-# Basic reverse proxy
 linksocks server -t my_token -r -p 9870
 linksocks client -t my_token -u ws://localhost:8765 -r
-
-# With SOCKS authentication
-linksocks server -t my_token -r -p 9870 -n user -w pass
-linksocks client -t my_token -u ws://localhost:8765 -r
 ```
 
-### Agent Proxy
+### 3. Agent Mode
 
 ```bash
-# Server with connector token
-linksocks server -t server_token -c connector_token -r -p 9870
-
-# Provider client
-linksocks provider -t server_token -u ws://localhost:8765
-
-# Connector client
+linksocks server -t provider_token -c connector_token -r -p 9870
+linksocks provider -t provider_token -u ws://localhost:8765
 linksocks connector -t connector_token -u ws://localhost:8765 -p 1180
 ```
 
-### Autonomy Mode
+### 4. Autonomy Mode
 
 ```bash
-# Server with autonomy enabled
-linksocks server -t server_token -r -a
-
-# Provider with custom connector
-linksocks provider -t server_token -c my_connector -u ws://localhost:8765
+linksocks server -t provider_token -r -a
+linksocks provider -t provider_token -c my_connector_token -u ws://localhost:8765
+linksocks connector -t my_connector_token -u ws://localhost:8765 -p 1180
 ```
 
-## Performance Tuning
+### 5. Direct Transport
 
-### Buffer Size
-
-Increase buffer size for high-throughput scenarios:
 ```bash
-linksocks server -b 65536
-linksocks client -t token -b 65536
+linksocks server -t my_token --direct-enable
+linksocks client -t my_token -u ws://localhost:8765 --direct-mode auto
 ```
 
-### Threading
+## Environment Variables
 
-Use multiple threads for concurrent processing:
-```bash
-linksocks client -t token -T 8
+These flags can also be provided through environment variables:
+
+| Environment Variable | Flag |
+|----------------------|------|
+| `LINKSOCKS_TOKEN` | `--token` |
+| `LINKSOCKS_CONNECTOR_TOKEN` | `--connector-token` |
+| `LINKSOCKS_SOCKS_PASSWORD` | `--socks-password` |
+
+## Upstream Proxy Format
+
+`--upstream-proxy` accepts both SOCKS5 and HTTP proxy URLs:
+
+```text
+socks5://[username[:password]@]host[:port]
+http://[username[:password]@]host[:port]
 ```
 
-### Fast Open
+Examples:
 
-Enable fast open for lower latency (saves one RTT):
-```bash
-linksocks server -f
-linksocks client -t token -f
-```
+- `socks5://proxy.example.com:1080`
+- `socks5://user:pass@proxy.example.com:1080`
+- `http://user:pass@proxy.example.com:8080`
