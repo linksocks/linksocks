@@ -23,7 +23,8 @@ const (
 // DirectQUICDataPlane multiplexes LinkSocks binary messages over QUIC streams.
 //
 // Each ChannelID maps to one bidirectional QUIC stream. Messages are framed as:
-//   Len(4, big-endian) + PackMessage(...) bytes
+//
+//	Len(4, big-endian) + PackMessage(...) bytes
 //
 // This layer is transport-only and intentionally does not implement routing
 // policy (relay vs direct). Routing is handled by higher-level state machine.
