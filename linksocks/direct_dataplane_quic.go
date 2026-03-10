@@ -29,7 +29,7 @@ const (
 // policy (relay vs direct). Routing is handled by higher-level state machine.
 type DirectQUICDataPlane struct {
 	log  zerolog.Logger
-	conn quic.Connection
+	conn *quic.Conn
 
 	mu       sync.Mutex
 	channels map[uuid.UUID]*directQUICChannel
@@ -38,7 +38,7 @@ type DirectQUICDataPlane struct {
 	serveOnce sync.Once
 }
 
-func NewDirectQUICDataPlane(conn quic.Connection, logger zerolog.Logger) (*DirectQUICDataPlane, error) {
+func NewDirectQUICDataPlane(conn *quic.Conn, logger zerolog.Logger) (*DirectQUICDataPlane, error) {
 	if conn == nil {
 		return nil, errors.New("direct quic dataplane: nil connection")
 	}
@@ -147,7 +147,7 @@ func (p *DirectQUICDataPlane) Serve(ctx context.Context, onConnect func(ctx cont
 	return nil
 }
 
-func (p *DirectQUICDataPlane) handleIncomingStream(ctx context.Context, s quic.Stream, onConnect func(ctx context.Context, ch *directQUICChannel, req ConnectMessage) error) {
+func (p *DirectQUICDataPlane) handleIncomingStream(ctx context.Context, s *quic.Stream, onConnect func(ctx context.Context, ch *directQUICChannel, req ConnectMessage) error) {
 	if s == nil {
 		return
 	}
@@ -205,13 +205,13 @@ type directQUICChannel struct {
 
 	mu sync.Mutex
 	id uuid.UUID
-	s  quic.Stream
+	s  *quic.Stream
 
 	writeMu sync.Mutex
 	closed  bool
 }
 
-func newDirectQUICChannel(p *DirectQUICDataPlane, id uuid.UUID, s quic.Stream, logger zerolog.Logger) *directQUICChannel {
+func newDirectQUICChannel(p *DirectQUICDataPlane, id uuid.UUID, s *quic.Stream, logger zerolog.Logger) *directQUICChannel {
 	if logger.GetLevel() == zerolog.NoLevel {
 		logger = zerolog.Nop()
 	}

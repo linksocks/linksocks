@@ -31,6 +31,10 @@ here = Path(__file__).parent.absolute()
 _temp_go_dir = None
 _temp_py_venv_dir = None
 
+GO_MIN_VERSION = (1, 24, 0)
+GO_MIN_VERSION_TEXT = "1.24+"
+GO_BOOTSTRAP_VERSION = "1.24.12"
+
 # Ensure Go builds do not require VCS (git) metadata; avoids errors on minimal images
 current_goflags = os.environ.get("GOFLAGS", "").strip()
 if "-buildvcs=false" not in current_goflags:
@@ -141,12 +145,42 @@ def run_command(cmd, cwd=None, env=None):
         print(f"stderr: {e.stderr}")
         raise
 
+def parse_go_version(output: str) -> Optional[tuple[int, int, int]]:
+    """Parse `go version` output into a comparable version tuple."""
+    for token in output.split():
+        if token == "devel" or token.startswith("devel"):
+            return (999, 0, 0)
+        if token.startswith("go") and len(token) > 2 and token[2].isdigit():
+            raw_version = token[2:]
+            parts = []
+            for part in raw_version.split("."):
+                digits = "".join(ch for ch in part if ch.isdigit())
+                if not digits:
+                    break
+                parts.append(int(digits))
+            while len(parts) < 3:
+                parts.append(0)
+            return tuple(parts[:3])
+    return None
+
+def has_minimum_go_version(version: Optional[tuple[int, int, int]]) -> bool:
+    """Return whether the parsed Go version satisfies the minimum required version."""
+    if version is None:
+        return False
+    return version >= GO_MIN_VERSION
+
 def check_go_installation():
-    """Check if Go is installed and return version."""
+    """Check if Go is installed and meets the minimum required version."""
     try:
         result = run_command(["go", "version"])
         print(f"Found Go: {result}")
-        return True
+        parsed_version = parse_go_version(result)
+        if has_minimum_go_version(parsed_version):
+            return True
+        print(
+            f"Installed Go version is too old; requires Go {GO_MIN_VERSION_TEXT} or newer."
+        )
+        return False
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
 
@@ -284,7 +318,7 @@ def install_go():
     }
     
     arch = arch_map.get(machine, 'amd64')
-    go_version = "1.21.6"
+    go_version = GO_BOOTSTRAP_VERSION
     
     if system == "windows":
         go_filename = f"go{go_version}.windows-{arch}.zip"
@@ -406,7 +440,7 @@ def ensure_python_bindings():
             print(f"Failed to install Go: {e}")
             raise RuntimeError(
                 "Go is required to build linksocks from source. "
-                "Please install Go 1.21+ from https://golang.org/dl/ or use a pre-built wheel."
+                f"Please install Go {GO_MIN_VERSION_TEXT} from https://golang.org/dl/ or use a pre-built wheel."
             )
 
     try:
@@ -435,7 +469,7 @@ def ensure_python_bindings():
     except Exception as e:
         raise RuntimeError(
             f"Failed to build linksocks_ffi shared library: {e}\n"
-            "Use a pre-built wheel, or ensure Go 1.21+ is installed."
+            f"Use a pre-built wheel, or ensure Go {GO_MIN_VERSION_TEXT} is installed."
         )
 
 def test_bindings():

@@ -153,7 +153,7 @@ func newDirectQUICClientTLSConfig() *tls.Config {
 	}
 }
 
-func directQUICClientAuth(ctx context.Context, conn quic.Connection, sessionID uuid.UUID, sessionKey []byte) error {
+func directQUICClientAuth(ctx context.Context, conn *quic.Conn, sessionID uuid.UUID, sessionKey []byte) error {
 	s, err := conn.OpenStreamSync(ctx)
 	if err != nil {
 		return err
@@ -192,7 +192,7 @@ func directQUICClientAuth(ctx context.Context, conn quic.Connection, sessionID u
 	return nil
 }
 
-func directQUICServerAuth(ctx context.Context, conn quic.Connection, sessionID uuid.UUID, sessionKey []byte) error {
+func directQUICServerAuth(ctx context.Context, conn *quic.Conn, sessionID uuid.UUID, sessionKey []byte) error {
 	s, err := conn.AcceptStream(ctx)
 	if err != nil {
 		return err
@@ -239,7 +239,7 @@ type DirectQUICManager struct {
 	sessionKey []byte
 
 	mu     sync.Mutex
-	active quic.Connection
+	active *quic.Conn
 	closed bool
 }
 
@@ -270,7 +270,7 @@ func NewDirectQUICManager(conn net.PacketConn, sessionID uuid.UUID, sessionKey [
 	}, nil
 }
 
-func (m *DirectQUICManager) Connect(ctx context.Context, candidates []DirectCandidate) (quic.Connection, error) {
+func (m *DirectQUICManager) Connect(ctx context.Context, candidates []DirectCandidate) (*quic.Conn, error) {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -307,12 +307,12 @@ func (m *DirectQUICManager) Connect(ctx context.Context, candidates []DirectCand
 
 	var (
 		once sync.Once
-		win  quic.Connection
+		win  *quic.Conn
 		werr error
 		done = make(chan struct{})
 	)
 
-	setWinner := func(c quic.Connection, err error) {
+	setWinner := func(c *quic.Conn, err error) {
 		once.Do(func() {
 			win = c
 			werr = err
@@ -327,7 +327,7 @@ func (m *DirectQUICManager) Connect(ctx context.Context, candidates []DirectCand
 			if err != nil {
 				return
 			}
-			go func(conn quic.Connection) {
+			go func(conn *quic.Conn) {
 				authCtx, cancelAuth := context.WithTimeout(ctxConn, 2*time.Second)
 				err := directQUICServerAuth(authCtx, conn, m.sessionID, m.sessionKey)
 				cancelAuth()
@@ -389,7 +389,7 @@ func (m *DirectQUICManager) Connect(ctx context.Context, candidates []DirectCand
 	}
 }
 
-func (m *DirectQUICManager) Active() quic.Connection {
+func (m *DirectQUICManager) Active() *quic.Conn {
 	m.mu.Lock()
 	c := m.active
 	m.mu.Unlock()

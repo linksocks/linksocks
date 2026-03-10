@@ -73,4 +73,4 @@ func TestDirectQUICManager_Connect_InvalidKey(t *testing.T) {
 	}
 }
 
-var _ quic.Connection
+var _ *quic.Conn
