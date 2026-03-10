@@ -56,18 +56,18 @@ type StatusResponse struct {
 }
 
 type DirectPeerStatus struct {
-	ClientID        string    `json:"client_id"`
-	InternalToken   string    `json:"internal_token"`
-	Role            string    `json:"role"`
-	ReverseToken    string    `json:"reverse_token,omitempty"`
-	SupportsDirect  bool      `json:"supports_direct"`
-	UpdatedAt       string    `json:"updated_at,omitempty"`
-	LastSessionID   string    `json:"last_session_id,omitempty"`
-	LastDirectState string    `json:"last_direct_state,omitempty"`
+	ClientID        string `json:"client_id"`
+	InternalToken   string `json:"internal_token"`
+	Role            string `json:"role"`
+	ReverseToken    string `json:"reverse_token,omitempty"`
+	SupportsDirect  bool   `json:"supports_direct"`
+	UpdatedAt       string `json:"updated_at,omitempty"`
+	LastSessionID   string `json:"last_session_id,omitempty"`
+	LastDirectState string `json:"last_direct_state,omitempty"`
 }
 
 type DirectStatus struct {
-	Enabled bool              `json:"enabled"`
+	Enabled bool               `json:"enabled"`
 	Peers   []DirectPeerStatus `json:"peers,omitempty"`
 }
 
