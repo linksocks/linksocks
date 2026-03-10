@@ -6,16 +6,92 @@ This module provides all CLI commands for the linksocks SOCKS5 over WebSocket pr
 
 import asyncio
 import logging
+import os
 import platform
+import signal
+import sys
+import threading
+import time
 from typing import Optional
 
 import click
 
 from ._logging_config import init_logging
-from ._utils import get_env_or_flag, parse_socks_proxy, validate_required_token
+from ._utils import get_env_or_flag, parse_socks_proxy, resolve_token
 
 
-@click.group()
+def _normalize_exit_code(code: object) -> int:
+    if code is None:
+        return 0
+    if isinstance(code, bool):
+        return int(code)
+    if isinstance(code, int):
+        return code
+    return 1
+
+
+def _exit_process(code: int) -> None:
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(code)
+
+
+def _abort_from_sigint() -> None:
+    _exit_process(130)
+
+
+def _install_sigint_exit_guard(grace_period: float = 1.5):
+    previous = signal.getsignal(signal.SIGINT)
+    triggered = False
+
+    def _force_exit_after_grace() -> None:
+        time.sleep(grace_period)
+        _abort_from_sigint()
+
+    def _handler(signum, frame):
+        nonlocal triggered
+        if not triggered:
+            triggered = True
+            threading.Thread(target=_force_exit_after_grace, name="linksocks-sigint-exit", daemon=True).start()
+
+        if callable(previous):
+            previous(signum, frame)
+            return
+
+        if previous == signal.SIG_DFL:
+            raise KeyboardInterrupt()
+
+    signal.signal(signal.SIGINT, _handler)
+
+    def _restore() -> None:
+        signal.signal(signal.SIGINT, previous)
+
+    return _restore
+
+
+class _CLIGroup(click.Group):
+    def main(self, *args, **kwargs):
+        standalone_mode = kwargs.get("standalone_mode", True)
+        if not standalone_mode:
+            return super().main(*args, **kwargs)
+
+        try:
+            result = super().main(*args, **kwargs)
+        except KeyboardInterrupt:
+            _abort_from_sigint()
+        except SystemExit as exc:
+            _exit_process(_normalize_exit_code(exc.code))
+        else:
+            _exit_process(_normalize_exit_code(result))
+
+
+@click.group(cls=_CLIGroup)
 def cli():
     """SOCKS5 over WebSocket proxy tool."""
     pass
@@ -90,15 +166,9 @@ def client(
 
     async def main():
         # Get values from flags or environment
-        actual_token = get_env_or_flag(token, "LINKSOCKS_TOKEN")
+        actual_token = resolve_token(token, "LINKSOCKS_TOKEN")
         actual_connector_token = get_env_or_flag(connector_token, "LINKSOCKS_CONNECTOR_TOKEN")
         actual_socks_password = get_env_or_flag(socks_password, "LINKSOCKS_SOCKS_PASSWORD")
-        
-        # Validate required token
-        try:
-            validated_token = validate_required_token(actual_token)
-        except ValueError as e:
-            raise click.ClickException(str(e)) from e
         
         # Setup logging
         if debug == 0:
@@ -122,7 +192,7 @@ def client(
         # Create client
         client = Client(
             ws_url=url,
-            token=validated_token,
+            token=actual_token,
             reverse=reverse,
             socks_host=socks_host,
             socks_port=socks_port,
@@ -159,7 +229,17 @@ def client(
 
             await asyncio.Future()
 
-    asyncio.run(main())
+    restore_sigint = _install_sigint_exit_guard()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        _abort_from_sigint()
+    except click.ClickException:
+        raise
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+    finally:
+        restore_sigint()
 
 
 @click.command()
@@ -290,7 +370,17 @@ def server(
         async with server:
             await asyncio.Future()
 
-    asyncio.run(main())
+    restore_sigint = _install_sigint_exit_guard()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        _abort_from_sigint()
+    except click.ClickException:
+        raise
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+    finally:
+        restore_sigint()
 
 
 def create_provider_command():

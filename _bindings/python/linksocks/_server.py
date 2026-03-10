@@ -298,7 +298,8 @@ class Server(_SnakePassthrough):
                     self._ctx.Cancel()
                 except Exception:
                     pass
-                await asyncio.shield(asyncio.to_thread(self._raw.Close))
+                if hasattr(self, '_raw') and self._raw:
+                    self._raw.Close()
                 if hasattr(self, '_managed_logger') and self._managed_logger:
                     try:
                         self._managed_logger.cleanup()
@@ -309,43 +310,43 @@ class Server(_SnakePassthrough):
 
     def close(self) -> None:
         """Close the server and clean up resources."""
-        # Close server
-        if hasattr(self, '_raw') and self._raw:
-            self._raw.Close()
-        # Clean up managed logger
-        if hasattr(self, '_managed_logger') and self._managed_logger:
-            try:
-                self._managed_logger.cleanup()
-            except:
-                # Ignore cleanup errors
-                pass
-        # Close context
         if hasattr(self, '_ctx') and self._ctx:
             try:
                 self._ctx.Cancel()
             except Exception:
-                # Ignore errors during context close
                 pass
+            self._ctx = None
+
+        try:
+            if hasattr(self, '_raw') and self._raw:
+                self._raw.Close()
+        finally:
+            self._raw = None
+            if hasattr(self, '_managed_logger') and self._managed_logger:
+                try:
+                    self._managed_logger.cleanup()
+                except Exception:
+                    pass
 
     async def async_close(self) -> None:
         """Close the server and clean up resources asynchronously."""
-        # Close server
-        if hasattr(self, '_raw') and self._raw:
-            await asyncio.to_thread(self._raw.Close)
-        # Clean up managed logger
-        if hasattr(self, '_managed_logger') and self._managed_logger:
-            try:
-                self._managed_logger.cleanup()
-            except:
-                # Ignore cleanup errors
-                pass
-        # Close context
         if hasattr(self, '_ctx') and self._ctx:
             try:
                 self._ctx.Cancel()
             except Exception:
-                # Ignore errors during context close
                 pass
+            self._ctx = None
+
+        try:
+            if hasattr(self, '_raw') and self._raw:
+                self._raw.Close()
+        finally:
+            self._raw = None
+            if hasattr(self, '_managed_logger') and self._managed_logger:
+                try:
+                    self._managed_logger.cleanup()
+                except Exception:
+                    pass
     
     def __enter__(self) -> "Server":
         """Context manager entry."""

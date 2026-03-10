@@ -113,6 +113,25 @@ def get_env_or_flag(flag_value: Optional[str], env_var: str) -> Optional[str]:
     return os.getenv(env_var)
 
 
+def resolve_token(
+    token: Optional[str],
+    env_var: str = "LINKSOCKS_TOKEN",
+    default: str = "anonymous",
+) -> str:
+    """
+    Resolve a client token from CLI/env configuration.
+
+    When no explicit token is provided, the Go implementation falls back to the
+    special anonymous token and later returns a more helpful authentication
+    error if the server rejects it. The Python CLI should mirror that behavior
+    instead of failing validation before the client starts.
+    """
+    actual_token = get_env_or_flag(token, env_var)
+    if actual_token:
+        return actual_token
+    return default
+
+
 def validate_required_token(token: Optional[str], env_var: str = "LINKSOCKS_TOKEN") -> str:
     """
     Validate that a required authentication token is provided.

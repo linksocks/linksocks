@@ -12,12 +12,55 @@ import asyncio
 from typing import Any
 
 from loguru import logger
+from rich.highlighter import RegexHighlighter
+from rich.theme import Theme
 from rich.text import Text
 from rich.console import Console
 from rich.logging import RichHandler
 
+
+class LinkSocksLogHighlighter(RegexHighlighter):
+    base_style = "linksocks."
+    highlights = [
+        r"(?P<key>\b[a-zA-Z_][a-zA-Z0-9_\-]*=)",
+        r"(?P<url>\b(?:wss?|https?|socks5)://[^\s]+)",
+        r"(?P<ipv4>\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b)",
+        r"(?P<duration>\b\d+(?:\.\d+)?(?:ms|s|m|h)\b)",
+    ]
+
 # Global console instance for consistent output
-console = Console(stderr=True)
+console = Console(
+    stderr=True,
+    theme=Theme(
+        {
+            "logging.level.trace": "magenta",
+            "logging.level.debug": "cyan",
+            "logging.level.info": "green",
+            "logging.level.warning": "yellow",
+            "logging.level.error": "bold red",
+            "logging.level.critical": "bold white on red",
+            "log.time": "dim",
+            "log.path": "dim",
+            "linksocks.key": "bright_cyan",
+            "linksocks.url": "cyan",
+            "linksocks.ipv4": "cyan",
+            "linksocks.duration": "bright_black",
+            "repr.number": "default",
+            "repr.string": "default",
+            "repr.bool_true": "default",
+            "repr.bool_false": "default",
+            "repr.none": "default",
+            "repr.url": "cyan",
+            "repr.ipv4": "cyan",
+            "repr.ipv6": "cyan",
+            "repr.filename": "default",
+            "repr.attrib_name": "default",
+            "repr.attrib_value": "default",
+            "repr.tag_name": "default",
+            "repr.tag_contents": "default",
+        }
+    ),
+)
 
 
 class CarriageReturnRichHandler(RichHandler):
@@ -115,9 +158,23 @@ class InterceptHandler(logging.Handler):
         text = record.getMessage()
         # Convert ANSI escape sequences to plain text for consistent formatting
         text = Text.from_ansi(text).plain
+
+        go_fields = getattr(record, "go", None)
+        if isinstance(go_fields, dict) and go_fields:
+            rendered_fields = _render_go_fields(go_fields)
+            if rendered_fields:
+                text = f"{text} {rendered_fields}" if text else rendered_fields
         
         # Forward the message to loguru with preserved context
         logger.opt(depth=depth, exception=record.exc_info).log(level, text)
+
+
+def _render_go_fields(fields: dict[str, Any]) -> str:
+    """Render Go zerolog fields in a stable key=value form."""
+    parts = []
+    for key in sorted(fields):
+        parts.append(f"{key}={fields[key]}")
+    return " ".join(parts)
 
 
 def apply_logging_adapter(level: int = logging.INFO) -> None:
@@ -169,7 +226,8 @@ def init_logging(level: int = logging.INFO, **kwargs: Any) -> None:
     # Create our custom Rich handler with carriage return support
     handler = CarriageReturnRichHandler(
         console=console, 
-        markup=True, 
+        markup=False,
+        highlighter=LinkSocksLogHighlighter(),
         rich_tracebacks=True, 
         tracebacks_suppress=[asyncio], 
         **kwargs

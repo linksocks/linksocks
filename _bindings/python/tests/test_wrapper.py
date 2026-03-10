@@ -2,6 +2,7 @@ import asyncio
 import time
 import logging
 import pytest
+from click.testing import CliRunner
 
 from .utils import (
     get_free_port,
@@ -70,6 +71,247 @@ def test_ffi_server_option_connector_wait_serialization():
     opt.WithConnectorWait(_to_duration("250ms"))
 
     assert opt.to_cfg()["connector_wait_ns"] == _to_duration("250ms")
+
+
+def test_client_command_defaults_to_anonymous_token(monkeypatch):
+    import linksocks._cli as cli_module
+
+    captured = {}
+
+    class DummyClient:
+        def __init__(self, token, **kwargs):
+            captured["token"] = token
+            captured["kwargs"] = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    monkeypatch.setattr(cli_module, "init_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr("linksocks._client.Client", DummyClient)
+    monkeypatch.setattr(asyncio, "Future", lambda: asyncio.sleep(0))
+
+    runner = CliRunner()
+    result = runner.invoke(cli_module.client, ["-u", "ws://localhost:8765"])
+
+    assert result.exit_code == 0
+    assert captured["token"] == "anonymous"
+
+
+def test_client_command_surfaces_anonymous_auth_hint(monkeypatch):
+    import linksocks._cli as cli_module
+
+    class DummyClient:
+        def __init__(self, token, **kwargs):
+            self.token = token
+
+        async def __aenter__(self):
+            raise RuntimeError("authentication failed: please provide a token with -t or set LINKSOCKS_TOKEN")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    monkeypatch.setattr(cli_module, "init_logging", lambda *args, **kwargs: None)
+    monkeypatch.setattr("linksocks._client.Client", DummyClient)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_module.client, ["-u", "ws://localhost:8765"])
+
+    assert result.exit_code != 0
+    assert "authentication failed: please provide a token with -t or set LINKSOCKS_TOKEN" in result.output
+
+
+def test_client_command_aborts_process_on_keyboard_interrupt(monkeypatch):
+    import linksocks._cli as cli_module
+
+    called = {}
+
+    def _raise_keyboard_interrupt(coro):
+        coro.close()
+        raise KeyboardInterrupt()
+
+    def _fake_abort():
+        called["aborted"] = True
+        raise SystemExit(130)
+
+    monkeypatch.setattr(cli_module.asyncio, "run", _raise_keyboard_interrupt)
+    monkeypatch.setattr(cli_module, "_abort_from_sigint", _fake_abort)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_module.client, ["-u", "ws://localhost:8765"])
+
+    assert called["aborted"] is True
+    assert result.exit_code == 130
+
+
+def test_server_command_aborts_process_on_keyboard_interrupt(monkeypatch):
+    import linksocks._cli as cli_module
+
+    called = {}
+
+    def _raise_keyboard_interrupt(coro):
+        coro.close()
+        raise KeyboardInterrupt()
+
+    def _fake_abort():
+        called["aborted"] = True
+        raise SystemExit(130)
+
+    monkeypatch.setattr(cli_module.asyncio, "run", _raise_keyboard_interrupt)
+    monkeypatch.setattr(cli_module, "_abort_from_sigint", _fake_abort)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_module.server, [])
+
+    assert called["aborted"] is True
+    assert result.exit_code == 130
+
+
+def test_intercept_handler_renders_go_fields(monkeypatch):
+    import linksocks._logging_config as logging_config
+
+    captured = {}
+
+    class DummyOpt:
+        def log(self, level, text):
+            captured["level"] = level
+            captured["text"] = text
+
+    class DummyLogger:
+        def level(self, name):
+            class _Level:
+                def __init__(self, level_name):
+                    self.name = level_name
+
+            return _Level(name)
+
+        def opt(self, depth, exception):
+            captured["depth"] = depth
+            captured["exception"] = exception
+            return DummyOpt()
+
+    monkeypatch.setattr(logging_config, "logger", DummyLogger())
+
+    handler = logging_config.InterceptHandler()
+    record = logging.LogRecord(
+        name="linksocks",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="Following WebSocket redirect",
+        args=(),
+        exc_info=None,
+    )
+    record.go = {"from": "ws://old", "to": "ws://new", "status": 302}
+
+    handler.emit(record)
+
+    assert captured["level"] == "INFO"
+    assert captured["text"] == "Following WebSocket redirect from=ws://old status=302 to=ws://new"
+
+
+def test_init_logging_uses_go_style_rich_palette(monkeypatch):
+    import linksocks._logging_config as logging_config
+
+    captured = {}
+
+    def _fake_remove():
+        captured["removed"] = True
+
+    def _fake_add(handler, format, level):
+        captured["handler"] = handler
+        captured["format"] = format
+        captured["level"] = level
+
+    monkeypatch.setattr(logging_config, "apply_logging_adapter", lambda level: captured.setdefault("adapter", level))
+    monkeypatch.setattr(logging_config.logger, "remove", _fake_remove)
+    monkeypatch.setattr(logging_config.logger, "add", _fake_add)
+
+    logging_config.init_logging(level=logging.DEBUG)
+
+    handler = captured["handler"]
+    assert captured["adapter"] == logging.DEBUG
+    assert captured["removed"] is True
+    assert captured["format"] == "{message}"
+    assert captured["level"] == logging.DEBUG
+    assert handler.highlighter.__class__.__name__ == "LinkSocksLogHighlighter"
+    assert handler.markup is False
+
+
+def test_client_close_cancels_context_before_close(monkeypatch):
+    import linksocks._client as client_module
+
+    calls = []
+
+    class DummyOption:
+        def WithLogger(self, _logger):
+            return None
+
+    class DummyManagedLogger:
+        def __init__(self, py_logger, logger_id):
+            self.py_logger = py_logger
+            self.go_logger = object()
+
+        def cleanup(self):
+            calls.append("cleanup")
+
+    class DummyRawClient:
+        def Close(self):
+            calls.append("close")
+
+    class DummyContext:
+        def Cancel(self):
+            calls.append("cancel")
+
+    monkeypatch.setattr(client_module, "BufferZerologLogger", DummyManagedLogger)
+    monkeypatch.setattr(client_module.backend, "DefaultClientOption", lambda: DummyOption())
+    monkeypatch.setattr(client_module.backend, "NewLinkSocksClient", lambda token, opt: DummyRawClient())
+
+    client = client_module.Client("token")
+    client._ctx = DummyContext()
+
+    client.close()
+
+    assert calls == ["cancel", "close", "cleanup"]
+
+
+def test_client_async_close_cancels_context_before_close(monkeypatch):
+    import linksocks._client as client_module
+
+    calls = []
+
+    class DummyOption:
+        def WithLogger(self, _logger):
+            return None
+
+    class DummyManagedLogger:
+        def __init__(self, py_logger, logger_id):
+            self.py_logger = py_logger
+            self.go_logger = object()
+
+        def cleanup(self):
+            calls.append("cleanup")
+
+    class DummyRawClient:
+        def Close(self):
+            calls.append("close")
+
+    class DummyContext:
+        def Cancel(self):
+            calls.append("cancel")
+
+    monkeypatch.setattr(client_module, "BufferZerologLogger", DummyManagedLogger)
+    monkeypatch.setattr(client_module.backend, "DefaultClientOption", lambda: DummyOption())
+    monkeypatch.setattr(client_module.backend, "NewLinkSocksClient", lambda token, opt: DummyRawClient())
+
+    client = client_module.Client("token")
+    client._ctx = DummyContext()
+
+    asyncio.run(client.async_close())
+
+    assert calls == ["cancel", "close", "cleanup"]
 
 
 def test_forward_basic(website):

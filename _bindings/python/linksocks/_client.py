@@ -36,7 +36,7 @@ class Client(_SnakePassthrough):
 
     def __init__(
         self,
-        token: str,
+        token: Optional[str] = None,
         *,
         logger: Optional[logging.Logger] = None,
         ws_url: Optional[str] = None,
@@ -70,7 +70,8 @@ class Client(_SnakePassthrough):
         """Initialize the WebSocket SOCKS5 proxy client.
         
         Args:
-            token: Authentication token for WebSocket connection
+            token: Authentication token for WebSocket connection. When omitted,
+                the Go backend falls back to the anonymous token.
             logger: Python logger instance for this client
             ws_url: WebSocket server URL to connect to
             reverse: Whether to use reverse proxy mode
@@ -160,7 +161,7 @@ class Client(_SnakePassthrough):
         if direct_upnp_external_port is not None:
             opt.WithDirectUPnPExtPort(int(direct_upnp_external_port))
 
-        self._raw = backend.NewLinkSocksClient(token, opt)
+        self._raw = backend.NewLinkSocksClient(token or "", opt)
         self._ctx = None
 
     @property
@@ -199,8 +200,8 @@ class Client(_SnakePassthrough):
                     self._ctx.Cancel()
                 except Exception:
                     pass
-                # Shield cleanup from further cancellation so it can complete
-                await asyncio.shield(asyncio.to_thread(self._raw.Close))
+                if hasattr(self, '_raw') and self._raw:
+                    self._raw.Close()
                 # Best-effort logger cleanup
                 if hasattr(self, '_managed_logger') and self._managed_logger:
                     try:
@@ -261,43 +262,43 @@ class Client(_SnakePassthrough):
 
     def close(self) -> None:
         """Close the client and clean up resources."""
-        # Close client
-        if hasattr(self, '_raw') and self._raw:
-            self._raw.Close()
-        # Clean up managed logger
-        if hasattr(self, '_managed_logger') and self._managed_logger:
-            try:
-                self._managed_logger.cleanup()
-            except:
-                # Ignore cleanup errors
-                pass
-        # Close context
         if hasattr(self, '_ctx') and self._ctx:
             try:
                 self._ctx.Cancel()
             except Exception:
-                # Ignore errors during context close
                 pass
+            self._ctx = None
+
+        try:
+            if hasattr(self, '_raw') and self._raw:
+                self._raw.Close()
+        finally:
+            self._raw = None
+            if hasattr(self, '_managed_logger') and self._managed_logger:
+                try:
+                    self._managed_logger.cleanup()
+                except Exception:
+                    pass
 
     async def async_close(self) -> None:
         """Close the client and clean up resources asynchronously."""
-        # Close client
-        if hasattr(self, '_raw') and self._raw:
-            await asyncio.to_thread(self._raw.Close)
-        # Clean up managed logger
-        if hasattr(self, '_managed_logger') and self._managed_logger:
-            try:
-                self._managed_logger.cleanup()
-            except:
-                # Ignore cleanup errors
-                pass
-        # Close context
         if hasattr(self, '_ctx') and self._ctx:
             try:
                 self._ctx.Cancel()
             except Exception:
-                # Ignore errors during context close
                 pass
+            self._ctx = None
+
+        try:
+            if hasattr(self, '_raw') and self._raw:
+                self._raw.Close()
+        finally:
+            self._raw = None
+            if hasattr(self, '_managed_logger') and self._managed_logger:
+                try:
+                    self._managed_logger.cleanup()
+                except Exception:
+                    pass
 
     # Context manager support
     def __enter__(self) -> "Client":
