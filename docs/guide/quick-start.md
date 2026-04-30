@@ -120,16 +120,16 @@ linksocks connector -t my_connector_token -u ws://localhost:8765 -p 1180
 
 ### Use Our Public Server
 
-You can use our public LinkSocks server at `linksocks.zetx.tech` for intranet penetration:
+You can use our public LinkSocks server at `l.zetx.tech` for intranet penetration:
 
 **Step 1: On machine A (inside the network you want to access)**
 ```bash
-linksocks provider -t any_token -u wss://linksocks.zetx.tech -c your_token
+linksocks provider -t any_token -u wss://l.zetx.tech -c your_token
 ```
 
 **Step 2: On machine B (where you want to access the network)**
 ```bash
-linksocks connector -t your_token -u wss://linksocks.zetx.tech -p 1080
+linksocks connector -t your_token -u wss://l.zetx.tech -p 1080
 ```
 
 **Test the connection:**
@@ -206,3 +206,71 @@ linksocks client -t token -u ws://localhost:8765 -h 0.0.0.0 -p 1080
 - Understand [Authentication](/guide/authentication) and security options
 - Explore [Python Library](/python/) for integration
 - Check [HTTP API](/guide/http-api) for dynamic management
+
+## Docker Compose
+
+You can run LinkSocks with Docker Compose on two different machines:
+
+- **Provider Side**: inside the network you want to access
+- **Connector Side**: where you want to use the SOCKS5 proxy
+
+Both sides connect to the public relay server `l.zetx.tech` by default.
+
+::: warning
+Use a strong connector token. Anyone who has the token can use your provider.
+:::
+
+### Provider Side
+
+Create a `compose.yaml` on the provider machine:
+
+```yaml
+services:
+  linksocks-provider:
+    image: jackzzs/linksocks:latest
+    environment:
+      LINKSOCKS_MODE: provider
+      LINKSOCKS_URL: l.zetx.tech
+      LINKSOCKS_TOKEN: your_relay_token
+      LINKSOCKS_CONNECTOR_TOKEN: your_connector_token
+    restart: unless-stopped
+```
+
+Start it:
+
+```bash
+docker compose up -d
+docker compose logs -f linksocks-provider
+```
+
+### Connector Side
+
+Create a `compose.yaml` on the connector machine:
+
+```yaml
+services:
+  linksocks-connector:
+    image: jackzzs/linksocks:latest
+    environment:
+      LINKSOCKS_MODE: connector
+      LINKSOCKS_URL: l.zetx.tech
+      LINKSOCKS_TOKEN: your_connector_token
+      LINKSOCKS_SOCKS_HOST: 0.0.0.0
+      LINKSOCKS_SOCKS_PORT: "1080"
+    ports:
+      - "127.0.0.1:1080:1080"
+    restart: unless-stopped
+```
+
+Start and test it:
+
+```bash
+docker compose up -d
+curl --socks5 127.0.0.1:1080 http://httpbin.org/ip
+```
+
+Stop:
+
+```bash
+docker compose down
+```

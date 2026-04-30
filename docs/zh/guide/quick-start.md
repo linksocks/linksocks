@@ -120,16 +120,16 @@ linksocks connector -t my_connector_token -u ws://localhost:8765 -p 1180
 
 ### 使用我们的公共服务器
 
-您可以使用我们在 `linksocks.zetx.tech` 的公共 LinkSocks 服务器进行内网穿透：
+您可以使用我们在 `l.zetx.tech` 的公共 LinkSocks 服务器进行内网穿透：
 
 **步骤 1：在机器 A 上（您要访问的网络内部）**
 ```bash
-linksocks provider -t any_token -u wss://linksocks.zetx.tech -c your_token
+linksocks provider -t any_token -u wss://l.zetx.tech -c your_token
 ```
 
 **步骤 2：在机器 B 上（您要访问网络的地方）**
 ```bash
-linksocks connector -t your_token -u wss://linksocks.zetx.tech -p 1080
+linksocks connector -t your_token -u wss://l.zetx.tech -p 1080
 ```
 
 **测试连接：**
@@ -206,3 +206,71 @@ linksocks client -t token -u ws://localhost:8765 -h 0.0.0.0 -p 1080
 - 理解[身份验证](/zh/guide/authentication)和安全选项
 - 探索[Python 库](/zh/python/)进行集成
 - 查看[HTTP API](/zh/guide/http-api)进行动态管理
+
+## Docker Compose
+
+您可以使用 Docker Compose 在两台不同的机器上运行 LinkSocks：
+
+- **Provider Side**：位于您要访问的网络内部
+- **Connector Side**：位于您希望使用 SOCKS5 代理的机器上
+
+默认情况下，两端都连接到公共中继服务器 `l.zetx.tech`。
+
+::: warning
+请使用足够复杂的 connector token。任何持有该 token 的人都可以连接并使用您的 provider。
+:::
+
+### Provider Side
+
+在 provider 机器上创建 `compose.yaml`：
+
+```yaml
+services:
+  linksocks-provider:
+    image: jackzzs/linksocks:latest
+    environment:
+      LINKSOCKS_MODE: provider
+      LINKSOCKS_URL: l.zetx.tech
+      LINKSOCKS_TOKEN: your_relay_token
+      LINKSOCKS_CONNECTOR_TOKEN: your_connector_token
+    restart: unless-stopped
+```
+
+启动：
+
+```bash
+docker compose up -d
+docker compose logs -f linksocks-provider
+```
+
+### Connector Side
+
+在 connector 机器上创建 `compose.yaml`：
+
+```yaml
+services:
+  linksocks-connector:
+    image: jackzzs/linksocks:latest
+    environment:
+      LINKSOCKS_MODE: connector
+      LINKSOCKS_URL: l.zetx.tech
+      LINKSOCKS_TOKEN: your_connector_token
+      LINKSOCKS_SOCKS_HOST: 0.0.0.0
+      LINKSOCKS_SOCKS_PORT: "1080"
+    ports:
+      - "127.0.0.1:1080:1080"
+    restart: unless-stopped
+```
+
+启动并测试：
+
+```bash
+docker compose up -d
+curl --socks5 127.0.0.1:1080 http://httpbin.org/ip
+```
+
+停止：
+
+```bash
+docker compose down
+```

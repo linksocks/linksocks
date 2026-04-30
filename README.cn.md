@@ -33,6 +33,8 @@ LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCK
 
 ## 快速开始
 
+Docker Compose 示例（Provider / Connector，默认 `l.zetx.tech`）：https://linksocks-docs.zetx.tech/zh/guide/quick-start#docker-compose
+
 ### 正向代理
 
 ```bash

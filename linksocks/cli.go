@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +36,7 @@ func NewCLI() *CLI {
 func (cli *CLI) Execute() error {
 	// Disable cobra's default error handling
 	cli.rootCmd.SilenceErrors = true
+	cli.applyEnvModeAlias()
 	return cli.rootCmd.Execute()
 }
 
@@ -112,17 +114,12 @@ func (cli *CLI) initCommands() {
 		cmd.Flags().String("direct-mode", string(DirectModeAuto), "Direct mode (relay-only|direct-only|auto)")
 		cmd.Flags().String("direct-discovery", string(DirectDiscoverySTUN), "Direct discovery method (stun|server|auto)")
 		cmd.Flags().String("direct-host-candidates", string(DirectHostCandidatesAuto), "Advertise host candidates (auto|never|always)")
-		cmd.Flags().StringArray("stun-server", nil, "STUN server address (host:port), can be specified multiple times; when omitted, built-in STUN pool is probed in parallel")
+		cmd.Flags().StringArray("stun-server", nil, "STUN server address (host:port), can be specified multiple times; when omitted, built-in STUN pool is probed")
 		cmd.Flags().String("direct-only-action", string(DirectOnlyActionExit), "Direct-only failure action (exit|refuse)")
 		cmd.Flags().Bool("direct-upnp", false, "Enable UPnP port mapping for direct mode (experimental)")
 		cmd.Flags().Duration("direct-upnp-lease", 30*time.Minute, "Lease duration for UPnP port mapping")
 		cmd.Flags().Bool("direct-upnp-keep", false, "Keep UPnP port mapping on exit")
 		cmd.Flags().Int("direct-upnp-external-port", 0, "External port for UPnP mapping (default: same as internal port)")
-
-		// Update usage to show environment variables
-		cmd.Flags().Lookup("token").Usage += " (env: LINKSOCKS_TOKEN)"
-		cmd.Flags().Lookup("connector-token").Usage += " (env: LINKSOCKS_CONNECTOR_TOKEN)"
-		cmd.Flags().Lookup("socks-password").Usage += " (env: LINKSOCKS_SOCKS_PASSWORD)"
 	}
 
 	// Add flags to client commands
@@ -155,11 +152,6 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().Bool("direct-rendezvous-udp", false, "Enable server-side UDP rendezvous (experimental)")
 	serverCmd.Flags().String("direct-rendezvous-host", "", "UDP rendezvous listen host (default: ws-host)")
 	serverCmd.Flags().Int("direct-rendezvous-port", 0, "UDP rendezvous listen port (default: ws-port)")
-
-	// Update usage to show environment variables
-	serverCmd.Flags().Lookup("token").Usage += " (env: LINKSOCKS_TOKEN)"
-	serverCmd.Flags().Lookup("connector-token").Usage += " (env: LINKSOCKS_CONNECTOR_TOKEN)"
-	serverCmd.Flags().Lookup("socks-password").Usage += " (env: LINKSOCKS_SOCKS_PASSWORD)"
 	serverCmd.Flags().SortFlags = false
 
 	cli.configureCommandHelp(clientCmd, cliHelpConfig{
@@ -315,23 +307,29 @@ func parseProxy(proxyURL string) (address, username, password string, proxyType 
 
 func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	// Get flags and environment variables
+	var err error
+
 	token, _ := cmd.Flags().GetString("token")
-	if envToken := os.Getenv("LINKSOCKS_TOKEN"); envToken != "" && token == "" {
-		token = envToken
-	}
 	connectorToken, _ := cmd.Flags().GetString("connector-token")
-	if envConnectorToken := os.Getenv("LINKSOCKS_CONNECTOR_TOKEN"); envConnectorToken != "" && connectorToken == "" {
-		connectorToken = envConnectorToken
-	}
-	socksPassword, _ := cmd.Flags().GetString("socks-password")
-	if envSocksPassword := os.Getenv("LINKSOCKS_SOCKS_PASSWORD"); envSocksPassword != "" && socksPassword == "" {
-		socksPassword = envSocksPassword
-	}
+	token = resolveStringFlagEnv(cmd, "token", "LINKSOCKS_TOKEN", token)
+	connectorToken = resolveStringFlagEnv(cmd, "connector-token", "LINKSOCKS_CONNECTOR_TOKEN", connectorToken)
+
 	url, _ := cmd.Flags().GetString("url")
+	url = resolveStringFlagEnv(cmd, "url", "LINKSOCKS_URL", url)
+
 	reverse, _ := cmd.Flags().GetBool("reverse")
 	socksHost, _ := cmd.Flags().GetString("socks-host")
 	socksPort, _ := cmd.Flags().GetInt("socks-port")
+	socksHost, socksPort, err = resolveAddressFlagEnv(cmd, "socks-host", "LINKSOCKS_SOCKS_HOST", socksHost, "socks-port", "LINKSOCKS_SOCKS_PORT", socksPort)
+	if err != nil {
+		return err
+	}
+
 	socksUsername, _ := cmd.Flags().GetString("socks-username")
+	socksPassword, _ := cmd.Flags().GetString("socks-password")
+	socksUsername = resolveStringFlagEnv(cmd, "socks-username", "LINKSOCKS_SOCKS_USERNAME", socksUsername)
+	socksPassword = resolveStringFlagEnv(cmd, "socks-password", "LINKSOCKS_SOCKS_PASSWORD", socksPassword)
+
 	socksNoWait, _ := cmd.Flags().GetBool("socks-no-wait")
 	noReconnect, _ := cmd.Flags().GetBool("no-reconnect")
 	debug, _ := cmd.Flags().GetCount("debug")
@@ -339,7 +337,12 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 
 	// Get new flags
 	upstreamProxy, _ := cmd.Flags().GetString("upstream-proxy")
+	upstreamProxy = resolveStringFlagEnv(cmd, "upstream-proxy", "LINKSOCKS_UPSTREAM_PROXY", upstreamProxy)
 	fastOpen, _ := cmd.Flags().GetBool("fast-open")
+	fastOpen, err = resolveBoolFlagEnv(cmd, "fast-open", "LINKSOCKS_FASTOPEN", fastOpen)
+	if err != nil {
+		return err
+	}
 	noEnvProxy, _ := cmd.Flags().GetBool("no-env-proxy")
 
 	directModeRaw, _ := cmd.Flags().GetString("direct-mode")
@@ -468,32 +471,51 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 
 func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 	// Get flags and environment variables
+	var err error
+
 	token, _ := cmd.Flags().GetString("token")
-	if envToken := os.Getenv("LINKSOCKS_TOKEN"); envToken != "" && token == "" {
-		token = envToken
-	}
 	connectorToken, _ := cmd.Flags().GetString("connector-token")
-	if envConnectorToken := os.Getenv("LINKSOCKS_CONNECTOR_TOKEN"); envConnectorToken != "" && connectorToken == "" {
-		connectorToken = envConnectorToken
-	}
-	socksPassword, _ := cmd.Flags().GetString("socks-password")
-	if envSocksPassword := os.Getenv("LINKSOCKS_SOCKS_PASSWORD"); envSocksPassword != "" && socksPassword == "" {
-		socksPassword = envSocksPassword
-	}
+	token = resolveStringFlagEnv(cmd, "token", "LINKSOCKS_TOKEN", token)
+	connectorToken = resolveStringFlagEnv(cmd, "connector-token", "LINKSOCKS_CONNECTOR_TOKEN", connectorToken)
+
 	wsHost, _ := cmd.Flags().GetString("ws-host")
 	wsPort, _ := cmd.Flags().GetInt("ws-port")
+	wsHost, wsPort, err = resolveAddressFlagEnv(cmd, "ws-host", "LINKSOCKS_WEBSOCKET_HOST", wsHost, "ws-port", "LINKSOCKS_WEBSOCKET_PORT", wsPort)
+	if err != nil {
+		return err
+	}
+
 	reverse, _ := cmd.Flags().GetBool("reverse")
 	socksHost, _ := cmd.Flags().GetString("socks-host")
 	socksPort, _ := cmd.Flags().GetInt("socks-port")
+	socksHost, socksPort, err = resolveAddressFlagEnv(cmd, "socks-host", "LINKSOCKS_SOCKS_HOST", socksHost, "socks-port", "LINKSOCKS_SOCKS_PORT", socksPort)
+	if err != nil {
+		return err
+	}
+
 	socksUsername, _ := cmd.Flags().GetString("socks-username")
+	socksPassword, _ := cmd.Flags().GetString("socks-password")
+	socksUsername = resolveStringFlagEnv(cmd, "socks-username", "LINKSOCKS_SOCKS_USERNAME", socksUsername)
+	socksPassword = resolveStringFlagEnv(cmd, "socks-password", "LINKSOCKS_SOCKS_PASSWORD", socksPassword)
+
 	debug, _ := cmd.Flags().GetCount("debug")
 	apiKey, _ := cmd.Flags().GetString("api-key")
+	apiKey = resolveStringFlagEnv(cmd, "api-key", "LINKSOCKS_API_KEY", apiKey)
 	connectorAutonomy, _ := cmd.Flags().GetBool("connector-autonomy")
+	connectorAutonomy, err = resolveBoolFlagEnv(cmd, "connector-autonomy", "LINKSOCKS_CONNECTOR_AUTONOMY", connectorAutonomy)
+	if err != nil {
+		return err
+	}
 	bufferSize, _ := cmd.Flags().GetInt("buffer-size")
 
 	// Get new flags
 	upstreamProxy, _ := cmd.Flags().GetString("upstream-proxy")
+	upstreamProxy = resolveStringFlagEnv(cmd, "upstream-proxy", "LINKSOCKS_UPSTREAM_PROXY", upstreamProxy)
 	fastOpen, _ := cmd.Flags().GetBool("fast-open")
+	fastOpen, err = resolveBoolFlagEnv(cmd, "fast-open", "LINKSOCKS_FASTOPEN", fastOpen)
+	if err != nil {
+		return err
+	}
 	connectorWaitProvider, _ := cmd.Flags().GetDuration("connector-wait-provider")
 	directEnable, _ := cmd.Flags().GetBool("direct-enable")
 	directRendezvousUDP, _ := cmd.Flags().GetBool("direct-rendezvous-udp")
@@ -641,6 +663,96 @@ func (cli *CLI) initLogging(debug int) zerolog.Logger {
 
 	// Return configured logger
 	return zerolog.New(output).With().Timestamp().Logger()
+}
+
+func (cli *CLI) applyEnvModeAlias() {
+	os.Args = resolveEnvModeCommand(os.Args, os.Getenv("LINKSOCKS_MODE"))
+}
+
+func resolveEnvModeCommand(args []string, mode string) []string {
+	if len(args) > 1 && !strings.HasPrefix(args[1], "-") {
+		return args
+	}
+
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	if mode == "" {
+		return args
+	}
+
+	var command string
+	switch mode {
+	case "client", "forward":
+		command = "client"
+	case "connector":
+		command = "connector"
+	case "provider", "reverse":
+		command = "provider"
+	case "server":
+		command = "server"
+	default:
+		return args
+	}
+
+	return append([]string{args[0], command}, args[1:]...)
+}
+
+func resolveStringFlagEnv(cmd *cobra.Command, flagName, envName, current string) string {
+	if cmd.Flags().Changed(flagName) {
+		return current
+	}
+
+	envValue := strings.TrimSpace(os.Getenv(envName))
+	if envValue == "" {
+		return current
+	}
+
+	return envValue
+}
+
+func resolveIntFlagEnv(cmd *cobra.Command, flagName, envName string, current int) (int, error) {
+	if cmd.Flags().Changed(flagName) {
+		return current, nil
+	}
+
+	envValue := strings.TrimSpace(os.Getenv(envName))
+	if envValue == "" {
+		return current, nil
+	}
+
+	parsedValue, err := strconv.Atoi(envValue)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %q", envName, envValue)
+	}
+
+	return parsedValue, nil
+}
+
+func resolveBoolFlagEnv(cmd *cobra.Command, flagName, envName string, current bool) (bool, error) {
+	if cmd.Flags().Changed(flagName) {
+		return current, nil
+	}
+
+	envValue := strings.TrimSpace(os.Getenv(envName))
+	if envValue == "" {
+		return current, nil
+	}
+
+	parsedValue, err := strconv.ParseBool(envValue)
+	if err != nil {
+		return false, fmt.Errorf("invalid %s: %q", envName, envValue)
+	}
+
+	return parsedValue, nil
+}
+
+func resolveAddressFlagEnv(cmd *cobra.Command, hostFlag, hostEnv, host string, portFlag, portEnv string, port int) (string, int, error) {
+	host = resolveStringFlagEnv(cmd, hostFlag, hostEnv, host)
+	port, err := resolveIntFlagEnv(cmd, portFlag, portEnv, port)
+	if err != nil {
+		return "", 0, err
+	}
+
+	return host, port, nil
 }
 
 // Add new runProvider function that forces the reverse flag to true
