@@ -38,8 +38,6 @@ As great examples, see these projects: [LinkTerm](https://github.com/linksocks/l
 
 ## Quick Start
 
-Docker Compose examples (Provider / Connector with `l.zetx.tech`): https://linksocks.github.io/guide/quick-start#docker-compose
-
 ### Forward Proxy
 
 ```bash
