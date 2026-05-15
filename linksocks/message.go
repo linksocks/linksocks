@@ -299,9 +299,10 @@ func (m DirectCapabilitiesMessage) GetType() string {
 }
 
 type DirectRendezvousMessage struct {
-	SessionID  uuid.UUID         `json:"session_id"`
-	Candidates []DirectCandidate `json:"candidates,omitempty"`
-	PublicKey  []byte            `json:"public_key,omitempty"`
+	SessionID       uuid.UUID         `json:"session_id"`
+	RemoteSessionID uuid.UUID         `json:"remote_session_id,omitempty"`
+	Candidates      []DirectCandidate `json:"candidates,omitempty"`
+	PublicKey       []byte            `json:"public_key,omitempty"`
 }
 
 func (m DirectRendezvousMessage) GetType() string {

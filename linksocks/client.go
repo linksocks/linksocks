@@ -1,6 +1,7 @@
 package linksocks
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -1162,7 +1163,7 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 			c.log.Debug().Err(err).Msg("Failed to send direct capabilities")
 		}
 		for _, sid := range pending {
-			rendezvous := DirectRendezvousMessage{SessionID: sid, Candidates: cands, PublicKey: localPub}
+			rendezvous := DirectRendezvousMessage{SessionID: sid, RemoteSessionID: localSession, Candidates: cands, PublicKey: localPub}
 			_ = c.sendDirectMessage(rendezvous)
 		}
 		c.directNotify()
@@ -1746,6 +1747,63 @@ func (c *LinkSocksClient) directResetUserLog() {
 	c.directUserLogState = ""
 	c.directUserLogReason = ""
 	c.directMu.Unlock()
+}
+
+func (c *LinkSocksClient) directResetPeerStateLocked() {
+	c.directRemoteSessionID = uuid.Nil
+	c.directRemoteCandidates = nil
+	c.directRemotePublicKey = nil
+	c.directProbePeer = nil
+	c.directPairSessionID = uuid.Nil
+	c.directPairSessionKey = nil
+	c.directPairKeyReady = false
+	c.directPairSessionSet = false
+	c.directPendingRendezvous = make(map[uuid.UUID]struct{})
+	c.directProbing = false
+	c.directReady = false
+	c.directProbeBackoffSess = uuid.Nil
+	c.directProbeFailCount = 0
+	c.directProbeNext = time.Time{}
+	c.directProbeRetryArmed = false
+	c.directProbeLastFailSess = uuid.Nil
+	c.directProbeLastFailAt = time.Time{}
+	c.directProbeLastFailReason = ""
+	c.directAwaitHostSess = uuid.Nil
+	c.directAwaitHostUntil = time.Time{}
+	c.directAwaitHostArmed = false
+	c.directPeerLastStatus = ""
+	c.directPeerLastStatusSession = uuid.Nil
+	c.directPeerLastStatusAt = time.Time{}
+	c.directPeerReady = false
+	c.directPeerStatusSession = uuid.Nil
+	c.directDegradedUntil = time.Time{}
+	c.directRefuseSocks = false
+}
+
+func (c *LinkSocksClient) directResetPeerTransport() {
+	c.ForceCloseDirectQUIC()
+	c.directQUICMu.Lock()
+	c.directQUICReadyCh = make(chan struct{})
+	c.directQUICMu.Unlock()
+	c.directResetUserLog()
+}
+
+func (c *LinkSocksClient) directShouldApplyStatusSessionLocked(session uuid.UUID) bool {
+	if session == uuid.Nil {
+		return true
+	}
+	if c.directRemoteSessionID != uuid.Nil {
+		expected := minUUID(c.directLocalSessionID, c.directRemoteSessionID)
+		if expected != session {
+			return false
+		}
+	}
+	if !c.directPairSessionSet || c.directPairSessionID == uuid.Nil {
+		c.directPairSessionID = session
+		c.directPairSessionSet = true
+		return true
+	}
+	return c.directPairSessionID == session
 }
 
 func (c *LinkSocksClient) reportError(err error) {
@@ -2357,7 +2415,17 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 
 			switch m := msg.(type) {
 			case DirectCapabilitiesMessage:
+				peerChanged := false
 				c.directMu.Lock()
+				if c.directRemoteSessionID != uuid.Nil && c.directRemoteSessionID != m.SessionID {
+					peerChanged = true
+				}
+				if !peerChanged && len(c.directRemotePublicKey) > 0 && len(m.PublicKey) > 0 && !bytes.Equal(c.directRemotePublicKey, m.PublicKey) {
+					peerChanged = true
+				}
+				if peerChanged {
+					c.directResetPeerStateLocked()
+				}
 				c.directRemoteSessionID = m.SessionID
 				c.directRemoteCandidates = append([]DirectCandidate(nil), m.Candidates...)
 				if len(m.PublicKey) > 0 {
@@ -2366,28 +2434,48 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 				localReady := c.directLocalReady
 				localCandidates := append([]DirectCandidate(nil), c.directLocalCandidates...)
 				localPub := append([]byte(nil), c.directLocalPublicKey...)
+				localSession := c.directLocalSessionID
 				if !localReady {
 					c.directPendingRendezvous[m.SessionID] = struct{}{}
 				}
 				c.directMu.Unlock()
+				if peerChanged {
+					c.directResetPeerTransport()
+				}
 
 				c.log.Debug().Str("session_id", m.SessionID.String()).Int("candidates", len(m.Candidates)).Msg("Received direct capabilities")
 				if localReady {
-					rendezvous := DirectRendezvousMessage{SessionID: m.SessionID, Candidates: localCandidates, PublicKey: localPub}
+					rendezvous := DirectRendezvousMessage{SessionID: m.SessionID, RemoteSessionID: localSession, Candidates: localCandidates, PublicKey: localPub}
 					c.relay.logMessage(rendezvous, "send", ws.Label())
 					_ = ws.WriteMessage(rendezvous)
 				}
 				c.directNotify()
 
 			case DirectRendezvousMessage:
+				peerChanged := false
 				c.directMu.Lock()
 				if m.SessionID == c.directLocalSessionID {
+					if m.RemoteSessionID != uuid.Nil && c.directRemoteSessionID != uuid.Nil && c.directRemoteSessionID != m.RemoteSessionID {
+						peerChanged = true
+					}
+					if !peerChanged && len(c.directRemotePublicKey) > 0 && len(m.PublicKey) > 0 && !bytes.Equal(c.directRemotePublicKey, m.PublicKey) {
+						peerChanged = true
+					}
+					if peerChanged {
+						c.directResetPeerStateLocked()
+					}
+					if m.RemoteSessionID != uuid.Nil {
+						c.directRemoteSessionID = m.RemoteSessionID
+					}
 					c.directRemoteCandidates = append([]DirectCandidate(nil), m.Candidates...)
 					if len(m.PublicKey) > 0 {
 						c.directRemotePublicKey = append([]byte(nil), m.PublicKey...)
 					}
 				}
 				c.directMu.Unlock()
+				if peerChanged {
+					c.directResetPeerTransport()
+				}
 				c.log.Debug().Str("session_id", m.SessionID.String()).Int("candidates", len(m.Candidates)).Msg("Received direct rendezvous")
 				c.directNotify()
 
@@ -2403,20 +2491,21 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 				e.Msg("Received direct status")
 
 				// DirectStatus session_id is the pair session id. Use it to seed the local
-				// pairing state in case we missed the peer's DirectCapabilities message.
+				// pairing state only when it matches the current peer identity/generation.
 				if m.SessionID != uuid.Nil {
+					applyStatus := true
+					currentSession := uuid.Nil
 					c.directMu.Lock()
-					if !c.directPairSessionSet {
-						c.directPairSessionID = m.SessionID
-						c.directPairSessionSet = true
-					} else if c.directPairSessionID != uuid.Nil && c.directPairSessionID != m.SessionID {
-						c.log.Debug().
-							Str("prev_session_id", c.directPairSessionID.String()).
-							Str("new_session_id", m.SessionID.String()).
-							Msg("Direct pair session id changed")
-						c.directPairSessionID = m.SessionID
-					}
+					applyStatus = c.directShouldApplyStatusSessionLocked(m.SessionID)
+					currentSession = c.directPairSessionID
 					c.directMu.Unlock()
+					if !applyStatus {
+						c.log.Debug().
+							Str("current_session_id", currentSession.String()).
+							Str("stale_session_id", m.SessionID.String()).
+							Msg("Ignoring stale direct status session id")
+						continue
+					}
 				}
 
 				now := time.Now()
