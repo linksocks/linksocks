@@ -103,11 +103,11 @@ func TestDirectQUICDataPlane_OpenAndServe_TCPConnectResponse(t *testing.T) {
 
 	connBCh := make(chan error, 1)
 	go func() {
-		_, err := mgrB.Connect(ctx, nil)
+		_, err := mgrB.Connect(ctx, nil, true)
 		connBCh <- err
 	}()
 
-	connA, err := mgrA.Connect(ctx, []linksocks.DirectCandidate{{Addr: addrB.IP.String(), Port: addrB.Port, Kind: "host"}})
+	connA, err := mgrA.Connect(ctx, []linksocks.DirectCandidate{{Addr: addrB.IP.String(), Port: addrB.Port, Kind: "host"}}, false)
 	if err != nil {
 		t.Fatalf("Connect A->B: %v", err)
 	}
@@ -215,11 +215,11 @@ func TestDirectQUICDataPlane_DataMessage_RoundTrip(t *testing.T) {
 
 	connBCh := make(chan error, 1)
 	go func() {
-		_, err := mgrB.Connect(ctx, nil)
+		_, err := mgrB.Connect(ctx, nil, true)
 		connBCh <- err
 	}()
 
-	connA, err := mgrA.Connect(ctx, []linksocks.DirectCandidate{{Addr: addrB.IP.String(), Port: addrB.Port, Kind: "host"}})
+	connA, err := mgrA.Connect(ctx, []linksocks.DirectCandidate{{Addr: addrB.IP.String(), Port: addrB.Port, Kind: "host"}}, false)
 	if err != nil {
 		t.Fatalf("Connect A->B: %v", err)
 	}
@@ -319,11 +319,11 @@ func TestDirectQUICDataPlane_OpenChannel_DuplicateChannelID(t *testing.T) {
 
 	connBCh := make(chan error, 1)
 	go func() {
-		_, err := mgrB.Connect(ctx, nil)
+		_, err := mgrB.Connect(ctx, nil, true)
 		connBCh <- err
 	}()
 
-	connA, err := mgrA.Connect(ctx, []linksocks.DirectCandidate{{Addr: addrB.IP.String(), Port: addrB.Port, Kind: "host"}})
+	connA, err := mgrA.Connect(ctx, []linksocks.DirectCandidate{{Addr: addrB.IP.String(), Port: addrB.Port, Kind: "host"}}, false)
 	if err != nil {
 		t.Fatalf("Connect A->B: %v", err)
 	}

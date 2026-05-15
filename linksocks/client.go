@@ -730,7 +730,6 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 		peerReady := c.directPeerReady && c.directPeerStatusSession == pairSession
 		c.directMu.Unlock()
 
-		dialer := localSession == pairSession
 		if degraded || !pairSet || !pairKeyReady || pairSession == uuid.Nil || len(pairKey) == 0 {
 			time.Sleep(backoff)
 			continue
@@ -740,17 +739,10 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 			time.Sleep(backoff)
 			continue
 		}
-		// The dialer side needs at least one dial target; the accept side can
-		// proceed without remote candidates.
-		if dialer {
-			if !peerReady {
-				time.Sleep(backoff)
-				continue
-			}
-			if probePeer == nil && len(rcands) == 0 {
-				time.Sleep(backoff)
-				continue
-			}
+		// Both sides need at least one dial target for bidirectional traversal.
+		if probePeer == nil && len(rcands) == 0 {
+			time.Sleep(backoff)
+			continue
 		}
 
 		c.directQUICMu.Lock()
@@ -792,14 +784,14 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 			continue
 		}
 
-		// Avoid simultaneous dial creating two valid QUIC connections where each peer
-		// picks a different "winner" and then no one serves streams on the other one.
-		//
-		// Use the smaller per-peer session id as the dialer role (it equals pairSession).
-		// The other side only listens and accepts.
+		// Both sides dial simultaneously for bidirectional NAT traversal.
+		// preferAccept ensures both peers agree on the same QUIC connection:
+		// the peer with the smaller session id prefers the dialed (client) side,
+		// the peer with the larger session id prefers the accepted (server) side.
+		preferAccept := localSession != pairSession
 		dialCandidates := directSelectQUICDialCandidates(localSession, pairSession, probePeer, rcands)
 		connectCtx, cancelConnect := context.WithTimeout(ctx, 12*time.Second)
-		conn, err := mgr.Connect(connectCtx, dialCandidates)
+		conn, err := mgr.Connect(connectCtx, dialCandidates, preferAccept)
 		cancelConnect()
 		if err != nil {
 			_ = mgr.Close()
@@ -876,7 +868,7 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 			peerAddr = conn.RemoteAddr().String()
 		}
 		role := "listener"
-		if dialer {
+		if !preferAccept {
 			role = "dialer"
 		}
 		c.directMu.Lock()
@@ -905,9 +897,7 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 }
 
 func directSelectQUICDialCandidates(localSession uuid.UUID, pairSession uuid.UUID, probePeer *net.UDPAddr, rcands []DirectCandidate) []DirectCandidate {
-	if localSession != pairSession {
-		return nil
-	}
+	// Both sides always dial to handle asymmetric NAT traversal.
 	if probePeer != nil && probePeer.IP != nil && probePeer.Port > 0 {
 		return []DirectCandidate{{Addr: probePeer.IP.String(), Port: probePeer.Port, Kind: "probe"}}
 	}

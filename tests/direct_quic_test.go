@@ -39,7 +39,7 @@ func TestDirectQUICManager_Connect_Loopback(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 
-	c, err := mgr.Connect(ctx, []linksocks.DirectCandidate{{Addr: udpAddr.IP.String(), Port: udpAddr.Port, Kind: "srflx"}})
+	c, err := mgr.Connect(ctx, []linksocks.DirectCandidate{{Addr: udpAddr.IP.String(), Port: udpAddr.Port, Kind: "srflx"}}, false)
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestDirectQUICManager_Connect_InvalidKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	_, err = mgr.Connect(ctx, nil)
+	_, err = mgr.Connect(ctx, nil, false)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
