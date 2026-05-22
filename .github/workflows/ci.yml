@@ -40,19 +40,7 @@ jobs:
 
       - name: Run tests
         shell: bash
-        run: |
-          for attempt in 1 2 3; do
-            echo "=== Test attempt $attempt ==="
-            if go test -v -race -timeout 5m -coverprofile="coverage.txt" -covermode=atomic -coverpkg="./linksocks" "./linksocks" "./tests"; then
-              exit 0
-            fi
-            if [ $attempt -lt 3 ]; then
-              echo "Tests failed on attempt $attempt, retrying..."
-              sleep 2
-            fi
-          done
-          echo "Tests failed after 3 attempts"
-          exit 1
+        run: go test -v -race -coverprofile="coverage.txt" -covermode=atomic -coverpkg="./linksocks" "./linksocks" "./tests"
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
