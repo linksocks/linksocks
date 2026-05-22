@@ -21,8 +21,6 @@ jobs:
         include:
           - os: ubuntu-latest
             go-version: '1.24'
-          - os: ubuntu-latest
-            go-version: '1.24'
           - os: macos-latest
             go-version: '1.24'
           - os: windows-latest
@@ -41,10 +39,11 @@ jobs:
         run: go mod download
 
       - name: Run tests
+        shell: bash
         run: |
           for attempt in 1 2 3; do
             echo "=== Test attempt $attempt ==="
-            if go test -v -race -coverprofile="coverage.txt" -covermode=atomic -coverpkg="./linksocks" "./linksocks" "./tests"; then
+            if go test -v -race -timeout 5m -coverprofile="coverage.txt" -covermode=atomic -coverpkg="./linksocks" "./linksocks" "./tests"; then
               exit 0
             fi
             if [ $attempt -lt 3 ]; then
