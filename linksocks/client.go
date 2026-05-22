@@ -24,6 +24,15 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// expBackoff advances d by factor, capped at max.
+func expBackoff(d time.Duration, factor float64, max time.Duration) time.Duration {
+	d = time.Duration(float64(d) * factor)
+	if d > max {
+		d = max
+	}
+	return d
+}
+
 func init() {
 	// quic-go attempts to increase UDP socket buffer sizes for better throughput.
 	// On systems with low rmem/wmem limits or without CAP_NET_ADMIN, it prints a
@@ -137,6 +146,7 @@ type LinkSocksClient struct {
 	directPeerReady             bool
 	directPeerStatusSession     uuid.UUID
 	directDegradedUntil         time.Time
+	directReadBackoff           time.Duration
 	directRefuseSocks           bool
 
 	directQUICStartOnce sync.Once
@@ -245,7 +255,19 @@ func (c *LinkSocksClient) directMarkDegraded(now time.Time, d time.Duration, rea
 	c.directMu.Lock()
 	c.directDegradedUntil = now.Add(d)
 	sid := c.directPairSessionID
+	remoteSess := c.directRemoteSessionID
 	c.directMu.Unlock()
+	logSess := sid
+	if remoteSess != uuid.Nil {
+		logSess = remoteSess
+	}
+	if c.directUserLogShouldEmit(logSess, "degraded", reason) {
+		e := c.log.Info().Str("session_id", sid.String()).Str("reason", reason).Dur("cooldown", d)
+		if remoteSess != uuid.Nil {
+			e = e.Str("remote_session_id", remoteSess.String())
+		}
+		e.Msg("Direct connectivity degraded; falling back to relay")
+	}
 	_ = c.sendDirectMessage(DirectStatusMessage{SessionID: sid, Status: "degraded", Metrics: DirectMetrics{Reason: reason}})
 }
 
@@ -273,6 +295,13 @@ func (c *LinkSocksClient) directMarkRecovered(now time.Time) {
 // It marks direct transport as degraded for the provided duration.
 func (c *LinkSocksClient) ForceDirectDegraded(d time.Duration, reason string) {
 	c.directMarkDegraded(time.Now(), d, reason)
+}
+
+// ForceDirectReset closes the direct QUIC dataplane and resets the peer state
+// so the probe can re-trigger. Useful for testing the disconnect → recovery cycle.
+func (c *LinkSocksClient) ForceDirectReset() {
+	c.directResetPeerTransport()
+	c.directNotify()
 }
 
 // ConnectedChan returns the current connection-ready signal channel.
@@ -708,9 +737,11 @@ func (c *LinkSocksClient) startDirectQUICAgent(ctx context.Context) {
 }
 
 func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
-	// Retry loop with backoff. This is intentionally conservative to avoid
-	// hammering the UDP socket and to tolerate peers coming online later.
-	backoff := 500 * time.Millisecond
+	const (
+		quicBackoffMax    = 10 * time.Minute
+		quicBackoffFactor = 1.5
+	)
+	quicBackoff := c.reconnectDelay
 	for {
 		select {
 		case <-ctx.Done():
@@ -731,39 +762,38 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 		peerReady := c.directPeerReady && c.directPeerStatusSession == pairSession
 		c.directMu.Unlock()
 
-		if degraded || !pairSet || !pairKeyReady || pairSession == uuid.Nil || len(pairKey) == 0 {
-			time.Sleep(backoff)
-			continue
-		}
-		// Start QUIC once either side indicates direct is possible.
-		if !ready && !peerReady {
-			time.Sleep(backoff)
-			continue
-		}
-		// Both sides need at least one dial target for bidirectional traversal.
-		if probePeer == nil && len(rcands) == 0 {
-			time.Sleep(backoff)
-			continue
-		}
-
 		c.directQUICMu.Lock()
 		plane := c.directQUICPlane
 		mgr := c.directQUICManager
 		c.directQUICMu.Unlock()
-		// If we have a stale QUIC transport registered on the shared UDP socket,
-		// quic-go will panic with "connection already exists" when a new Transport
-		// attempts to Listen on the same local address.
-		//
-		// Close and clear inactive state before reconnecting.
+
 		if mgr != nil && mgr.Active() == nil {
 			c.ForceCloseDirectQUIC()
 			plane = nil
 			mgr = nil
 		}
 		if plane != nil && mgr != nil && mgr.Active() != nil {
-			// Already ready.
+			// Keep using an established direct path even if a peer temporarily reports degraded.
 			c.directMarkRecovered(time.Now())
 			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		if degraded || !pairSet || !pairKeyReady || pairSession == uuid.Nil || len(pairKey) == 0 {
+			time.Sleep(quicBackoff)
+			quicBackoff = expBackoff(quicBackoff, quicBackoffFactor, quicBackoffMax)
+			continue
+		}
+		// Start QUIC once either side indicates direct is possible.
+		if !ready && !peerReady {
+			time.Sleep(quicBackoff)
+			quicBackoff = expBackoff(quicBackoff, quicBackoffFactor, quicBackoffMax)
+			continue
+		}
+		// Both sides need at least one dial target for bidirectional traversal.
+		if probePeer == nil && len(rcands) == 0 {
+			time.Sleep(quicBackoff)
+			quicBackoff = expBackoff(quicBackoff, quicBackoffFactor, quicBackoffMax)
 			continue
 		}
 
@@ -773,15 +803,17 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 		udpConn := c.directProbeConn
 		c.directMu.Unlock()
 		if udpConn == nil {
-			time.Sleep(backoff)
+			time.Sleep(quicBackoff)
+			quicBackoff = expBackoff(quicBackoff, quicBackoffFactor, quicBackoffMax)
 			continue
 		}
 
 		mgr, err := NewDirectQUICManager(udpConn, pairSession, pairKey, c.log)
 		if err != nil {
-			c.directMarkDegraded(time.Now(), 10*time.Second, fmt.Sprintf("quic manager init: %v", err))
-			c.log.Debug().Err(err).Msg("Direct QUIC manager init failed")
-			time.Sleep(backoff)
+			c.directMarkDegraded(time.Now(), quicBackoff, fmt.Sprintf("quic manager init: %v", err))
+			c.log.Debug().Err(err).Dur("backoff", quicBackoff).Msg("Direct QUIC manager init failed")
+			time.Sleep(quicBackoff)
+			quicBackoff = expBackoff(quicBackoff, quicBackoffFactor, quicBackoffMax)
 			continue
 		}
 
@@ -796,18 +828,20 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 		cancelConnect()
 		if err != nil {
 			_ = mgr.Close()
-			c.directMarkDegraded(time.Now(), 15*time.Second, fmt.Sprintf("quic connect: %v", err))
-			c.log.Debug().Err(err).Msg("Direct QUIC connect failed")
-			time.Sleep(backoff)
+			c.directMarkDegraded(time.Now(), quicBackoff, fmt.Sprintf("quic connect: %v", err))
+			c.log.Debug().Err(err).Dur("backoff", quicBackoff).Msg("Direct QUIC connect failed")
+			time.Sleep(quicBackoff)
+			quicBackoff = expBackoff(quicBackoff, quicBackoffFactor, quicBackoffMax)
 			continue
 		}
 
 		plane, err = NewDirectQUICDataPlane(conn, c.log)
 		if err != nil {
 			_ = mgr.Close()
-			c.directMarkDegraded(time.Now(), 15*time.Second, fmt.Sprintf("quic dataplane init: %v", err))
-			c.log.Debug().Err(err).Msg("Direct QUIC dataplane init failed")
-			time.Sleep(backoff)
+			c.directMarkDegraded(time.Now(), quicBackoff, fmt.Sprintf("quic dataplane init: %v", err))
+			c.log.Debug().Err(err).Dur("backoff", quicBackoff).Msg("Direct QUIC dataplane init failed")
+			time.Sleep(quicBackoff)
+			quicBackoff = expBackoff(quicBackoff, quicBackoffFactor, quicBackoffMax)
 			continue
 		}
 
@@ -826,6 +860,11 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 			}()
 			return nil
 		})
+
+		quicBackoff = c.reconnectDelay
+		c.directMu.Lock()
+		c.directReadBackoff = 0
+		c.directMu.Unlock()
 
 		c.directQUICMu.Lock()
 		c.directQUICManager = mgr
@@ -892,8 +931,6 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 			c.log.Debug().Msg("Direct QUIC dataplane ready")
 		}
 		c.directMarkRecovered(time.Now())
-		// Slow down once established.
-		backoff = 2 * time.Second
 	}
 }
 
@@ -1777,6 +1814,7 @@ func (c *LinkSocksClient) directResetPeerStateLocked() {
 	c.directPeerReady = false
 	c.directPeerStatusSession = uuid.Nil
 	c.directDegradedUntil = time.Time{}
+	c.directReadBackoff = 0
 	c.directRefuseSocks = false
 }
 
@@ -2051,6 +2089,7 @@ func (c *LinkSocksClient) startForward(ctx context.Context) error {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
+			relayBackoff := c.reconnectDelay
 			for {
 				select {
 				case <-ctx.Done():
@@ -2063,9 +2102,12 @@ func (c *LinkSocksClient) startForward(ctx context.Context) error {
 							return
 						}
 						c.batchLogger.log("retry_error", c.threads, func(count, total int) {
-							c.log.Warn().Err(err).Msg("Connection error, retrying..." + formatBatchProgressSuffix(count, total))
+							c.log.Warn().Err(err).Msgf("Connection error, waiting %s before retrying%s", relayBackoff, formatBatchProgressSuffix(count, total))
 						})
-						time.Sleep(c.reconnectDelay)
+						time.Sleep(relayBackoff)
+						relayBackoff = expBackoff(relayBackoff, 1.5, 10*time.Minute)
+					} else {
+						relayBackoff = c.reconnectDelay
 					}
 				}
 			}
@@ -2365,6 +2407,7 @@ func (c *LinkSocksClient) startReverse(ctx context.Context) error {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
+			relayBackoff := c.reconnectDelay
 			for {
 				select {
 				case <-ctx.Done():
@@ -2377,9 +2420,12 @@ func (c *LinkSocksClient) startReverse(ctx context.Context) error {
 							return
 						}
 						c.batchLogger.log("retry_error", c.threads, func(count, total int) {
-							c.log.Warn().Err(err).Msg("Connection error, retrying..." + formatBatchProgressSuffix(count, total))
+							c.log.Warn().Err(err).Msgf("Connection error, waiting %s before retrying%s", relayBackoff, formatBatchProgressSuffix(count, total))
 						})
-						time.Sleep(c.reconnectDelay)
+						time.Sleep(relayBackoff)
+						relayBackoff = expBackoff(relayBackoff, 1.5, 10*time.Minute)
+					} else {
+						relayBackoff = c.reconnectDelay
 					}
 				}
 			}

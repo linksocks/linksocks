@@ -125,8 +125,15 @@ func (c *LinkSocksClient) directQUICChannelReadLoop(ctx context.Context, ch *dir
 				_ = ch.Close()
 				return
 			}
-			c.log.Debug().Err(err).Str("label", label).Msg("Direct QUIC channel read error")
-			c.directMarkDegraded(time.Now(), 30*time.Second, err.Error())
+			c.directMu.Lock()
+			if c.directReadBackoff < c.reconnectDelay/6 {
+				c.directReadBackoff = c.reconnectDelay / 6
+			}
+			readBackoff := c.directReadBackoff
+			c.directReadBackoff = expBackoff(readBackoff, 1.5, 10*time.Minute)
+			c.directMu.Unlock()
+			c.log.Debug().Err(err).Str("label", label).Dur("backoff", readBackoff).Msg("Direct QUIC channel read error")
+			c.directMarkDegraded(time.Now(), readBackoff, err.Error())
 			c.relay.disconnectChannel(channelID)
 			_ = ch.Close()
 			return
