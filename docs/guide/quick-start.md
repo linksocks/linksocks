@@ -231,7 +231,6 @@ services:
     environment:
       LINKSOCKS_MODE: provider
       LINKSOCKS_URL: l.zetx.tech
-      LINKSOCKS_TOKEN: your_relay_token
       LINKSOCKS_CONNECTOR_TOKEN: your_connector_token
     restart: unless-stopped
 ```
@@ -255,8 +254,6 @@ services:
       LINKSOCKS_MODE: connector
       LINKSOCKS_URL: l.zetx.tech
       LINKSOCKS_TOKEN: your_connector_token
-      LINKSOCKS_SOCKS_HOST: 0.0.0.0
-      LINKSOCKS_SOCKS_PORT: "1080"
     ports:
       - "127.0.0.1:1080:1080"
     restart: unless-stopped
