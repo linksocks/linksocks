@@ -274,3 +274,5 @@ curl --socks5 127.0.0.1:1080 http://httpbin.org/ip
 ```bash
 docker compose down
 ```
+
+所有参数均可通过环境变量传入 — 参见[环境变量](/zh/guide/cli-options#环境变量)。

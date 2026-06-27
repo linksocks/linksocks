@@ -274,3 +274,5 @@ Stop:
 ```bash
 docker compose down
 ```
+
+All flags can be provided as environment variables — see [Environment Variables](/guide/cli-options#environment-variables).
