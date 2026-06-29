@@ -1,8 +1,12 @@
 package tests
 
 import (
+	"context"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/linksocks/linksocks/linksocks"
 
 	"github.com/stretchr/testify/require"
 )
@@ -57,6 +61,74 @@ func TestConnectorAutonomy(t *testing.T) {
 
 	require.Error(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: server.SocksPort}))
 	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: client2.SocksPort}))
+}
+
+func TestConnectorAutonomyReplaysAfterReconnect(t *testing.T) {
+	const connectorToken = "CONNECTOR"
+
+	server := reverseServer(t, &ProxyTestServerOption{
+		ConnectorAutonomy: true,
+	})
+
+	provider := reverseClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        server.Token,
+		LoggerPrefix: "CLT1",
+		Reconnect:    true,
+	})
+	defer provider.Close()
+
+	token, err := provider.Client.AddConnector(connectorToken)
+	require.NoError(t, err)
+	require.Equal(t, connectorToken, token)
+
+	server.Server.RemoveToken(connectorToken)
+
+	wsPort := server.WSPort
+	socksPort := server.SocksPort
+	reverseToken := server.Token
+	server.Close()
+
+	server = reverseServer(t, &ProxyTestServerOption{
+		WSPort:            wsPort,
+		SocksPort:         socksPort,
+		Token:             reverseToken,
+		ConnectorAutonomy: true,
+	})
+	defer server.Close()
+
+	require.Eventually(t, func() bool {
+		return connectorTokenReady(wsPort, connectorToken)
+	}, 10*time.Second, 100*time.Millisecond)
+
+	connector := forwardClient(t, &ProxyTestClientOption{
+		WSPort:       wsPort,
+		Token:        connectorToken,
+		LoggerPrefix: "CLT2",
+	})
+	defer connector.Close()
+
+	require.NoError(t, testWebConnection(globalHTTPServer, &ProxyConfig{Port: connector.SocksPort}))
+}
+
+func connectorTokenReady(wsPort int, connectorToken string) bool {
+	socksPort, err := getFreePort()
+	if err != nil {
+		return false
+	}
+
+	clientOpt := linksocks.DefaultClientOption().
+		WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", wsPort)).
+		WithSocksPort(socksPort).
+		WithReconnect(false).
+		WithNoEnvProxy(true).
+		WithLogger(createPrefixedLogger("CHK"))
+	client := linksocks.NewLinkSocksClient(connectorToken, clientOpt)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	defer client.Close()
+
+	return client.WaitReady(ctx, 500*time.Millisecond) == nil
 }
 
 func TestFastOpenConnector(t *testing.T) {

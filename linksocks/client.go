@@ -164,6 +164,7 @@ type LinkSocksClient struct {
 	reconnect      bool
 	reconnectDelay time.Duration
 	threads        int // Number of concurrent WebSocket connections
+	connectorTokens map[string]struct{}
 
 	mu           sync.RWMutex // General mutex
 	connectionMu sync.Mutex   // Dedicated mutex for connection status
@@ -680,6 +681,7 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 		numPartners:             0,
 		threads:                 opt.Threads,
 		websockets:              make([]*WSConn, 0, opt.Threads),
+		connectorTokens:         make(map[string]struct{}),
 		noEnvProxy:              opt.NoEnvProxy,
 		directMode:              opt.DirectMode,
 		directDiscovery:         opt.DirectDiscovery,
@@ -2374,6 +2376,10 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 		errChan <- c.heartbeatHandler(ctx, wsConn)
 	}()
 
+	if index == 0 {
+		go c.replayConnectorTokens()
+	}
+
 	// Wait for first error
 	err = <-errChan
 
@@ -2976,9 +2982,27 @@ func (c *LinkSocksClient) AddConnector(connectorToken string) (string, error) {
 		if !connResp.Success {
 			return "", fmt.Errorf("connector request failed: %s", connResp.Error)
 		}
+		c.mu.Lock()
+		c.connectorTokens[connResp.ConnectorToken] = struct{}{}
+		c.mu.Unlock()
 		return connResp.ConnectorToken, nil
 	case <-time.After(10 * time.Second):
 		return "", errors.New("timeout waiting for connector response")
+	}
+}
+
+func (c *LinkSocksClient) replayConnectorTokens() {
+	c.mu.RLock()
+	tokens := make([]string, 0, len(c.connectorTokens))
+	for token := range c.connectorTokens {
+		tokens = append(tokens, token)
+	}
+	c.mu.RUnlock()
+
+	for _, token := range tokens {
+		if _, err := c.AddConnector(token); err != nil {
+			c.log.Warn().Err(err).Str("connector_token", token).Msg("Failed to replay connector token")
+		}
 	}
 }
 
@@ -3022,6 +3046,9 @@ func (c *LinkSocksClient) RemoveConnector(connectorToken string) error {
 		if !connResp.Success {
 			return fmt.Errorf("connector request failed: %s", connResp.Error)
 		}
+		c.mu.Lock()
+		delete(c.connectorTokens, connectorToken)
+		c.mu.Unlock()
 		return nil
 	case <-time.After(10 * time.Second):
 		return errors.New("timeout waiting for connector response")
