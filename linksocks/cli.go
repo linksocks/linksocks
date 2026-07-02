@@ -104,6 +104,7 @@ func (cli *CLI) initCommands() {
 		cmd.Flags().StringP("socks-password", "w", "", "SOCKS5 authentication password")
 		cmd.Flags().BoolP("socks-no-wait", "i", false, "Start the SOCKS server immediately")
 		cmd.Flags().BoolP("no-reconnect", "R", false, "Stop when the server disconnects")
+		cmd.Flags().Bool("retry-auth", false, "Retry on authentication failure instead of exiting")
 		cmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
 		cmd.Flags().IntP("threads", "T", 1, "Number of threads for data transfer")
 		cmd.Flags().StringP("upstream-proxy", "x", "", "Upstream proxy (e.g., socks5://user:pass@127.0.0.1:1080 or http://user:pass@127.0.0.1:8080)")
@@ -157,7 +158,7 @@ func (cli *CLI) initCommands() {
 	cli.configureCommandHelp(clientCmd, cliHelpConfig{
 		Overview:   "Use client for the local SOCKS endpoint in forward mode. In reverse deployments, client -r acts as the provider that exits through its local network.",
 		KeyFlags:   []string{"token", "url", "reverse", "socks-port", "socks-host"},
-		OtherFlags: []string{"connector-token", "socks-username", "socks-password", "socks-no-wait", "no-reconnect", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "debug", "help"},
+		OtherFlags: []string{"connector-token", "socks-username", "socks-password", "socks-no-wait", "no-reconnect", "retry-auth", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "debug", "help"},
 		Examples: []string{
 			"# Forward proxy\nlinksocks client -t my_token -u ws://localhost:8765 -p 9870",
 			"# Reverse provider\nlinksocks client -t my_token -u ws://localhost:8765 -r",
@@ -167,7 +168,7 @@ func (cli *CLI) initCommands() {
 	cli.configureCommandHelp(providerCmd, cliHelpConfig{
 		Overview:   "Provider is a shortcut for client -r. Use it when this machine should provide outbound network access for a reverse proxy deployment.",
 		KeyFlags:   []string{"token", "url"},
-		OtherFlags: []string{"connector-token", "no-reconnect", "fast-open", "upstream-proxy", "no-env-proxy", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "threads", "debug", "help"},
+		OtherFlags: []string{"connector-token", "no-reconnect", "retry-auth", "fast-open", "upstream-proxy", "no-env-proxy", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "threads", "debug", "help"},
 		Examples: []string{
 			"# Basic provider\nlinksocks provider -t my_token -u ws://localhost:8765",
 			"# Provider with autonomy\nlinksocks provider -t my_token -c my_connector -u ws://localhost:8765",
@@ -176,7 +177,7 @@ func (cli *CLI) initCommands() {
 	cli.configureCommandHelp(connectorCmd, cliHelpConfig{
 		Overview:   "Connector is an alias for client and is commonly used with a connector token to expose a local SOCKS5 port that reaches a reverse provider.",
 		KeyFlags:   []string{"token", "url", "socks-port", "socks-host"},
-		OtherFlags: []string{"socks-username", "socks-password", "socks-no-wait", "no-reconnect", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "debug", "help"},
+		OtherFlags: []string{"socks-username", "socks-password", "socks-no-wait", "no-reconnect", "retry-auth", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "debug", "help"},
 		Examples: []string{
 			"# Connector side of agent mode\nlinksocks connector -t connector_token -u ws://localhost:8765 -p 1180",
 		},
@@ -332,6 +333,11 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 
 	socksNoWait, _ := cmd.Flags().GetBool("socks-no-wait")
 	noReconnect, _ := cmd.Flags().GetBool("no-reconnect")
+	retryAuth, _ := cmd.Flags().GetBool("retry-auth")
+	retryAuth, err = resolveBoolFlagEnv(cmd, "retry-auth", "LINKSOCKS_RETRY_AUTH", retryAuth)
+	if err != nil {
+		return err
+	}
 	debug, _ := cmd.Flags().GetCount("debug")
 	threads, _ := cmd.Flags().GetInt("threads")
 
@@ -404,6 +410,7 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 		WithSocksPort(socksPort).
 		WithSocksWaitServer(!socksNoWait).
 		WithReconnect(!noReconnect).
+		WithRetryAuthFailure(retryAuth).
 		WithLogger(logger).
 		WithThreads(threads).
 		WithNoEnvProxy(noEnvProxy).

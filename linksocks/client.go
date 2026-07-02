@@ -58,6 +58,17 @@ func (e *nonRetriableError) Error() string {
 	return e.msg
 }
 
+// connectionEstablishedError wraps an error from a connection that was
+// successfully established but later dropped (e.g. network reset).
+// Callers use this to reset exponential backoff so the reconnect delay
+// does not keep growing after a successful session.
+type connectionEstablishedError struct {
+	cause error
+}
+
+func (e *connectionEstablishedError) Error() string { return e.cause.Error() }
+func (e *connectionEstablishedError) Unwrap() error { return e.cause }
+
 // LinkSocksClient represents a SOCKS5 over WebSocket protocol client
 type LinkSocksClient struct {
 	Connected    chan struct{} // Channel that is closed when connection is established
@@ -163,6 +174,7 @@ type LinkSocksClient struct {
 	socksListener  net.Listener
 	reconnect      bool
 	reconnectDelay time.Duration
+	retryAuthFailure bool
 	threads        int // Number of concurrent WebSocket connections
 	connectorTokens map[string]struct{}
 
@@ -334,6 +346,7 @@ type ClientOption struct {
 	SocksWaitServer   bool
 	Reconnect         bool
 	ReconnectDelay    time.Duration
+	RetryAuthFailure  bool
 	Logger            zerolog.Logger
 	BufferSize        int
 	ChannelTimeout    time.Duration
@@ -368,7 +381,8 @@ func DefaultClientOption() *ClientOption {
 		SocksPort:        9870,
 		SocksWaitServer:  true,
 		Reconnect:        false,
-		ReconnectDelay:   5 * time.Second,
+		ReconnectDelay:   1 * time.Second,
+		RetryAuthFailure: false,
 		Logger:           zerolog.New(os.Stdout).With().Timestamp().Logger(),
 		BufferSize:       DefaultBufferSize,
 		ChannelTimeout:   DefaultChannelTimeout,
@@ -507,6 +521,12 @@ func (o *ClientOption) WithReconnect(reconnect bool) *ClientOption {
 // WithReconnectDelay sets the reconnect delay duration
 func (o *ClientOption) WithReconnectDelay(delay time.Duration) *ClientOption {
 	o.ReconnectDelay = delay
+	return o
+}
+
+// WithRetryAuthFailure sets whether to retry on authentication failure
+func (o *ClientOption) WithRetryAuthFailure(retry bool) *ClientOption {
+	o.RetryAuthFailure = retry
 	return o
 }
 
@@ -674,6 +694,7 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 		socksWaitServer:         opt.SocksWaitServer,
 		reconnect:               opt.Reconnect,
 		reconnectDelay:          opt.ReconnectDelay,
+		retryAuthFailure:        opt.RetryAuthFailure,
 		errors:                  make(chan error, 16),
 		Connected:               make(chan struct{}),
 		Disconnected:            disconnected,
@@ -2103,11 +2124,17 @@ func (c *LinkSocksClient) startForward(ctx context.Context) error {
 							errChan <- err
 							return
 						}
+						var ceErr *connectionEstablishedError
+						if errors.As(err, &ceErr) {
+							relayBackoff = c.reconnectDelay
+						}
 						c.batchLogger.log("retry_error", c.threads, func(count, total int) {
 							c.log.Warn().Err(err).Msgf("Connection error, waiting %s before retrying%s", relayBackoff, formatBatchProgressSuffix(count, total))
 						})
 						time.Sleep(relayBackoff)
-						relayBackoff = expBackoff(relayBackoff, 1.5, 10*time.Minute)
+						if !errors.As(err, &ceErr) {
+							relayBackoff = expBackoff(relayBackoff, 1.5, 10*time.Minute)
+						}
 					} else {
 						relayBackoff = c.reconnectDelay
 					}
@@ -2325,6 +2352,11 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 			c.log.Error().Msg("Authentication failed" + formatBatchProgressSuffix(count, total))
 		})
 		wsConn.Close()
+		// When retryAuthFailure is enabled, return a retriable error so the
+		// reconnect loop keeps trying (useful in Docker / ephemeral-token setups).
+		if c.retryAuthFailure {
+			return errors.New("authentication failed")
+		}
 		// Return a non-retriable error to prevent reconnection attempts
 		// Provide helpful hint when using anonymous token
 		if c.token == "anonymous" {
@@ -2400,7 +2432,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 	}
 	c.mu.Unlock()
 
-	return err
+	return &connectionEstablishedError{cause: err}
 }
 
 // startReverse connects to WebSocket server in reverse proxy mode
@@ -2425,11 +2457,17 @@ func (c *LinkSocksClient) startReverse(ctx context.Context) error {
 							errChan <- err
 							return
 						}
+						var ceErr *connectionEstablishedError
+						if errors.As(err, &ceErr) {
+							relayBackoff = c.reconnectDelay
+						}
 						c.batchLogger.log("retry_error", c.threads, func(count, total int) {
 							c.log.Warn().Err(err).Msgf("Connection error, waiting %s before retrying%s", relayBackoff, formatBatchProgressSuffix(count, total))
 						})
 						time.Sleep(relayBackoff)
-						relayBackoff = expBackoff(relayBackoff, 1.5, 10*time.Minute)
+						if !errors.As(err, &ceErr) {
+							relayBackoff = expBackoff(relayBackoff, 1.5, 10*time.Minute)
+						}
 					} else {
 						relayBackoff = c.reconnectDelay
 					}

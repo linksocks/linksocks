@@ -31,4 +31,7 @@ RUN adduser -D -H -h /app linksocks && \
 
 USER linksocks
 
+# Default environment for Docker deployments
+ENV LINKSOCKS_RETRY_AUTH=true
+
 ENTRYPOINT ["/app/linksocks"] 
