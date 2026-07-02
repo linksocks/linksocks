@@ -169,14 +169,14 @@ type LinkSocksClient struct {
 	directQUICBadUntil time.Time
 	directQUICBadCount int
 
-	websockets     []*WSConn // Multiple WebSocket connections
-	currentIndex   int       // Current WebSocket index for round-robin
-	socksListener  net.Listener
-	reconnect      bool
-	reconnectDelay time.Duration
+	websockets       []*WSConn // Multiple WebSocket connections
+	currentIndex     int       // Current WebSocket index for round-robin
+	socksListener    net.Listener
+	reconnect        bool
+	reconnectDelay   time.Duration
 	retryAuthFailure bool
-	threads        int // Number of concurrent WebSocket connections
-	connectorTokens map[string]struct{}
+	threads          int // Number of concurrent WebSocket connections
+	connectorTokens  map[string]struct{}
 
 	mu           sync.RWMutex // General mutex
 	connectionMu sync.Mutex   // Dedicated mutex for connection status
