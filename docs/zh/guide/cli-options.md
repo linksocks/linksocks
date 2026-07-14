@@ -25,8 +25,8 @@
 | 参数 | 简写 | 默认值 | 说明 |
 |------|------|--------|------|
 | `--token` | `-t` | 未提供时自动生成（由服务端管理的模式） | 主认证令牌，也支持 `LINKSOCKS_TOKEN` |
-| `--ws-host` | `-H` | `0.0.0.0` | WebSocket 监听地址 |
-| `--ws-port` | `-P` | `8765` | WebSocket 监听端口 |
+| `--ws-host` | `-H` | `0.0.0.0` | WebSocket 监听地址，也支持 `LINKSOCKS_WEBSOCKET_HOST` |
+| `--ws-port` | `-P` | `8765` | WebSocket 监听端口，也支持 `LINKSOCKS_WEBSOCKET_PORT` |
 | `--reverse` | `-r` | `false` | 从正向中继切换到反向/代理模式 |
 | `--socks-host` | `-s` | `127.0.0.1` | 反向模式下的 SOCKS5 监听地址 |
 | `--socks-port` | `-p` | `9870` | 反向模式下的 SOCKS5 监听端口 |
@@ -36,15 +36,15 @@
 | 参数 | 简写 | 默认值 | 说明 |
 |------|------|--------|------|
 | `--connector-token` | `-c` | 未提供时自动生成 | 代理模式使用的 connector token，也支持 `LINKSOCKS_CONNECTOR_TOKEN` |
-| `--connector-autonomy` | `-a` | `false` | 允许 provider 自己管理 connector token |
-| `--socks-username` | `-n` | | 反向模式下的 SOCKS5 用户名 |
+| `--connector-autonomy` | `-a` | `false` | 允许 provider 自己管理 connector token，也支持 `LINKSOCKS_CONNECTOR_AUTONOMY` |
+| `--socks-username` | `-n` | | 反向模式下的 SOCKS5 用户名，也支持 `LINKSOCKS_SOCKS_USERNAME` |
 | `--socks-password` | `-w` | | 反向模式下的 SOCKS5 密码，也支持 `LINKSOCKS_SOCKS_PASSWORD` |
 | `--socks-nowait` | `-i` | `false` | 不等 provider 就立即启动 SOCKS5 |
 
-| `--api-key` | `-k` | | 启用 HTTP API |
+| `--api-key` | `-k` | | 启用 HTTP API，也支持 `LINKSOCKS_API_KEY` |
 | `--buffer-size` | `-b` | `1048576` | 数据传输缓冲区大小 |
-| `--upstream-proxy` | `-x` | | 服务端出站连接使用的上游代理 |
-| `--fast-open` | `-f` | `false` | 在远端完全确认前就允许开始传输数据 |
+| `--upstream-proxy` | `-x` | | 服务端出站连接使用的上游代理，也支持 `LINKSOCKS_UPSTREAM_PROXY` |
+| `--fast-open` | `-f` | `false` | 在远端完全确认前就允许开始传输数据，也支持 `LINKSOCKS_FASTOPEN` |
 | `--connector-wait-provider` | | `5s` | connector 等待 provider 重连的时间 |
 | `--direct-enable` | | `false` | 为兼容客户端开启直连协商 |
 | `--direct-rendezvous-udp` | | `false` | 开启服务端 UDP rendezvous。要求服务端能监听真实 UDP 端口，Cloudflare Workers 不支持。 |
@@ -66,25 +66,25 @@
 | 参数 | 简写 | 默认值 | 说明 |
 |------|------|--------|------|
 | `--token` | `-t` | | 认证令牌，也支持 `LINKSOCKS_TOKEN` |
-| `--url` | `-u` | `ws://localhost:8765` | WebSocket 服务端地址 |
+| `--url` | `-u` | `ws://localhost:8765` | WebSocket 服务端地址，也支持 `LINKSOCKS_URL` |
 | `--reverse` | `-r` | `false` | 将 `client` 切换为反向 provider |
-| `--socks-host` | `-s` | `127.0.0.1` | 正向或 connector 模式下的本地 SOCKS5 地址 |
-| `--socks-port` | `-p` | `9870` | 正向或 connector 模式下的本地 SOCKS5 端口 |
+| `--socks-host` | `-s` | `127.0.0.1` | 正向或 connector 模式下的本地 SOCKS5 地址，也支持 `LINKSOCKS_SOCKS_HOST` |
+| `--socks-port` | `-p` | `9870` | 正向或 connector 模式下的本地 SOCKS5 端口，也支持 `LINKSOCKS_SOCKS_PORT` |
 
 ### 其他参数
 
 | 参数 | 简写 | 默认值 | 说明 |
 |------|------|--------|------|
 | `--connector-token` | `-c` | | 代理/自主模式使用的 connector token，也支持 `LINKSOCKS_CONNECTOR_TOKEN` |
-| `--socks-username` | `-n` | | 本地 SOCKS5 用户名 |
+| `--socks-username` | `-n` | | 本地 SOCKS5 用户名，也支持 `LINKSOCKS_SOCKS_USERNAME` |
 | `--socks-password` | `-w` | | 本地 SOCKS5 密码，也支持 `LINKSOCKS_SOCKS_PASSWORD` |
 | `--socks-no-wait` | `-i` | `false` | 立即启动本地 SOCKS5 |
 | `--no-reconnect` | `-R` | `false` | 与服务端断开后直接退出 |
 
 | `--threads` | `-T` | `1` | 数据传输线程数 |
-| `--upstream-proxy` | `-x` | | 连接 WebSocket 服务端时使用的上游代理 |
+| `--upstream-proxy` | `-x` | | 连接 WebSocket 服务端时使用的上游代理，也支持 `LINKSOCKS_UPSTREAM_PROXY` |
 | `--no-env-proxy` | `-E` | `false` | 忽略环境变量中的代理配置 |
-| `--fast-open` | `-f` | `false` | 在远端完全确认前就允许开始传输数据 |
+| `--fast-open` | `-f` | `false` | 在远端完全确认前就允许开始传输数据，也支持 `LINKSOCKS_FASTOPEN` |
 | `--direct-mode` | | `auto` | `relay-only`、`auto` 或 `direct-only` |
 | `--direct-discovery` | | `stun` | 直连候选地址发现方式 |
 | `--direct-host-candidates` | | `auto` | 主机地址候选公布策略 |
@@ -141,9 +141,20 @@ linksocks client -t my_token -u ws://localhost:8765 --direct-mode auto
 
 | 环境变量 | 对应参数 |
 |----------|----------|
+| `LINKSOCKS_MODE` | 根命令模式别名（`server`、`client`、`provider`、`connector`） |
+| `LINKSOCKS_URL` | `--url` |
+| `LINKSOCKS_WEBSOCKET_HOST` | `--ws-host` |
+| `LINKSOCKS_WEBSOCKET_PORT` | `--ws-port` |
+| `LINKSOCKS_SOCKS_HOST` | `--socks-host` |
+| `LINKSOCKS_SOCKS_PORT` | `--socks-port` |
 | `LINKSOCKS_TOKEN` | `--token` |
 | `LINKSOCKS_CONNECTOR_TOKEN` | `--connector-token` |
+| `LINKSOCKS_SOCKS_USERNAME` | `--socks-username` |
 | `LINKSOCKS_SOCKS_PASSWORD` | `--socks-password` |
+| `LINKSOCKS_API_KEY` | `--api-key` |
+| `LINKSOCKS_CONNECTOR_AUTONOMY` | `--connector-autonomy` |
+| `LINKSOCKS_UPSTREAM_PROXY` | `--upstream-proxy` |
+| `LINKSOCKS_FASTOPEN` | `--fast-open` |
 
 ## 上游代理格式
 

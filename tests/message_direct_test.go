@@ -51,8 +51,10 @@ func TestPackParse_DirectCapabilities_RoundTrip(t *testing.T) {
 
 func TestPackParse_DirectRendezvous_RoundTrip(t *testing.T) {
 	sessionID := uuid.New()
+	remoteSessionID := uuid.New()
 	m := linksocks.DirectRendezvousMessage{
-		SessionID: sessionID,
+		SessionID:       sessionID,
+		RemoteSessionID: remoteSessionID,
 		Candidates: []linksocks.DirectCandidate{
 			{Addr: "8.8.8.8", Port: 3478, Kind: "srflx"},
 		},
@@ -74,6 +76,9 @@ func TestPackParse_DirectRendezvous_RoundTrip(t *testing.T) {
 	}
 	if got.SessionID != sessionID {
 		t.Fatalf("session_id mismatch: got %s want %s", got.SessionID, sessionID)
+	}
+	if got.RemoteSessionID != remoteSessionID {
+		t.Fatalf("remote_session_id mismatch: got %s want %s", got.RemoteSessionID, remoteSessionID)
 	}
 	if len(got.Candidates) != 1 || got.Candidates[0].Addr != "8.8.8.8" || got.Candidates[0].Port != 3478 {
 		t.Fatalf("candidates mismatch: %+v", got.Candidates)

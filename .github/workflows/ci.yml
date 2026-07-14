@@ -21,8 +21,6 @@ jobs:
         include:
           - os: ubuntu-latest
             go-version: '1.24'
-          - os: ubuntu-latest
-            go-version: '1.24'
           - os: macos-latest
             go-version: '1.24'
           - os: windows-latest
@@ -41,6 +39,7 @@ jobs:
         run: go mod download
 
       - name: Run tests
+        shell: bash
         run: go test -v -race -coverprofile="coverage.txt" -covermode=atomic -coverpkg="./linksocks" "./linksocks" "./tests"
 
       - name: Upload coverage to Codecov

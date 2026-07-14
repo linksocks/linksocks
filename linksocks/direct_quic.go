@@ -270,7 +270,7 @@ func NewDirectQUICManager(conn net.PacketConn, sessionID uuid.UUID, sessionKey [
 	}, nil
 }
 
-func (m *DirectQUICManager) Connect(ctx context.Context, candidates []DirectCandidate) (*quic.Conn, error) {
+func (m *DirectQUICManager) Connect(ctx context.Context, candidates []DirectCandidate, preferAccept bool) (*quic.Conn, error) {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -306,19 +306,35 @@ func (m *DirectQUICManager) Connect(ctx context.Context, candidates []DirectCand
 	defer cancel()
 
 	var (
-		once sync.Once
-		win  *quic.Conn
-		werr error
-		done = make(chan struct{})
+		connMu       sync.Mutex
+		dialedConn   *quic.Conn
+		acceptedConn *quic.Conn
+		dialedOnce   sync.Once
+		acceptedOnce sync.Once
+		dialedDone   = make(chan struct{})
+		acceptedDone = make(chan struct{})
 	)
 
-	setWinner := func(c *quic.Conn, err error) {
-		once.Do(func() {
-			win = c
-			werr = err
-			close(done)
-			cancel()
-		})
+	trackDialed := func(c *quic.Conn) {
+		connMu.Lock()
+		defer connMu.Unlock()
+		if dialedConn != nil {
+			_ = c.CloseWithError(0, "duplicate")
+			return
+		}
+		dialedConn = c
+		dialedOnce.Do(func() { close(dialedDone) })
+	}
+
+	trackAccepted := func(c *quic.Conn) {
+		connMu.Lock()
+		defer connMu.Unlock()
+		if acceptedConn != nil {
+			_ = c.CloseWithError(0, "duplicate")
+			return
+		}
+		acceptedConn = c
+		acceptedOnce.Do(func() { close(acceptedDone) })
 	}
 
 	go func() {
@@ -335,11 +351,12 @@ func (m *DirectQUICManager) Connect(ctx context.Context, candidates []DirectCand
 					_ = conn.CloseWithError(0, "auth failed")
 					return
 				}
-				setWinner(conn, nil)
+				trackAccepted(conn)
 			}(c)
 		}
 	}()
 
+	dialCount := 0
 	for _, cand := range candidates {
 		if cand.Addr == "" || cand.Port <= 0 {
 			continue
@@ -348,7 +365,7 @@ func (m *DirectQUICManager) Connect(ctx context.Context, candidates []DirectCand
 		if err != nil {
 			continue
 		}
-
+		dialCount++
 		go func(raddr net.Addr) {
 			dialCtx, cancelDial := context.WithTimeout(ctxConn, 3*time.Second)
 			c, err := tr.Dial(dialCtx, raddr, m.clientTLS, m.quicConf)
@@ -363,26 +380,102 @@ func (m *DirectQUICManager) Connect(ctx context.Context, candidates []DirectCand
 				_ = c.CloseWithError(0, "auth failed")
 				return
 			}
-			setWinner(c, nil)
+			trackDialed(c)
 		}(addr)
 	}
 
-	select {
-	case <-done:
-		if werr != nil {
+	// No candidates to dial — accept only.
+	if dialCount == 0 {
+		select {
+		case <-acceptedDone:
+			m.mu.Lock()
+			m.active = acceptedConn
+			m.mu.Unlock()
+			_ = ln.Close()
+			return acceptedConn, nil
+		case <-ctx.Done():
 			m.Close()
-			return nil, werr
+			return nil, ctx.Err()
 		}
-		if win == nil {
-			m.Close()
-			return nil, errors.New("direct quic: no connection")
-		}
+	}
+
+	// Both directions may race. Use preferAccept to pick a deterministic
+	// winner so that both peers agree on the same QUIC connection:
+	//
+	//   preferAccept == false  →  prefer dialed  (I am the "client")
+	//   preferAccept == true   →  prefer accepted (I am the "server")
+	//
+	// Callers set this based on session-id ordering so that exactly one
+	// direction is preferred by both sides.
+
+	selectConnection := func(c *quic.Conn, isAccepted bool) *quic.Conn {
+		go func() {
+			// Wait for the non-selected direction to arrive and close it.
+			if isAccepted {
+				<-dialedDone
+				connMu.Lock()
+				dc := dialedConn
+				connMu.Unlock()
+				if dc != nil {
+					_ = dc.CloseWithError(0, "superseded")
+				}
+			} else {
+				<-acceptedDone
+				connMu.Lock()
+				ac := acceptedConn
+				connMu.Unlock()
+				if ac != nil {
+					_ = ac.CloseWithError(0, "superseded")
+				}
+			}
+		}()
+
 		m.mu.Lock()
-		m.active = win
+		m.active = c
 		m.mu.Unlock()
 		_ = ln.Close()
-		return win, nil
+		return c
+	}
 
+	if preferAccept {
+		// We want the accepted (server) connection.
+		select {
+		case <-acceptedDone:
+			return selectConnection(acceptedConn, true), nil
+		case <-dialedDone:
+			// Got dialed first. Wait briefly for the preferred accepted connection.
+			select {
+			case <-acceptedDone:
+				_ = dialedConn.CloseWithError(0, "superseded")
+				return selectConnection(acceptedConn, true), nil
+			case <-time.After(500 * time.Millisecond):
+				return selectConnection(dialedConn, false), nil
+			case <-ctx.Done():
+				m.Close()
+				return nil, ctx.Err()
+			}
+		case <-ctx.Done():
+			m.Close()
+			return nil, ctx.Err()
+		}
+	}
+
+	// We want the dialed (client) connection.
+	select {
+	case <-dialedDone:
+		return selectConnection(dialedConn, false), nil
+	case <-acceptedDone:
+		// Got accepted first. Wait briefly for the preferred dialed connection.
+		select {
+		case <-dialedDone:
+			_ = acceptedConn.CloseWithError(0, "superseded")
+			return selectConnection(dialedConn, false), nil
+		case <-time.After(500 * time.Millisecond):
+			return selectConnection(acceptedConn, true), nil
+		case <-ctx.Done():
+			m.Close()
+			return nil, ctx.Err()
+		}
 	case <-ctx.Done():
 		m.Close()
 		return nil, ctx.Err()
