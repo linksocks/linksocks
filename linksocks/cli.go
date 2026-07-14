@@ -184,7 +184,7 @@ func (cli *CLI) initCommands() {
 	cli.configureCommandHelp(connectorCmd, cliHelpConfig{
 		Overview:   "Connector is an alias for client and is commonly used with a connector token to expose a local SOCKS5 port that reaches a reverse provider.",
 		KeyFlags:   []string{"token", "url", "socks-port", "socks-host"},
-		OtherFlags: []string{"socks-username", "socks-password", "socks-no-wait", "no-reconnect", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "debug", "help"},
+		OtherFlags: []string{"socks-username", "socks-password", "socks-no-wait", "no-reconnect", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "debug", "help"},
 		Examples: []string{
 			"# Connector side of agent mode\nlinksocks connector -t connector_token -u ws://localhost:8765 -p 1180",
 		},
