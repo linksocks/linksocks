@@ -753,7 +753,7 @@ def configure_python_env(target_python: str, env: dict) -> dict:
 
 setup(
     name="linksocks",
-    version="1.8.12",
+    version="1.8.13",
     description="Python bindings for LinkSocks - SOCKS proxy over WebSocket",
     long_description=get_long_description(),
     long_description_content_type="text/markdown",
