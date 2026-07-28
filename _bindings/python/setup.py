@@ -31,9 +31,43 @@ here = Path(__file__).parent.absolute()
 _temp_go_dir = None
 _temp_py_venv_dir = None
 
-GO_MIN_VERSION = (1, 24, 0)
-GO_MIN_VERSION_TEXT = "1.24+"
-GO_BOOTSTRAP_VERSION = "1.24.12"
+def _read_go_directive_from_mod() -> Optional[str]:
+    """Read the `go` version line from go.mod (project root or nearby copies)."""
+    candidates = [
+        here.parent.parent / "go.mod",
+        here / "go.mod",
+        Path.cwd() / "go.mod",
+    ]
+    for candidate in candidates:
+        try:
+            for line in candidate.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("go "):
+                    version = stripped[3:].strip()
+                    if version:
+                        return version
+        except OSError:
+            continue
+    return None
+
+
+def _parse_go_directive(version: str) -> tuple[int, int, int]:
+    parts: list[int] = []
+    for part in version.split("."):
+        digits = "".join(ch for ch in part if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])  # type: ignore[return-value]
+
+
+_GO_DIRECTIVE = _read_go_directive_from_mod() or "1.25.0"
+GO_MIN_VERSION = _parse_go_directive(_GO_DIRECTIVE)
+GO_MIN_VERSION_TEXT = f"{GO_MIN_VERSION[0]}.{GO_MIN_VERSION[1]}+"
+# Bootstrap downloads need a concrete toolchain; prefer the go.mod directive.
+GO_BOOTSTRAP_VERSION = _GO_DIRECTIVE
 
 # Ensure Go builds do not require VCS (git) metadata; avoids errors on minimal images
 current_goflags = os.environ.get("GOFLAGS", "").strip()

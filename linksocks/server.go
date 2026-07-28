@@ -1649,8 +1649,11 @@ func (s *LinkSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 		return
 	}
 
-	var shouldBroadcast bool
 	var clientIP string
+	// Notify connectors when a reverse (provider) leaves; notify reverse clients when
+	// a connector leaves. Partners counts must update on both connect and disconnect.
+	var notifyConnectors bool
+	var notifyReverseToken string
 
 	s.mu.Lock()
 	// Get client IP from the connection
@@ -1658,9 +1661,19 @@ func (s *LinkSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 		clientIP = ws.GetClientIP()
 	}
 
+	// Prefer role recorded at authentication time.
+	if meta, ok := s.clientMeta[clientID]; ok && meta != nil {
+		switch meta.Role {
+		case directClientRoleReverse:
+			notifyConnectors = true
+		case directClientRoleConnector:
+			notifyReverseToken = meta.ReverseToken
+		}
+	}
+
 	// Clean up connection in tokenClients
 	if token != "" && s.tokenClients[token] != nil {
-		clients := make([]clientInfo, 0)
+		clients := make([]clientInfo, 0, len(s.tokenClients[token]))
 		for _, client := range s.tokenClients[token] {
 			if client.ID != clientID {
 				clients = append(clients, client)
@@ -1669,12 +1682,17 @@ func (s *LinkSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 		if len(clients) == 0 {
 			delete(s.tokenClients, token)
 			delete(s.tokenIndexes, token)
-			// Check if this was a reverse client - we'll broadcast after releasing the lock
-			if _, isReverse := s.tokens[token]; isReverse {
-				shouldBroadcast = true
-			}
 		} else {
 			s.tokenClients[token] = clients
+		}
+
+		// Fallback when clientMeta is missing (should be rare for authenticated clients).
+		if !notifyConnectors && notifyReverseToken == "" {
+			if _, isReverse := s.tokens[token]; isReverse {
+				notifyConnectors = true
+			} else if reverseToken, isConnector := s.connectorTokens[token]; isConnector {
+				notifyReverseToken = reverseToken
+			}
 		}
 	}
 
@@ -1684,8 +1702,11 @@ func (s *LinkSocksServer) cleanupConnection(clientID uuid.UUID, token string) {
 	s.mu.Unlock()
 
 	// Broadcast outside the lock to avoid deadlock
-	if shouldBroadcast {
+	if notifyConnectors {
 		s.broadcastPartnersToConnectors()
+	}
+	if notifyReverseToken != "" {
+		s.broadcastPartnersToReverseClients(notifyReverseToken)
 	}
 
 	s.log.Info().Str("client_id", clientID.String()).Str("client_ip", clientIP).Msg("Client disconnected")

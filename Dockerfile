@@ -1,10 +1,15 @@
 # Build stage
-FROM golang:1.24-alpine AS builder
+# golang:alpine tracks the current stable Go release on Docker Hub.
+# GOTOOLCHAIN=auto self-upgrades if go.mod requires a newer toolchain than the image.
+FROM golang:alpine AS builder
 
 WORKDIR /build
 
+ENV GOTOOLCHAIN=auto
+ENV GOFLAGS=-buildvcs=false
+
 # Install necessary build tools
-RUN apk add --no-cache git
+RUN apk add --no-cache git ca-certificates
 
 # Copy go mod files
 COPY go.mod go.sum ./
@@ -14,24 +19,23 @@ RUN go mod download
 COPY . .
 
 # Build the binary
-ENV GOFLAGS=-buildvcs=false
 RUN CGO_ENABLED=0 go build -o linksocks ./cmd/linksocks
 
-# Final stage
-FROM alpine:3.19
+# Final stage: floating alpine tag; no manual OS pin to bump each release.
+FROM alpine:latest
 
 WORKDIR /app
 
-# Copy binary from builder
+RUN apk add --no-cache ca-certificates && \
+    adduser -D -H -h /app linksocks
+
 COPY --from=builder /build/linksocks /app/
 
-# Create non-root user
-RUN adduser -D -H -h /app linksocks && \
-    chown -R linksocks:linksocks /app
+RUN chown -R linksocks:linksocks /app
 
 USER linksocks
 
 # Default environment for Docker deployments
 ENV LINKSOCKS_RETRY_AUTH=true
 
-ENTRYPOINT ["/app/linksocks"] 
+ENTRYPOINT ["/app/linksocks"]

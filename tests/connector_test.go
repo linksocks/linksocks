@@ -242,3 +242,68 @@ func TestConnectorWaitsForProviderReconnect(t *testing.T) {
 		t.Fatal("timed out waiting for connector request to complete")
 	}
 }
+
+func TestPartnersCountOnConnectorDisconnect(t *testing.T) {
+	server := reverseServer(t, &ProxyTestServerOption{
+		ConnectorToken: "CONNECTOR",
+	})
+	defer server.Close()
+
+	provider := reverseClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        server.Token,
+		LoggerPrefix: "PROV",
+	})
+	defer provider.Close()
+
+	require.Eventually(t, func() bool {
+		return provider.Client.GetPartnersCount() == 0
+	}, 3*time.Second, 50*time.Millisecond)
+
+	connector := forwardClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        "CONNECTOR",
+		LoggerPrefix: "CONN",
+	})
+
+	require.Eventually(t, func() bool {
+		return provider.Client.GetPartnersCount() == 1
+	}, 3*time.Second, 50*time.Millisecond)
+
+	connector.Close()
+
+	require.Eventually(t, func() bool {
+		return provider.Client.GetPartnersCount() == 0
+	}, 3*time.Second, 50*time.Millisecond)
+}
+
+func TestPartnersCountOnProviderDisconnect(t *testing.T) {
+	server := reverseServer(t, &ProxyTestServerOption{
+		ConnectorToken: "CONNECTOR",
+	})
+	defer server.Close()
+
+	provider := reverseClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        server.Token,
+		LoggerPrefix: "PROV",
+	})
+
+	connector := forwardClient(t, &ProxyTestClientOption{
+		WSPort:       server.WSPort,
+		Token:        "CONNECTOR",
+		LoggerPrefix: "CONN",
+	})
+	defer connector.Close()
+
+	require.Eventually(t, func() bool {
+		return connector.Client.GetPartnersCount() == 1
+	}, 3*time.Second, 50*time.Millisecond)
+
+	provider.Close()
+
+	require.Eventually(t, func() bool {
+		return connector.Client.GetPartnersCount() == 0
+	}, 3*time.Second, 50*time.Millisecond)
+}
+
