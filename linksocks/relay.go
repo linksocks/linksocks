@@ -281,53 +281,6 @@ func (r *Relay) updateActivityTime(channelID uuid.UUID) {
 	r.lastActivity.Store(channelID, time.Now())
 }
 
-// RefuseSocksRequest refuses a SOCKS5 client request with the specified reason
-func (r *Relay) RefuseSocksRequest(conn net.Conn, reason byte) error {
-	buffer := make([]byte, 1024)
-	n, err := conn.Read(buffer)
-	if err != nil {
-		return fmt.Errorf("read error: %w", err)
-	}
-	if n == 0 || buffer[0] != 0x05 {
-		return fmt.Errorf("invalid socks version")
-	}
-
-	// Send auth method response
-	if _, err := conn.Write([]byte{0x05, 0x00}); err != nil {
-		return fmt.Errorf("write auth response error: %w", err)
-	}
-
-	// Read request
-	n, err = conn.Read(buffer)
-	if err != nil {
-		if err == io.EOF {
-			r.log.Debug().Msg("Client closed SOCKS connection")
-			return nil
-		}
-		return fmt.Errorf("read request error: %w", err)
-	}
-	if n < 7 {
-		return fmt.Errorf("request too short")
-	}
-
-	// Send refusal response
-	response := []byte{
-		0x05,                   // version
-		reason,                 // reply code
-		0x00,                   // reserved
-		0x01,                   // address type (IPv4)
-		0x00, 0x00, 0x00, 0x00, // IP address
-		0x00, 0x00, // port
-	}
-	if _, err := conn.Write(response); err != nil {
-		return fmt.Errorf("write refusal response error: %w", err)
-	}
-
-	// Close the connection after sending refusal response to stop the SOCKS request
-	_ = conn.Close()
-	return nil
-}
-
 // HandleNetworkConnection handles network connection based on protocol type
 func (r *Relay) HandleNetworkConnection(ctx context.Context, ws MessageWriter, request ConnectMessage) error {
 	if request.Protocol == "tcp" {

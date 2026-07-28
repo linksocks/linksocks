@@ -88,6 +88,55 @@ func testWebConnection(targetURL string, proxyConfig *ProxyConfig) error {
 	return nil
 }
 
+// testWebConnectionHTTPProxy tests HTTP(S) connection through an HTTP proxy on the hybrid port.
+func testWebConnectionHTTPProxy(targetURL string, proxyConfig *ProxyConfig) error {
+	if proxyConfig == nil {
+		return fmt.Errorf("proxy config is required for HTTP proxy test")
+	}
+
+	proxyURLText := fmt.Sprintf("http://%s", net.JoinHostPort("127.0.0.1", fmt.Sprint(proxyConfig.Port)))
+	if proxyConfig.Username != "" || proxyConfig.Password != "" {
+		proxyURLText = fmt.Sprintf("http://%s:%s@%s",
+			url.QueryEscape(proxyConfig.Username),
+			url.QueryEscape(proxyConfig.Password),
+			net.JoinHostPort("127.0.0.1", fmt.Sprint(proxyConfig.Port)))
+	}
+
+	parsedURL, err := url.Parse(proxyURLText)
+	if err != nil {
+		return err
+	}
+
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(parsedURL),
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	TestLogger.Info().
+		Str("url", targetURL).
+		Int("proxy_port", proxyConfig.Port).
+		Msg("Starting web connection test with HTTP proxy")
+
+	resp, err := httpClient.Get(targetURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	TestLogger.Info().
+		Str("url", targetURL).
+		Int("status", resp.StatusCode).
+		Msg("HTTP proxy web connection test completed")
+
+	return nil
+}
+
 // testUDPConnection tests UDP connection through the proxy
 func testUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConfig) error {
 	testData := []byte("Hello UDP")

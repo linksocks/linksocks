@@ -22,11 +22,12 @@ Crucially, it supports Serverless Intranet Penetration (compatible with Cloudfla
 
 1. Forward, reverse and agent proxy modes.
 2. Round-robin load balancing for reverse proxy.
-3. SOCKS proxy authentication support.
-4. IPv6 & UDP over SOCKS5 support.
-5. Robust code driven by comprehensive tests.
-6. Command-line usage, API server, and library integration.
-7. Serverless relay server supported by Cloudflare Worker.
+3. Hybrid local proxy port: SOCKS5 and HTTP proxy on the same port.
+4. Local proxy authentication (SOCKS5 username/password and HTTP Basic).
+5. IPv6 & UDP over SOCKS5 support.
+6. Robust code driven by comprehensive tests.
+7. Command-line usage, API server, and library integration.
+8. Serverless relay server supported by Cloudflare Worker.
 
 ## Potential Applications
 
@@ -49,6 +50,13 @@ linksocks client -t example_token -u ws://localhost:8765 -p 9870
 
 # Test the proxy
 curl --socks5 127.0.0.1:9870 http://httpbin.org/ip
+```
+
+The same local port also accepts HTTP proxy clients:
+
+```bash
+curl -x http://127.0.0.1:9870 http://httpbin.org/ip
+curl -x http://127.0.0.1:9870 https://httpbin.org/ip
 ```
 
 ### Reverse Proxy
@@ -156,4 +164,3 @@ For detailed API usage and examples, see: [HTTP API](https://linksocks.github.io
 ## License
 
 LinkSocks is open source under the MIT license.
-

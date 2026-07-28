@@ -19,9 +19,10 @@ LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCK
 1. 支持命令行使用、API 服务器和库集成
 2. 支持正向、反向和代理模式
 3. 反向代理支持轮询负载均衡
-4. 支持 SOCKS 代理身份验证
-5. 支持 SOCKS5 上的 IPv6
-6. 支持 SOCKS5 上的 UDP
+4. 混合本地代理端口：同一端口同时支持 SOCKS5 与 HTTP 代理
+5. 本地代理身份验证（SOCKS5 用户名密码与 HTTP Basic）
+6. 支持 SOCKS5 上的 IPv6
+7. 支持 SOCKS5 上的 UDP
 
 ## 潜在应用场景
 
@@ -44,6 +45,13 @@ linksocks client -t example_token -u ws://localhost:8765 -p 9870
 
 # 测试代理
 curl --socks5 127.0.0.1:9870 http://httpbin.org/ip
+```
+
+同一本地端口也接受 HTTP 代理客户端：
+
+```bash
+curl -x http://127.0.0.1:9870 http://httpbin.org/ip
+curl -x http://127.0.0.1:9870 https://httpbin.org/ip
 ```
 
 ### 反向代理

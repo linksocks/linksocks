@@ -46,15 +46,17 @@ type ProxyTestClient struct {
 }
 
 type ProxyTestClientOption struct {
-	WSPort       int           // WebSocket server port
-	Token        string        // Client token
-	SocksPort    int           // Custom SOCKS port
-	Threads      int           // Number of client threads
-	LoggerPrefix string        // Logger prefix for the client
-	LogLevel     zerolog.Level // Log level for the client logger
-	Reverse      bool          // Whether to use reverse mode
-	FastOpen     bool          // Whether to enable fast-open mode
-	Reconnect    bool          // Whether to enable auto-reconnection
+	WSPort        int           // WebSocket server port
+	Token         string        // Client token
+	SocksPort     int           // Custom SOCKS port
+	Threads       int           // Number of client threads
+	LoggerPrefix  string        // Logger prefix for the client
+	LogLevel      zerolog.Level // Log level for the client logger
+	Reverse       bool          // Whether to use reverse mode
+	FastOpen      bool          // Whether to enable fast-open mode
+	Reconnect     bool          // Whether to enable auto-reconnection
+	SocksUsername string        // Local proxy username (SOCKS5 + HTTP Basic)
+	SocksPassword string        // Local proxy password (SOCKS5 + HTTP Basic)
 
 	// Direct signaling options (optional; defaults keep relay-only behavior).
 	DirectMode       linksocks.DirectMode
@@ -183,6 +185,13 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 
 	if opt.Threads > 0 {
 		clientOpt.WithThreads(opt.Threads)
+	}
+
+	if opt.SocksUsername != "" {
+		clientOpt.WithSocksUsername(opt.SocksUsername)
+	}
+	if opt.SocksPassword != "" {
+		clientOpt.WithSocksPassword(opt.SocksPassword)
 	}
 
 	client := linksocks.NewLinkSocksClient(opt.Token, clientOpt)

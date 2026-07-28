@@ -57,7 +57,9 @@ LinkSocks 主要运行在两种代理模式下，每种模式都为不同的网�
 
 ### 协议支持
 
-- **完整的 SOCKS5**：完整的 SOCKS5 协议实现
+- **混合本地代理**：本地监听端口同时接受 SOCKS5 与 HTTP 代理客户端
+- **完整的 SOCKS5**：完整的 SOCKS5 协议实现（CONNECT 与 UDP ASSOCIATE）
+- **HTTP 代理**：同一端口支持 HTTP `CONNECT` 隧道与绝对形式 HTTP 请求
 - **身份验证**：基于令牌的身份验证以确保安全连接
 - **IPv6 支持**：完整的 IPv6 连接支持
 - **UDP 支持**：通过 SOCKS5 的 UDP 以提供全面的协议覆盖

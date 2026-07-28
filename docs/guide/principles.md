@@ -57,7 +57,9 @@ After connecting, the server will expose a SOCKS5 port for other services to con
 
 ### Protocol Support
 
-- **Full SOCKS5**: Complete SOCKS5 protocol implementation
+- **Hybrid local proxy**: The local listen port accepts both SOCKS5 and HTTP proxy clients
+- **Full SOCKS5**: Complete SOCKS5 protocol implementation (CONNECT and UDP ASSOCIATE)
+- **HTTP proxy**: HTTP `CONNECT` tunnels and absolute-form HTTP requests on the same port
 - **Authentication**: Token-based authentication for secure connections
 - **IPv6 support**: Full IPv6 connectivity support
 - **UDP support**: UDP over SOCKS5 for comprehensive protocol coverage

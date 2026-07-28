@@ -2778,7 +2778,7 @@ func (c *LinkSocksClient) runSocksServer(ctx context.Context) error {
 	c.socksListener = listener
 	c.mu.Unlock()
 
-	c.log.Info().Str("addr", listener.Addr().String()).Msg("SOCKS5 server started")
+	c.log.Info().Str("addr", listener.Addr().String()).Msg("Local proxy server started (SOCKS5 + HTTP)")
 
 	// Signal that SOCKS server is ready
 	select {
@@ -2798,11 +2798,11 @@ func (c *LinkSocksClient) runSocksServer(ctx context.Context) error {
 				if errors.Is(err, net.ErrClosed) {
 					return nil
 				}
-				c.log.Warn().Err(err).Msg("Error accepting SOCKS connection")
+				c.log.Warn().Err(err).Msg("Error accepting local proxy connection")
 				continue
 			}
 
-			c.log.Debug().Str("remote_addr", conn.RemoteAddr().String()).Msg("Accepted SOCKS5 connection")
+			c.log.Debug().Str("remote_addr", conn.RemoteAddr().String()).Msg("Accepted local proxy connection")
 			go c.handleSocksRequest(ctx, conn)
 		}
 	}
@@ -2818,8 +2818,8 @@ func (c *LinkSocksClient) handleSocksRequest(ctx context.Context, socksConn net.
 		action := c.directOnlyAction
 		c.directMu.Unlock()
 		if refuse {
-			c.log.Warn().Msg("Direct-only failed, refusing socks request")
-			_ = c.relay.RefuseSocksRequest(socksConn, 0x03)
+			c.log.Warn().Msg("Direct-only failed, refusing local proxy request")
+			_ = c.relay.RefuseLocalProxyRequest(socksConn, 0x03)
 			return
 		}
 
@@ -2845,15 +2845,15 @@ func (c *LinkSocksClient) handleSocksRequest(ctx context.Context, socksConn net.
 					c.Close()
 					return
 				}
-				_ = c.relay.RefuseSocksRequest(socksConn, 0x03)
+				_ = c.relay.RefuseLocalProxyRequest(socksConn, 0x03)
 				return
 			}
 			w := newDirectQUICDialWriter(ctx, c, plane, "direct-quic")
-			if err := c.relay.HandleSocksRequest(ctx, w, socksConn, c.socksUsername, c.socksPassword); err != nil && !errors.Is(err, context.Canceled) {
+			if err := c.relay.HandleLocalProxyRequest(ctx, w, socksConn, c.socksUsername, c.socksPassword); err != nil && !errors.Is(err, context.Canceled) {
 				if errors.Is(err, io.EOF) {
-					c.log.Debug().Err(err).Msg("Error handling SOCKS request")
+					c.log.Debug().Err(err).Msg("Error handling local proxy request")
 				} else {
-					c.log.Warn().Err(err).Msg("Error handling SOCKS request")
+					c.log.Warn().Err(err).Msg("Error handling local proxy request")
 				}
 			}
 			return
@@ -2866,7 +2866,7 @@ func (c *LinkSocksClient) handleSocksRequest(ctx context.Context, socksConn net.
 				c.Close()
 				return
 			}
-			_ = c.relay.RefuseSocksRequest(socksConn, 0x03)
+			_ = c.relay.RefuseLocalProxyRequest(socksConn, 0x03)
 			return
 		}
 	}
@@ -2885,11 +2885,11 @@ func (c *LinkSocksClient) handleSocksRequest(ctx context.Context, socksConn net.
 		case <-readyCh:
 			if usable && plane != nil && c.directQUICIsActive() {
 				w := newDirectQUICDialWriter(ctx, c, plane, "direct-quic")
-				if err := c.relay.HandleSocksRequest(ctx, w, socksConn, c.socksUsername, c.socksPassword); err != nil && !errors.Is(err, context.Canceled) {
+				if err := c.relay.HandleLocalProxyRequest(ctx, w, socksConn, c.socksUsername, c.socksPassword); err != nil && !errors.Is(err, context.Canceled) {
 					if errors.Is(err, io.EOF) {
-						c.log.Debug().Err(err).Msg("Error handling SOCKS request")
+						c.log.Debug().Err(err).Msg("Error handling local proxy request")
 					} else {
-						c.log.Warn().Err(err).Msg("Error handling SOCKS request")
+						c.log.Warn().Err(err).Msg("Error handling local proxy request")
 					}
 				}
 				return
@@ -2904,11 +2904,11 @@ func (c *LinkSocksClient) handleSocksRequest(ctx context.Context, socksConn net.
 	for time.Since(startTime) < 10*time.Second {
 		ws := c.getNextWebSocket()
 		if ws != nil {
-			if err := c.relay.HandleSocksRequest(ctx, ws, socksConn, c.socksUsername, c.socksPassword); err != nil && !errors.Is(err, context.Canceled) {
+			if err := c.relay.HandleLocalProxyRequest(ctx, ws, socksConn, c.socksUsername, c.socksPassword); err != nil && !errors.Is(err, context.Canceled) {
 				if errors.Is(err, io.EOF) {
-					c.log.Debug().Err(err).Msg("Error handling SOCKS request")
+					c.log.Debug().Err(err).Msg("Error handling local proxy request")
 				} else {
-					c.log.Warn().Err(err).Msg("Error handling SOCKS request")
+					c.log.Warn().Err(err).Msg("Error handling local proxy request")
 				}
 			}
 			return
@@ -2916,9 +2916,9 @@ func (c *LinkSocksClient) handleSocksRequest(ctx context.Context, socksConn net.
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	c.log.Warn().Msg("No valid websockets connection after waiting 10s, refusing socks request")
-	if err := c.relay.RefuseSocksRequest(socksConn, 0x03); err != nil {
-		c.log.Warn().Err(err).Msg("Error refusing SOCKS request")
+	c.log.Warn().Msg("No valid websockets connection after waiting 10s, refusing local proxy request")
+	if err := c.relay.RefuseLocalProxyRequest(socksConn, 0x03); err != nil {
+		c.log.Warn().Err(err).Msg("Error refusing local proxy request")
 	}
 }
 

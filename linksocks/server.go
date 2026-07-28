@@ -1858,7 +1858,7 @@ func (s *LinkSocksServer) waitForClients(token string, addr net.Addr) error {
 func (s *LinkSocksServer) handleSocksRequest(ctx context.Context, socksConn net.Conn, addr net.Addr, token string) error {
 	// Wait for clients to be available
 	if err := s.waitForClients(token, addr); err != nil {
-		return s.relay.RefuseSocksRequest(socksConn, 3)
+		return s.relay.RefuseLocalProxyRequest(socksConn, 3)
 	}
 	// Get WebSocket connection using round-robin with basic liveness check (ping)
 	var ws *WSConn
@@ -1868,22 +1868,22 @@ func (s *LinkSocksServer) handleSocksRequest(ctx context.Context, socksConn net.
 	maxAttempts := len(s.tokenClients[token])
 	s.mu.RUnlock()
 	if maxAttempts == 0 {
-		s.log.Warn().Int("port", s.tokens[token]).Msg("No available client for SOCKS5 port")
-		return s.relay.RefuseSocksRequest(socksConn, 3)
+		s.log.Warn().Int("port", s.tokens[token]).Msg("No available client for local proxy port")
+		return s.relay.RefuseLocalProxyRequest(socksConn, 3)
 	}
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		ws, err = s.getNextWebSocket(token)
 		if err != nil {
-			s.log.Warn().Int("port", s.tokens[token]).Msg("No available client for SOCKS5 port")
-			return s.relay.RefuseSocksRequest(socksConn, 3)
+			s.log.Warn().Int("port", s.tokens[token]).Msg("No available client for local proxy port")
+			return s.relay.RefuseLocalProxyRequest(socksConn, 3)
 		}
 		// Quick liveness probe to avoid choosing a dead socket
 		if pingErr := ws.SyncWriteControl(websocket.PingMessage, nil, time.Now().Add(1*time.Second)); pingErr != nil {
 			s.log.Debug().Str("ws_label", ws.Label()).Msg("WS ping failed, trying next client")
 			continue
 		}
-		s.log.Trace().Str("ws_label", ws.Label()).Msg("Selected reverse client for SOCKS request")
+		s.log.Trace().Str("ws_label", ws.Label()).Msg("Selected reverse client for local proxy request")
 		break
 	}
 
@@ -1896,8 +1896,8 @@ func (s *LinkSocksServer) handleSocksRequest(ctx context.Context, socksConn net.
 	}
 	s.mu.RUnlock()
 
-	// Handle SOCKS request using relay
-	return s.relay.HandleSocksRequest(ctx, ws, socksConn, username, password)
+	// Handle SOCKS5 / HTTP proxy request using hybrid local proxy demux
+	return s.relay.HandleLocalProxyRequest(ctx, ws, socksConn, username, password)
 }
 
 // runSocksServer runs a SOCKS5 server for a specific token and port
@@ -1908,7 +1908,7 @@ func (s *LinkSocksServer) runSocksServer(ctx context.Context, token string, sock
 	}
 	defer s.socketManager.ReleaseListener(socksPort)
 
-	s.log.Debug().Str("addr", listener.Addr().String()).Msg("SOCKS5 server started")
+	s.log.Debug().Str("addr", listener.Addr().String()).Msg("Local proxy server started (SOCKS5 + HTTP)")
 
 	go func() {
 		<-ctx.Done()
@@ -1923,7 +1923,7 @@ func (s *LinkSocksServer) runSocksServer(ctx context.Context, token string, sock
 				listener.(*net.TCPListener).SetDeadline(time.Time{})
 				return nil // Context cancelled
 			}
-			s.log.Warn().Err(err).Msg("Failed to accept SOCKS connection")
+			s.log.Warn().Err(err).Msg("Failed to accept local proxy connection")
 			continue
 		}
 
@@ -1931,9 +1931,9 @@ func (s *LinkSocksServer) runSocksServer(ctx context.Context, token string, sock
 			defer conn.Close()
 			if err := s.handleSocksRequest(ctx, conn, conn.RemoteAddr(), token); err != nil && !errors.Is(err, context.Canceled) {
 				if errors.Is(err, io.EOF) {
-					s.log.Debug().Err(err).Msg("Error handling SOCKS request")
+					s.log.Debug().Err(err).Msg("Error handling local proxy request")
 				} else {
-					s.log.Warn().Err(err).Msg("Error handling SOCKS request")
+					s.log.Warn().Err(err).Msg("Error handling local proxy request")
 				}
 			}
 		}(conn)

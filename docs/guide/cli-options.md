@@ -10,8 +10,8 @@ Read this page from top to bottom:
 
 | Mode | Commands | Purpose |
 |------|----------|---------|
-| Forward proxy | `linksocks server` + `linksocks client` | SOCKS5 listens on the client side |
-| Reverse proxy | `linksocks server -r` + `linksocks client -r` | SOCKS5 listens on the server side |
+| Forward proxy | `linksocks server` + `linksocks client` | Hybrid local proxy (SOCKS5 + HTTP) listens on the client side |
+| Reverse proxy | `linksocks server -r` + `linksocks client -r` | Hybrid local proxy (SOCKS5 + HTTP) listens on the server side |
 | Agent mode | `linksocks server -r -c ...` + `linksocks provider` + `linksocks connector` | Separate provider and connector access |
 | Autonomy mode | `linksocks server -r -a` + `linksocks provider -c ...` + `linksocks connector` | Provider manages its own connector token |
 | Direct transport | Add `--direct-*` flags to compatible clients and `--direct-enable` on server | Prefer peer-to-peer transport when available |
@@ -19,6 +19,8 @@ Read this page from top to bottom:
 ## Server Command
 
 The `server` command runs the WebSocket relay. Add `-r` when the SOCKS5 listener should be exposed on the server side.
+
+The local listen port is hybrid: it accepts SOCKS5 and HTTP proxy clients on the same port. HTTP supports `CONNECT` (recommended for HTTPS) and absolute-form HTTP requests. UDP remains SOCKS5-only. When `--socks-username` / `--socks-password` are set, both SOCKS5 username/password and HTTP `Proxy-Authorization: Basic` use the same credentials.
 
 ### Key Flags
 

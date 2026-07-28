@@ -10,15 +10,17 @@
 
 | 模式 | 命令 | 用途 |
 |------|------|------|
-| 正向代理 | `linksocks server` + `linksocks client` | SOCKS5 监听在客户端 |
-| 反向代理 | `linksocks server -r` + `linksocks client -r` | SOCKS5 监听在服务端 |
+| 正向代理 | `linksocks server` + `linksocks client` | 混合本地代理（SOCKS5 + HTTP）监听在客户端 |
+| 反向代理 | `linksocks server -r` + `linksocks client -r` | 混合本地代理（SOCKS5 + HTTP）监听在服务端 |
 | 代理模式 | `linksocks server -r -c ...` + `linksocks provider` + `linksocks connector` | 分离 provider 和 connector 权限 |
 | 自主模式 | `linksocks server -r -a` + `linksocks provider -c ...` + `linksocks connector` | provider 自行管理 connector token |
 | 直连传输 | 客户端加 `--direct-*`，服务端加 `--direct-enable` | 在可用时优先尝试点对点传输 |
 
 ## 服务端命令
 
-`server` 用于启动 WebSocket 中继服务。加上 `-r` 后，SOCKS5 会暴露在服务端。
+`server` 用于启动 WebSocket 中继服务。加上 `-r` 后，本地代理会暴露在服务端。
+
+本地监听端口为混合端口：同一端口同时接受 SOCKS5 与 HTTP 代理客户端。HTTP 支持 `CONNECT`（HTTPS 推荐）以及绝对形式 HTTP 请求；UDP 仍仅通过 SOCKS5。配置 `--socks-username` / `--socks-password` 时，SOCKS5 用户名密码与 HTTP `Proxy-Authorization: Basic` 共用同一套凭证。
 
 ### 关键参数
 
