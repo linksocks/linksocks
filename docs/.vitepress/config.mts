@@ -1,11 +1,46 @@
 import { defineConfig } from 'vitepress'
+import { chineseSearchOptimize, pagefindPlugin } from 'vitepress-plugin-pagefind'
 
 export default defineConfig({
   title: 'LinkSocks',
   description: 'SOCKS5 over WebSocket proxy tool',
   cleanUrls: true,
+  lastUpdated: true,
   head: [['link', { rel: 'icon', href: '/favicon.ico' }]],
-  
+
+  // Offline full-text search with Chinese segmentation support.
+  // Replaces the built-in MiniSearch local provider, which struggles with CJK text.
+  vite: {
+    plugins: [
+      pagefindPlugin({
+        customSearchQuery: chineseSearchOptimize,
+        excludeSelector: ['img', 'a.header-anchor', 'div.aside'],
+        locales: {
+          root: {
+            btnPlaceholder: 'Search',
+            placeholder: 'Search docs...',
+            emptyText: 'No results found',
+            heading: 'Total: {{searchResult}} search results.',
+            toSelect: 'to select',
+            toNavigate: 'to navigate',
+            toClose: 'to close',
+            searchBy: 'Search by'
+          },
+          zh: {
+            btnPlaceholder: '搜索',
+            placeholder: '搜索文档...',
+            emptyText: '未找到相关结果',
+            heading: '共 {{searchResult}} 条结果',
+            toSelect: '选择',
+            toNavigate: '切换',
+            toClose: '关闭',
+            searchBy: '搜索引擎'
+          }
+        }
+      })
+    ]
+  },
+
   locales: {
     root: {
       label: 'English',
@@ -18,9 +53,6 @@ export default defineConfig({
           { text: 'Guide', link: '/guide/' },
           { text: 'GitHub', link: 'https://github.com/linksocks/linksocks' }
         ],
-        search: {
-          provider: 'local'
-        },
         sidebar: [
           {
             text: 'Getting Started',
@@ -90,9 +122,6 @@ export default defineConfig({
           { text: '指南', link: '/zh/guide/' },
           { text: 'GitHub', link: 'https://github.com/linksocks/linksocks' }
         ],
-        search: {
-          provider: 'local'
-        },
         sidebar: [
           {
             text: '快速开始',

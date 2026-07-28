@@ -45,21 +45,29 @@ Preview the built documentation locally.
 ```
 docs/
 ├── .vitepress/
-│   └── config.js          # VitePress configuration
+│   ├── config.mts         # VitePress configuration (includes Pagefind search)
+│   └── theme/             # Custom theme overrides
 ├── guide/                 # User guide
-├── api/                   # HTTP API documentation  
 ├── python/                # Python bindings documentation
 ├── go/                    # Go CLI and library documentation
+├── zh/                    # Simplified Chinese translations
 ├── index.md               # Homepage
 └── package.json           # Dependencies
 ```
+
+## Search
+
+Full-text search is powered by [Pagefind](https://pagefind.app/) via
+`vitepress-plugin-pagefind`. Indexes are generated during `pnpm build` and
+support both English and Chinese queries (with `chineseSearchOptimize` for CJK
+segmentation). The search UI strings are localized per locale.
 
 ## Contributing
 
 When adding new documentation:
 
 1. Follow the existing structure and naming conventions
-2. Update the sidebar navigation in `.vitepress/config.js`
+2. Update the sidebar navigation in `.vitepress/config.mts`
 3. Use clear headings and code examples
 4. Test locally before submitting PRs
 
