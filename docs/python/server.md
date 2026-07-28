@@ -176,7 +176,7 @@ result3 = server.add_reverse_token(
 
 ### add_connector_token(connector_token, reverse_token)
 
-Add a connector token for agent proxy mode.
+Add a connector token for relay proxy mode.
 
 ```python
 def add_connector_token(

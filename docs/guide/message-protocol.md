@@ -53,7 +53,7 @@ Each proxy connection is assigned a unique `ChannelID` (UUID) that serves multip
 
 - Links related messages across the WebSocket connection
 - Enables multiplexing multiple proxy connections over a single WebSocket
-- Facilitates message routing in agent proxy mode
+- Facilitates message routing in relay proxy mode
 
 ### Message Queuing
 

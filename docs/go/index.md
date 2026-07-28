@@ -129,7 +129,7 @@ For full API and options, see Library API.
 - **Client** makes outbound connections
 - Traffic flow: App → SOCKS5 → WebSocket → Target
 
-### Agent Proxy (Three-tier)
+### Relay Proxy (Three-tier)
 - **Server** runs SOCKS5 server
 - **Provider** provides network access
 - **Connector** connects to SOCKS5 server

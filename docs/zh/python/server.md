@@ -176,7 +176,7 @@ result3 = server.add_reverse_token(
 
 ### add_connector_token(connector_token, reverse_token)
 
-为代理代理模式添加连接者令牌。
+为中继代理模式添加连接者令牌。
 
 ```python
 def add_connector_token(

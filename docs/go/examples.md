@@ -71,9 +71,9 @@ func main() {
 }
 ```
 
-## Agent Proxy: Server + Provider + Connector
+## Relay Proxy: Server + Provider + Connector
 
-### Agent Server
+### Relay Server
 
 ```go
 server := linksocks.NewLinkSocksServer(linksocks.DefaultServerOption())

@@ -7,7 +7,7 @@
 go install github.com/linksocks/linksocks/cmd/linksocks@latest
 ```
 
-Or download pre-built binaries from [releases page](https://github.com/linksocks/linksocks/releases).
+Or download pre-built binaries from the [releases page](https://github.com/linksocks/linksocks/releases).
 
 ### Docker
 ```bash
@@ -20,209 +20,220 @@ pip install linksocks
 ```
 
 ::: info
-The python version is a wrapper of the Golang implementation. See: [Python Bindings](/python/)
+The Python package wraps the Golang implementation. See: [Python Bindings](/python/)
 :::
+
+## Which Mode Should I Use?
+
+| Mode | Best for | Where SOCKS5 listens | Who exits to the network |
+|------|----------|----------------------|--------------------------|
+| **Forward proxy** | Share the server's network with clients | Client machine | Server |
+| **Reverse proxy** | Share a client's (intranet) network on the server | Server | Client (provider) |
+| **Relay proxy** | Server only relays; exit and SOCKS5 live on different machines | Connector | Provider |
+| **Relay proxy (self-managed connectors)** | Public / serverless relays; each provider issues its own connector token | Connector | Matching provider |
+
+For typical intranet penetration where both sides dial out to a relay, prefer **relay proxy (self-managed connectors)**. You can also use the public relay at `l.zetx.tech`.
 
 ## Forward Proxy
 
-In forward proxy mode, the server provides network access and the client runs the SOCKS5 interface.
+The server provides network access. The client exposes SOCKS5 locally.
 
-**Server Side:**
+**Server:**
 ```bash
-# Start server with WebSocket on port 8765
+# Start WebSocket server on port 8765
 linksocks server -t example_token
 ```
 
-**Client Side:**
+**Client:**
 ```bash
-# Connect to server and provide SOCKS5 proxy on port 9870
+# Connect and provide SOCKS5 on port 9870
 linksocks client -t example_token -u ws://localhost:8765 -p 9870
 ```
 
-**Test the proxy:**
+**Test:**
 ```bash
 curl --socks5 127.0.0.1:9870 http://httpbin.org/ip
 ```
 
 ## Reverse Proxy
 
-In reverse proxy mode, the server runs the SOCKS5 interface and clients provide network access.
+The server exposes SOCKS5. Clients join as network providers.
 
-**Server Side:**
+**Server:**
 ```bash
-# Start server with SOCKS5 proxy on port 9870
+# Start SOCKS5 proxy on port 9870
 linksocks server -t example_token -r -p 9870
 ```
 
-**Client Side:**
+**Client (provider):**
 ```bash
 # Connect as network provider
 linksocks client -t example_token -u ws://localhost:8765 -r
+# or: linksocks provider -t example_token -u ws://localhost:8765
 ```
 
-**Test the proxy:**
+**Test:**
 ```bash
 curl --socks5 127.0.0.1:9870 http://httpbin.org/ip
 ```
 
-## Agent Proxy
+## Relay Proxy
 
-In agent proxy mode, the server acts as a relay between two types of clients: providers (who share network access) and connectors (who use the proxy). Each type uses different tokens for controlled access.
+The server only relays traffic. Two token types separate roles:
 
-**Server Side:**
+- **Provider token** (`-t`): who may share network access
+- **Connector token** (`-c`): who may use the proxy
+
+**Server:**
 ```bash
-# Start server with both provider and connector tokens
 linksocks server -t provider_token -c connector_token -p 9870 -r
 ```
 
-**Provider Side:**
+**Provider (inside the network you want to share):**
 ```bash
-# Connect as network provider
 linksocks provider -t provider_token -u ws://localhost:8765
 ```
 
-**Connector Side:**
+**Connector (where you need SOCKS5):**
 ```bash
-# Connect to use the proxy
 linksocks connector -t connector_token -u ws://localhost:8765 -p 1180
 ```
 
-**Test the proxy:**
+**Test:**
 ```bash
 curl --socks5 127.0.0.1:1180 http://httpbin.org/ip
 ```
+## Relay Proxy (Self-Managed Connectors)
 
-## Autonomy Mode
+A relay-proxy variant suited to public relays and Cloudflare Workers:
 
-Autonomy mode is a special type of agent proxy with the following characteristics:
+1. The server usually does not listen for SOCKS5
+2. Each provider sets its own connector token (`-c`)
+3. No cross-provider load balancing: a connector only reaches the provider that registered that token
 
-1. The server's SOCKS proxy will not start listening
-2. Providers can specify their own connector tokens
-3. Load balancing is disabled - each connector's requests are routed only to its corresponding provider
-
-**Server Side:**
+**Server:**
 ```bash
-# Start server in autonomy mode
 linksocks server -t provider_token -r -a
 ```
 
-**Provider Side:**
+**Provider:**
 ```bash
-# Provider sets its own connector token
 linksocks provider -t provider_token -c my_connector_token -u ws://localhost:8765
 ```
 
-**Connector Side:**
+**Connector:**
 ```bash
-# Use the specific connector token to access this provider
 linksocks connector -t my_connector_token -u ws://localhost:8765 -p 1180
 ```
 
-### Use Our Public Server
+### Use the Public Server
 
-You can use our public LinkSocks server at `l.zetx.tech` for intranet penetration:
+The public relay `l.zetx.tech` runs in this mode. No self-hosted server required:
 
-**Step 1: On machine A (inside the network you want to access)**
+**Step 1: Machine A (inside the network you want to access)**
 ```bash
 linksocks provider -t any_token -u wss://l.zetx.tech -c your_token
 ```
 
-**Step 2: On machine B (where you want to access the network)**
+**Step 2: Machine B (where you need the proxy)**
 ```bash
 linksocks connector -t your_token -u wss://l.zetx.tech -p 1080
 ```
 
-**Test the connection:**
+**Test:**
 ```bash
 curl --socks5 127.0.0.1:1080 http://httpbin.org/ip
 ```
 
-## Server Deployed on Cloudflare Workers
+::: warning
+Use a strong connector token. Anyone who has it can use your provider network.
+:::
 
-Deploy LinkSocks server on Cloudflare Workers for serverless operation:
+Generate a strong token:
+
+```bash
+openssl rand -hex 16
+```
+
+## Server on Cloudflare Workers
+
+Deploy a serverless relay on Cloudflare Workers:
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/linksocks/linksocks.js)
 
-The server will be started in autonomy mode. After deployment, connect using:
+The Worker runs as **relay proxy (self-managed connectors)**. Example:
 
 ```bash
-linksocks client -t your_token -u wss://your-worker.your-subdomain.workers.dev -p 9870
+# Provider
+linksocks provider -t any_token -c your_token -u wss://your-worker.your-subdomain.workers.dev
+
+# Connector
+linksocks connector -t your_token -u wss://your-worker.your-subdomain.workers.dev -p 9870
 ```
 
 ## P2P Direct Mode (QUIC)
 
-In any relay-based proxy mode (e.g., Reverse Proxy, Agent Proxy, Autonomy Mode), P2P Direct Mode is enabled by default with `--direct-mode auto`, and candidate discovery defaults to `--direct-discovery stun`. When the provider and the connector can establish direct UDP connectivity, the data is no longer relayed through the server but is transmitted directly over the encrypted QUIC protocol, greatly reducing latency and increasing throughput.
+In reverse proxy, relay proxy, and its variants, P2P direct mode is enabled by default (`--direct-mode auto`, discovery `--direct-discovery stun`). When the provider and connector can establish direct UDP connectivity, data skips the server and travels over encrypted QUIC, reducing latency and increasing throughput.
 
-*Note: With the default STUN discovery enabled and no server specified, the program concurrently probes a built-in pool of public STUN servers and picks the fastest responding node. You can also specify a custom STUN server with `--stun-server`, or override the defaults with `--direct-mode` and `--direct-discovery` when needed.*
+With no STUN server specified, the program probes a built-in public STUN pool and picks the fastest node. Override with `--stun-server`, or change behavior via `--direct-mode` / `--direct-discovery`.
 
-**Performance Optimization Tip (Linux):**
-When running high-throughput QUIC direct connections on Linux, you might see a warning like `failed to sufficiently increase receive buffer size` due to small default UDP buffers. Although the program will function, if you want the best performance (the ideal 7MB buffer), we recommend modifying the following `sysctl` kernel parameters before running:
+**Linux performance tip:** High-throughput QUIC may log `failed to sufficiently increase receive buffer size` when default UDP buffers are small. The program still works; for best performance (~7MB ideal buffer), raise:
+
 ```bash
 sudo sysctl -w net.core.rmem_max=2500000
 sudo sysctl -w net.core.wmem_max=2500000
 ```
 
-## API Server
+## HTTP API
 
-LinkSocks server provides an HTTP API for dynamic token management, allowing you to add/remove tokens and monitor connections without restarting the server.
+Enable the HTTP API to add/remove tokens and inspect connections without restarting:
 
 ```bash
-# Start server with API enabled
 linksocks server --api-key your_api_key
 ```
 
-For detailed API usage and examples, see: [HTTP API](/guide/http-api)
-
+Details: [HTTP API](/guide/http-api)
 ## Common Options
 
-### Authentication
+### SOCKS Authentication
 ```bash
-# Server with SOCKS authentication
 linksocks server -t token -r -p 9870 -n username -w password
-
-# Client with SOCKS authentication
 linksocks client -t token -u ws://localhost:8765 -n username -w password
 ```
 
-### Debug Mode
+### Debug Logging
 ```bash
-# Enable debug logging
 linksocks server -t token -d
 linksocks client -t token -u ws://localhost:8765 -d
 ```
 
-### Custom Addresses
+### Custom Listen Addresses
 ```bash
-# Server listening on all interfaces
+# Server WebSocket on all interfaces
 linksocks server -t token -H 0.0.0.0 -P 8765
 
-# Client with custom SOCKS address
+# Client custom SOCKS address
 linksocks client -t token -u ws://localhost:8765 -h 0.0.0.0 -p 1080
 ```
 
 ## Next Steps
 
-- Learn about [Command-line Options](/guide/cli-options) for advanced configuration
-- Understand [Authentication](/guide/authentication) and security options
-- Explore [Python Library](/python/) for integration
-- Check [HTTP API](/guide/http-api) for dynamic management
+- [Command-line Options](/guide/cli-options): full flag reference and mode recipes
+- [Authentication](/guide/authentication): tokens and SOCKS credentials
+- [Python Library](/python/): in-process integration
+- [HTTP API](/guide/http-api): dynamic management
 
 ## Docker Compose
 
-You can run LinkSocks with Docker Compose on two different machines:
-
-- **Provider Side**: inside the network you want to access
-- **Connector Side**: where you want to use the SOCKS5 proxy
-
-Both sides connect to the public relay server `l.zetx.tech` by default.
+Run provider and connector on two machines. Both connect to the public relay `l.zetx.tech` by default.
 
 ::: warning
-Use a strong connector token. Anyone who has the token can use your provider.
+Use a strong connector token. Anyone who has it can use your provider.
 :::
 
 ### Provider Side
 
-Create a `compose.yaml` on the provider machine:
+Create `compose.yaml` on the provider machine:
 
 ```yaml
 services:
@@ -235,7 +246,7 @@ services:
     restart: unless-stopped
 ```
 
-Start it:
+Start:
 
 ```bash
 docker compose up -d
@@ -244,7 +255,7 @@ docker compose logs -f linksocks-provider
 
 ### Connector Side
 
-Create a `compose.yaml` on the connector machine:
+Create `compose.yaml` on the connector machine:
 
 ```yaml
 services:
@@ -259,7 +270,7 @@ services:
     restart: unless-stopped
 ```
 
-Start and test it:
+Start and test:
 
 ```bash
 docker compose up -d

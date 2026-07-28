@@ -239,7 +239,7 @@ client = Client("token", logger=logger)
 
 ## Advanced Examples
 
-### Agent Proxy with Connector Management
+### Relay Proxy with Connector Management
 
 ```python
 import asyncio

@@ -53,7 +53,7 @@ Version(1) + Type(1) + Protocol(1) + ChannelID(16) + Compression(1) + DataLen(4)
 
 - 在 WebSocket 连接中链接相关消息
 - 通过单个 WebSocket 启用多个代理连接的多路复用
-- 在代理代理模式下促进消息路由
+- 在中继代理模式下促进消息路由
 
 ### 消息队列
 
