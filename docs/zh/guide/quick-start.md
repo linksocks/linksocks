@@ -23,9 +23,20 @@ pip install linksocks
 Python 版本是 Golang 实现的包装器。参见：[Python 绑定](/zh/python/)
 :::
 
+## 选哪种模式？
+
+| 模式 | 适合场景 | SOCKS5 在哪 | 谁出网 |
+|------|----------|-------------|--------|
+| **正向代理** | 把服务端所在网络共享给客户端 | 客户端本机 | 服务端 |
+| **反向代理** | 把客户端（内网）网络共享到服务端 | 服务端 | 客户端（provider） |
+| **中继代理** | 服务端只做中转；出网与 SOCKS5 分属两端 | connector 本机 | provider |
+| **中继代理（自助连接者管理）** | 公共中继 / 无服务器中继；每个 provider 自己发 connector token | connector 本机 | 对应 provider |
+
+日常「内网穿透、两端都主动连中继」优先用 **中继代理（自助连接者管理）**，也可直接用公共服务器 `l.zetx.tech`。
+
 ## 正向代理
 
-在正向代理模式下，服务器提供网络访问，客户端运行 SOCKS5 接口。
+服务端提供网络访问，客户端在本机开 SOCKS5。
 
 **服务端：**
 ```bash
@@ -39,161 +50,168 @@ linksocks server -t example_token
 linksocks client -t example_token -u ws://localhost:8765 -p 9870
 ```
 
-**测试代理：**
+**测试：**
 ```bash
 curl --socks5 127.0.0.1:9870 http://httpbin.org/ip
 ```
 
 ## 反向代理
 
-在反向代理模式下，服务器运行 SOCKS5 接口，客户端提供网络访问。
+服务端开 SOCKS5，客户端作为网络提供者接入。
 
 **服务端：**
 ```bash
-# 在端口 9870 启动 SOCKS5 代理服务器
+# 在端口 9870 启动 SOCKS5 代理
 linksocks server -t example_token -r -p 9870
 ```
 
-**客户端：**
+**客户端（provider）：**
 ```bash
 # 作为网络提供者连接
 linksocks client -t example_token -u ws://localhost:8765 -r
+# 或：linksocks provider -t example_token -u ws://localhost:8765
 ```
 
-**测试代理：**
+**测试：**
 ```bash
 curl --socks5 127.0.0.1:9870 http://httpbin.org/ip
 ```
 
-## 代理代理模式
+## 中继代理
 
-在代理代理模式下，服务器充当两种类型客户端之间的中继：提供者（共享网络访问）和连接者（使用代理）。每种类型使用不同的令牌进行受控访问。
+服务端只做中继，不直接出网。用两套令牌区分角色：
+
+- **provider token**（`-t`）：谁可以共享网络
+- **connector token**（`-c`）：谁可以使用代理
 
 **服务端：**
 ```bash
-# 使用提供者和连接者令牌启动服务器
 linksocks server -t provider_token -c connector_token -p 9870 -r
 ```
 
-**提供者端：**
+**Provider（在要共享的网络内）：**
 ```bash
-# 作为网络提供者连接
 linksocks provider -t provider_token -u ws://localhost:8765
 ```
 
-**连接者端：**
+**Connector（需要 SOCKS5 的机器）：**
 ```bash
-# 连接使用代理
 linksocks connector -t connector_token -u ws://localhost:8765 -p 1180
 ```
 
-**测试代理：**
+**测试：**
 ```bash
 curl --socks5 127.0.0.1:1180 http://httpbin.org/ip
 ```
 
-## 自主模式
+## 中继代理（自助连接者管理）
 
-自主模式是一种特殊类型的代理代理，具有以下特征：
+中继代理的变体，适合公共中继或 Cloudflare Workers 等场景：
 
-1. 服务器的 SOCKS 代理不会开始监听
-2. 提供者可以指定自己的连接者令牌
-3. 负载均衡被禁用 - 每个连接者的请求只路由到对应的提供者
+1. 服务端通常不监听 SOCKS5
+2. 每个 provider 自行指定 connector token（`-c`）
+3. 不做跨 provider 负载均衡：一个 connector 只连到登记了该 token 的 provider
 
 **服务端：**
 ```bash
-# 在自主模式下启动服务器
 linksocks server -t provider_token -r -a
 ```
 
-**提供者端：**
+**Provider：**
 ```bash
-# 提供者设置自己的连接者令牌
 linksocks provider -t provider_token -c my_connector_token -u ws://localhost:8765
 ```
 
-**连接者端：**
+**Connector：**
 ```bash
-# 使用特定的连接者令牌访问此提供者
 linksocks connector -t my_connector_token -u ws://localhost:8765 -p 1180
 ```
 
-### 使用我们的公共服务器
+### 使用公共服务器
 
-您可以使用我们在 `l.zetx.tech` 的公共 LinkSocks 服务器进行内网穿透：
+公共中继 `l.zetx.tech` 即按此模式运行，无需自建 server：
 
-**步骤 1：在机器 A 上（您要访问的网络内部）**
+**步骤 1：机器 A（要访问的网络内部）**
 ```bash
 linksocks provider -t any_token -u wss://l.zetx.tech -c your_token
 ```
 
-**步骤 2：在机器 B 上（您要访问网络的地方）**
+**步骤 2：机器 B（需要代理的地方）**
 ```bash
 linksocks connector -t your_token -u wss://l.zetx.tech -p 1080
 ```
 
-**测试连接：**
+**测试：**
 ```bash
 curl --socks5 127.0.0.1:1080 http://httpbin.org/ip
 ```
 
+::: warning
+请使用足够复杂的 connector token。任何持有该 token 的人都可以使用你的 provider 网络。
+:::
+
+生成强 token 示例：
+
+```bash
+openssl rand -hex 16
+```
+
 ## 在 Cloudflare Workers 上部署服务器
 
-在 Cloudflare Workers 上部署 LinkSocks 服务器实现无服务器运行：
+无服务器中继可部署到 Cloudflare Workers：
 
 [![部署到 Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/linksocks/linksocks.js)
 
-服务器将在自主模式下启动。部署后，使用以下方式连接：
+部署后的 Worker 以 **中继代理（自助连接者管理）** 方式运行。连接示例：
 
 ```bash
-linksocks client -t your_token -u wss://your-worker.your-subdomain.workers.dev -p 9870
+# Provider
+linksocks provider -t any_token -c your_token -u wss://your-worker.your-subdomain.workers.dev
+
+# Connector
+linksocks connector -t your_token -u wss://your-worker.your-subdomain.workers.dev -p 9870
 ```
 
-## P2P 直连模式 (QUIC)
+## P2P 直连（QUIC）
 
-在任何基于中继的代理模式下（例如反向代理、代理代理、自主代理模式），默认都会开启 P2P 直连能力。当提供者（Provider）和连接者（Connector）之间可以建立直接的 UDP 连通性时，数据将不再经过服务器中转，而是直接通过加密的 QUIC 协议传输，极大降低延迟并提高吞吐量。
+在反向代理、中继代理及其变体中，默认开启 P2P 直连（`--direct-mode auto`，候选发现 `--direct-discovery stun`）。当 provider 与 connector 之间能建立 UDP 直连时，数据不再经服务器中转，而通过加密 QUIC 直传，以降低延迟、提高吞吐。
 
-*提示：默认启用 STUN 发现且未指定服务器时，程序会自动并发请求内置的公共 STUN 服务器池，选择最快响应的节点获取公网地址。您也可以使用 `--stun-server` 自定义 STUN 服务器，或在需要时通过 `--direct-mode` 和 `--direct-discovery` 覆盖默认行为。*
+未指定 STUN 服务器时，程序会并发探测内置公共 STUN 池，并选用响应最快的节点。可用 `--stun-server` 自定义，或用 `--direct-mode` / `--direct-discovery` 覆盖默认行为。
 
-**性能优化提示 (Linux)：**
-在 Linux 系统上运行大流量的 QUIC 直连时，如果收到类似于 `failed to sufficiently increase receive buffer size` 的警告，这是因为系统默认的 UDP 缓冲区较小。虽然程序会尽量处理，但如果您追求最佳性能（7MB 的理想缓冲区），建议您在运行前通过 root 权限修改以下 sysctl 内核参数：
+**Linux 性能提示：** 大流量 QUIC 直连时若出现 `failed to sufficiently increase receive buffer size`，多为系统默认 UDP 缓冲区偏小。程序仍可工作；若追求最佳性能（约 7MB 理想缓冲），可在运行前调整：
+
 ```bash
 sudo sysctl -w net.core.rmem_max=2500000
 sudo sysctl -w net.core.wmem_max=2500000
 ```
 
-## API 服务器
+## HTTP API
 
-LinkSocks 服务器提供 HTTP API 用于动态令牌管理，允许您添加/删除令牌并监控连接，无需重启服务器。
+服务端可启用 HTTP API，用于动态增删令牌、查看连接，无需重启：
 
 ```bash
-# 启动启用 API 的服务器
 linksocks server --api-key your_api_key
 ```
 
-详细的 API 使用方法和示例，参见：[HTTP API](/zh/guide/http-api)
+详见：[HTTP API](/zh/guide/http-api)
 
 ## 常用选项
 
-### 身份验证
+### SOCKS 身份验证
 ```bash
-# 使用 SOCKS 身份验证的服务器
 linksocks server -t token -r -p 9870 -n username -w password
-
-# 使用 SOCKS 身份验证的客户端
 linksocks client -t token -u ws://localhost:8765 -n username -w password
 ```
 
-### 调试模式
+### 调试日志
 ```bash
-# 启用调试日志
 linksocks server -t token -d
 linksocks client -t token -u ws://localhost:8765 -d
 ```
 
-### 自定义地址
+### 自定义监听地址
 ```bash
-# 服务器监听所有接口
+# 服务端 WebSocket 监听所有接口
 linksocks server -t token -H 0.0.0.0 -P 8765
 
 # 客户端自定义 SOCKS 地址
@@ -202,25 +220,20 @@ linksocks client -t token -u ws://localhost:8765 -h 0.0.0.0 -p 1080
 
 ## 下一步
 
-- 了解[命令行选项](/zh/guide/cli-options)进行高级配置
-- 理解[身份验证](/zh/guide/authentication)和安全选项
-- 探索[Python 库](/zh/python/)进行集成
-- 查看[HTTP API](/zh/guide/http-api)进行动态管理
+- [命令行选项](/zh/guide/cli-options)：完整参数与模式对照
+- [身份验证](/zh/guide/authentication)：令牌与 SOCKS 凭据
+- [Python 库](/zh/python/)：程序内集成
+- [HTTP API](/zh/guide/http-api)：动态管理
 
 ## Docker Compose
 
-您可以使用 Docker Compose 在两台不同的机器上运行 LinkSocks：
-
-- **Provider Side**：位于您要访问的网络内部
-- **Connector Side**：位于您希望使用 SOCKS5 代理的机器上
-
-默认情况下，两端都连接到公共中继服务器 `l.zetx.tech`。
+在两台机器上分别运行 provider 与 connector，默认都连公共中继 `l.zetx.tech`。
 
 ::: warning
-请使用足够复杂的 connector token。任何持有该 token 的人都可以连接并使用您的 provider。
+请使用足够复杂的 connector token。任何持有该 token 的人都可以连接并使用你的 provider。
 :::
 
-### Provider Side
+### Provider 侧
 
 在 provider 机器上创建 `compose.yaml`：
 
@@ -242,7 +255,7 @@ docker compose up -d
 docker compose logs -f linksocks-provider
 ```
 
-### Connector Side
+### Connector 侧
 
 在 connector 机器上创建 `compose.yaml`：
 

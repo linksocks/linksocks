@@ -3,7 +3,7 @@
 LinkSocks 支持多种身份验证方法：
 
 1. **WebSocket 令牌** - 在正向/反向代理模式中使用
-2. **连接者令牌** - 在代理代理模式中由代理消费者使用
+2. **连接者令牌** - 在中继代理模式中由 connector（代理使用者）使用
 3. **SOCKS 凭据** - 由连接到代理的程序使用
 
 ## WebSocket 令牌
@@ -23,13 +23,13 @@ linksocks client -u ws://localhost:8765
 
 > **注意：** `anonymous` 令牌是为未指定令牌的客户端保留的。您不能在服务器上手动将 `anonymous` 设置为令牌或连接者令牌。
 
-## 代理代理模式令牌
+## 中继代理模式令牌
 
-在代理代理模式下，服务器充当提供者和连接者之间的中继，每种类型使用不同的令牌。
+在中继代理模式下，服务器充当 provider 与 connector 之间的中继，角色使用不同令牌。
 
-### 常规代理模式
+### 常规中继代理
 
-在常规代理模式下，服务器集中管理所有令牌：
+在常规中继代理下，服务器集中管理全部令牌：
 
 **服务器端 - 定义两个令牌：**
 ```bash
@@ -49,9 +49,9 @@ linksocks provider -t provider_token -u ws://localhost:8765
 linksocks connector -t connector_token -u ws://localhost:8765 -p 1180
 ```
 
-### 自主模式令牌
+### 自助连接者管理令牌
 
-自主模式允许提供者设置自己的连接者令牌，创建隔离的提供者-连接者对。
+开启自助连接者管理后，provider 可自行设置 connector token，形成隔离的 provider–connector 对。
 
 **服务器端 - 仅提供者令牌：**
 ```bash
@@ -71,7 +71,7 @@ linksocks provider -t provider_token -c my_custom_connector_token -u ws://localh
 linksocks connector -t my_custom_connector_token -u ws://localhost:8765 -p 1180
 ```
 
-### 自主模式令牌流程
+### 自助连接者管理令牌流程
 
 1. **服务器**：仅验证提供者令牌（`-t provider_token`），不管理连接者令牌
 2. **提供者**：使用提供者令牌（`-t`）进行身份验证并定义连接者令牌（`-c`）
@@ -86,7 +86,7 @@ linksocks connector -t my_custom_connector_token -u ws://localhost:8765 -p 1180
 
 - **正向模式**：在 `client` 上设置（运行 SOCKS5 服务器的一方）
 - **反向模式**：在 `server` 上设置（运行 SOCKS5 服务器的一方）
-- **代理模式**：在 `connector` 上设置（运行 SOCKS5 服务器的一方）
+- **中继代理**：在 `connector` 上设置（运行 SOCKS5 的一方）
 
 ```bash
 # 正向模式 - 客户端提供 SOCKS5 服务器
@@ -95,7 +95,7 @@ linksocks client -t token -u ws://localhost:8765 -p 9870 -n user -w pass
 # 反向模式 - 服务器提供 SOCKS5 服务器
 linksocks server -t token -r -p 9870 -n user -w pass
 
-# 代理模式 - 连接者提供 SOCKS5 服务器
+# 中继代理 - connector 提供 SOCKS5
 linksocks connector -t connector_token -p 9870 -r -n user -w pass
 ```
 

@@ -3,7 +3,7 @@
 LinkSocks supports multiple authentication methods:
 
 1. **WebSocket Token** - Used in forward/reverse proxy modes
-2. **Connector Token** - Used by proxy consumers in agent proxy mode
+2. **Connector Token** - Used by connectors (proxy consumers) in relay proxy mode
 3. **SOCKS Credentials** - Used by programs connecting to the proxy
 
 ## WebSocket Token
@@ -22,13 +22,13 @@ linksocks client -u ws://localhost:8765
 
 > **Note:** The token `anonymous` is reserved for clients that don't specify a token. You cannot manually set `anonymous` as a token or connector token on the server.
 
-## Agent Proxy Mode Tokens
+## Relay Proxy Mode Tokens
 
-In agent proxy mode, the server acts as a relay between providers and connectors, each using different tokens.
+In relay proxy mode, the server acts as a relay between providers and connectors, each using different tokens.
 
-### Regular Agent Mode
+### Regular Relay Proxy
 
-In regular agent mode, the server manages all tokens centrally:
+In regular relay proxy mode, the server manages all tokens centrally:
 
 **Server Side - Define Both Tokens:**
 ```bash
@@ -48,9 +48,9 @@ linksocks provider -t provider_token -u ws://localhost:8765
 linksocks connector -t connector_token -u ws://localhost:8765 -p 1180
 ```
 
-### Autonomy Mode Tokens
+### Self-Managed Connector Tokens
 
-Autonomy mode allows providers to set their own connector tokens, creating isolated provider-connector pairs.
+With self-managed connectors, providers set their own connector tokens, creating isolated provider–connector pairs.
 
 **Server Side - Only Provider Token:**
 ```bash
@@ -70,7 +70,7 @@ linksocks provider -t provider_token -c my_custom_connector_token -u ws://localh
 linksocks connector -t my_custom_connector_token -u ws://localhost:8765 -p 1180
 ```
 
-### Autonomy Mode Token Flow
+### Self-Managed Connector Token Flow
 
 1. **Server**: Only validates Provider Tokens (`-t provider_token`), doesn't manage Connector Tokens
 2. **Provider**: Authenticates with Provider Token (`-t`) and defines Connector Token (`-c`)
@@ -85,7 +85,7 @@ Optional username/password authentication on the SOCKS5 interface itself.
 
 - **Forward mode**: Set on `client` (who runs the SOCKS5 server)
 - **Reverse mode**: Set on `server` (who runs the SOCKS5 server)
-- **Agent mode**: Set on `connector` (who runs the SOCKS5 server)
+- **Relay proxy**: Set on `connector` (who runs the SOCKS5 server)
 
 ```bash
 # Forward mode - client provides SOCKS5 server
@@ -94,7 +94,7 @@ linksocks client -t token -u ws://localhost:8765 -p 9870 -n user -w pass
 # Reverse mode - server provides SOCKS5 server
 linksocks server -t token -r -p 9870 -n user -w pass
 
-# Agent mode - connector provides SOCKS5 server
+# Relay proxy - connector provides SOCKS5 server
 linksocks connector -t connector_token -p 9870 -r -n user -w pass
 ```
 

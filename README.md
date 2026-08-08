@@ -20,7 +20,7 @@ Crucially, it supports Serverless Intranet Penetration (compatible with Cloudfla
 
 ## Features
 
-1. Forward, reverse and agent proxy modes.
+1. Forward, reverse and relay proxy modes.
 2. Round-robin load balancing for reverse proxy.
 3. Hybrid local proxy port: SOCKS5 and HTTP proxy on the same port.
 4. Local proxy authentication (SOCKS5 username/password and HTTP Basic).
@@ -72,7 +72,7 @@ linksocks client -t example_token -u ws://localhost:8765 -r
 curl --socks5 127.0.0.1:9870 http://httpbin.org/ip
 ```
 
-### Agent Proxy
+### Relay Proxy
 
 ```bash
 # Server Side: Start server with both provider and connector tokens
@@ -88,26 +88,26 @@ linksocks connector -t connector_token -u ws://localhost:8765 -p 1180
 curl --socks5 127.0.0.1:1180 http://httpbin.org/ip
 ```
 
-### Autonomy Mode
+### Relay Proxy (Self-Managed Connectors)
 
 ```bash
-# Server Side: Start server in autonomy mode
+# Server Side: Start server with self-managed connectors
 linksocks server -t provider_token -r -a
 
-# Provider Side: Provider sets its own connector token
+# Provider Side: Provider registers its own connector token
 linksocks provider -t provider_token -c my_connector_token -u ws://localhost:8765
 
-# Connector Side: Use the specific connector token to access this provider
+# Connector Side: Use the provider-registered connector token to reach this provider
 linksocks connector -t my_connector_token -u ws://localhost:8765 -p 1180
 ```
 
-You can also use our public server (for autonomy mode proxy) at `ws://l.zetx.tech`:
+You can also use our public server (for self-managed connector relay) at `ws://l.zetx.tech`:
 
 ```bash
-# Provider Side: Provider sets its own connector token
+# Provider Side: Provider registers its own connector token
 linksocks provider -c my_connector_token -u l.zetx.tech
 
-# Connector Side: Use the specific connector token to access this provider
+# Connector Side: Use the provider-registered connector token to reach this provider
 linksocks connector -t my_connector_token -u l.zetx.tech -p 1180
 ```
 
@@ -144,7 +144,7 @@ pip install linksocks
 
 ## Cloudflare Worker
 
-LinkSocks server (for autonomy mode proxy) can be hosted on Cloudflare Worker, see: [linksocks/linksocks.js](https://github.com/linksocks/linksocks.js)
+LinkSocks server (for self-managed connector relay) can be hosted on Cloudflare Worker, see: [linksocks/linksocks.js](https://github.com/linksocks/linksocks.js)
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/linksocks/linksocks.js)
 

@@ -73,7 +73,7 @@ if err != nil {
 }
 log.Printf("令牌：%s，端口：%d", result.Token, result.Port)
 
-// 连接者令牌（用于代理代理）
+// 连接者令牌（用于中继代理）
 connectorToken, err := server.AddConnectorToken("connector_token", "reverse_token")
 if err != nil {
     log.Fatal(err)

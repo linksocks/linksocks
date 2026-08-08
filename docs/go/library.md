@@ -73,7 +73,7 @@ if err != nil {
 }
 log.Printf("Token: %s, Port: %d", result.Token, result.Port)
 
-// Connector token (for agent proxy)
+// Connector token (for relay proxy)
 connectorToken, err := server.AddConnectorToken("connector_token", "reverse_token")
 if err != nil {
     log.Fatal(err)

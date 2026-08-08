@@ -146,7 +146,7 @@ Returns server version and a list of all tokens with their types and active clie
 - `port` (optional): Specific SOCKS5 port, auto-allocated if not provided
 - `username` (optional): SOCKS5 authentication username
 - `password` (optional): SOCKS5 authentication password  
-- `allow_manage_connector` (optional): Allow clients to manage connector tokens (autonomy mode)
+- `allow_manage_connector` (optional): Allow clients to manage connector tokens (self-managed connectors)
 
 **Response:**
 

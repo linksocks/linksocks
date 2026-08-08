@@ -146,7 +146,7 @@ X-API-Key: your_secret_api_key
 - `port`（可选）：特定的 SOCKS5 端口，如果未提供则自动分配
 - `username`（可选）：SOCKS5 身份验证用户名
 - `password`（可选）：SOCKS5 身份验证密码  
-- `allow_manage_connector`（可选）：允许客户端管理连接者令牌（自主模式）
+- `allow_manage_connector`（可选）：允许客户端管理连接者令牌（自助连接者管理）
 
 **响应：**
 

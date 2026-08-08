@@ -1,24 +1,35 @@
 # Command-line Options
 
-Read this page from top to bottom:
+This page is ordered so you can:
 
-1. Pick a mode.
-2. Fill in the key flags.
-3. Add other flags only when needed.
+1. Pick a mode
+2. Fill in the key flags
+3. Add other flags only when you need them
+
+Most setups only need the key flags. Other flags cover authentication, performance, and direct transport.
 
 ## Modes at a Glance
 
 | Mode | Commands | Purpose |
 |------|----------|---------|
-| Forward proxy | `linksocks server` + `linksocks client` | Hybrid local proxy (SOCKS5 + HTTP) listens on the client side |
-| Reverse proxy | `linksocks server -r` + `linksocks client -r` | Hybrid local proxy (SOCKS5 + HTTP) listens on the server side |
-| Agent mode | `linksocks server -r -c ...` + `linksocks provider` + `linksocks connector` | Separate provider and connector access |
-| Autonomy mode | `linksocks server -r -a` + `linksocks provider -c ...` + `linksocks connector` | Provider manages its own connector token |
-| Direct transport | Add `--direct-*` flags to compatible clients and `--direct-enable` on server | Prefer peer-to-peer transport when available |
+| Forward proxy | `linksocks server` + `linksocks client` | Server exits to the internet; hybrid local proxy (SOCKS5 + HTTP) listens on the client |
+| Reverse proxy | `linksocks server -r` + `linksocks client -r` | Client exits to the internet; hybrid local proxy (SOCKS5 + HTTP) listens on the server |
+| Relay proxy | `linksocks server -r -c ...` + `linksocks provider` + `linksocks connector` | Server is only a relay; provider exits, connector exposes the hybrid local proxy |
+| Relay proxy (self-managed connectors) | `linksocks server -r -a` + `linksocks provider -c ...` + `linksocks connector` | Relay proxy variant where each provider registers its own connector token |
+| Direct transport | Client `--direct-*`, server `--direct-enable` | Prefer peer-to-peer after relay handshake succeeds |
+
+### Roles
+
+| Role | Responsibility |
+|------|----------------|
+| **server** | WebSocket relay. May also listen for the hybrid local proxy in reverse proxy mode |
+| **client** | General client. Default: forward hybrid local proxy endpoint. With `-r`: acts as provider |
+| **provider** | Shortcut for `client -r`. Shares this machine's outbound network |
+| **connector** | Uses a connector token, opens the hybrid local proxy, traffic exits via the matching provider |
 
 ## Server Command
 
-The `server` command runs the WebSocket relay. Add `-r` when the SOCKS5 listener should be exposed on the server side.
+`server` runs the WebSocket relay. Add `-r` for reverse / relay-style modes (local proxy on the server, or left to connectors).
 
 The local listen port is hybrid: it accepts SOCKS5 and HTTP proxy clients on the same port. HTTP supports `CONNECT` (recommended for HTTPS) and absolute-form HTTP requests. UDP remains SOCKS5-only. When `--socks-username` / `--socks-password` are set, both SOCKS5 username/password and HTTP `Proxy-Authorization: Basic` use the same credentials.
 
@@ -26,67 +37,67 @@ The local listen port is hybrid: it accepts SOCKS5 and HTTP proxy clients on the
 
 | Parameter | Short | Default | Description |
 |-----------|-------|---------|-------------|
-| `--token` | `-t` | auto-generated when omitted on server-managed modes | Main authentication token. Also supports `LINKSOCKS_TOKEN`. |
-| `--ws-host` | `-H` | `0.0.0.0` | WebSocket listen host. Also supports `LINKSOCKS_WEBSOCKET_HOST`. |
-| `--ws-port` | `-P` | `8765` | WebSocket listen port. Also supports `LINKSOCKS_WEBSOCKET_PORT`. |
-| `--reverse` | `-r` | `false` | Switch from forward relay mode to reverse/agent mode |
-| `--socks-host` | `-s` | `127.0.0.1` | SOCKS5 listen host in reverse mode |
-| `--socks-port` | `-p` | `9870` | SOCKS5 listen port in reverse mode |
+| `--token` | `-t` | auto-generated when omitted on server-managed modes | Main authentication token. Also `LINKSOCKS_TOKEN`. |
+| `--ws-host` | `-H` | `0.0.0.0` | WebSocket listen host. Also `LINKSOCKS_WEBSOCKET_HOST`. |
+| `--ws-port` | `-P` | `8765` | WebSocket listen port. Also `LINKSOCKS_WEBSOCKET_PORT`. |
+| `--reverse` | `-r` | `false` | Switch from forward relay to reverse / relay-style modes |
+| `--socks-host` | `-s` | `127.0.0.1` | Hybrid local proxy listen host in reverse mode |
+| `--socks-port` | `-p` | `9870` | Hybrid local proxy listen port in reverse mode |
 
 ### Other Flags
 
 | Parameter | Short | Default | Description |
 |-----------|-------|---------|-------------|
-| `--connector-token` | `-c` | auto-generated when omitted | Connector token for agent mode. Also supports `LINKSOCKS_CONNECTOR_TOKEN`. |
-| `--connector-autonomy` | `-a` | `false` | Let providers manage connector tokens themselves. Also supports `LINKSOCKS_CONNECTOR_AUTONOMY`. |
-| `--socks-username` | `-n` | | SOCKS5 username for reverse mode. Also supports `LINKSOCKS_SOCKS_USERNAME`. |
-| `--socks-password` | `-w` | | SOCKS5 password for reverse mode. Also supports `LINKSOCKS_SOCKS_PASSWORD`. |
-| `--socks-nowait` | `-i` | `false` | Start SOCKS5 immediately without waiting for a provider |
-
-| `--api-key` | `-k` | | Enable the HTTP API. Also supports `LINKSOCKS_API_KEY`. |
-| `--buffer-size` | `-b` | `1048576` | Transfer buffer size |
-| `--upstream-proxy` | `-x` | | Outbound proxy for server-side connections. Also supports `LINKSOCKS_UPSTREAM_PROXY`. |
-| `--fast-open` | `-f` | `false` | Allow data transfer before the remote side is fully confirmed. Also supports `LINKSOCKS_FASTOPEN`. |
+| `--connector-token` | `-c` | auto-generated when omitted | Connector token for relay proxy. Also `LINKSOCKS_CONNECTOR_TOKEN`. |
+| `--connector-autonomy` | `-a` | `false` | Let providers register their own connector tokens. Also `LINKSOCKS_CONNECTOR_AUTONOMY`. |
+| `--socks-username` | `-n` | | Local proxy username (SOCKS5 and HTTP Basic) in reverse mode. Also `LINKSOCKS_SOCKS_USERNAME`. |
+| `--socks-password` | `-w` | | Local proxy password (SOCKS5 and HTTP Basic) in reverse mode. Also `LINKSOCKS_SOCKS_PASSWORD`. |
+| `--socks-nowait` | `-i` | `false` | Start the hybrid local proxy immediately without waiting for a provider |
+| `--api-key` | `-k` | | Enable the HTTP API. Also `LINKSOCKS_API_KEY`. |
+| `--buffer-size` | `-b` | `1048576` | Transfer buffer size in bytes |
+| `--upstream-proxy` | `-x` | | Outbound proxy for server-side connections. Also `LINKSOCKS_UPSTREAM_PROXY`. |
+| `--fast-open` | `-f` | `false` | Allow data transfer before the remote side is fully confirmed. Also `LINKSOCKS_FASTOPEN`. |
 | `--connector-wait-provider` | | `5s` | How long a connector waits for a provider to reconnect |
 | `--direct-enable` | | `false` | Enable direct signaling for compatible clients |
-| `--direct-rendezvous-udp` | | `false` | Enable server-side UDP rendezvous. Requires a real UDP listener and is not supported on Cloudflare Workers. |
-| `--direct-rendezvous-host` | | `ws-host` | Rendezvous UDP host |
-| `--direct-rendezvous-port` | | `ws-port` | Rendezvous UDP port |
-| `--debug` | `-d` | | Debug logging, use `-dd` for trace |
+| `--direct-rendezvous-udp` | | `false` | Enable server-side UDP rendezvous. Needs a real UDP listener; not supported on Cloudflare Workers. |
+| `--direct-rendezvous-host` | | same as `ws-host` | Rendezvous UDP host |
+| `--direct-rendezvous-port` | | same as `ws-port` | Rendezvous UDP port |
+| `--debug` | `-d` | | Debug logging; use `-dd` for trace |
 
-## Client, Provider, and Connector Commands
+## Client, Provider, and Connector
 
-Use `client` as the general-purpose command:
+These three share the same client implementation. The difference is the default role and the flags you usually set:
 
-- `linksocks client` = forward proxy client
-- `linksocks client -r` = reverse provider
-- `linksocks provider` = shortcut for `linksocks client -r`
-- `linksocks connector` = client alias typically used with connector tokens
+| Command | Equivalent to | Typical use |
+|---------|---------------|-------------|
+| `linksocks client` | Forward proxy client | Local hybrid proxy, exit via server |
+| `linksocks client -r` | Provider in reverse / relay | Share this machine's outbound network |
+| `linksocks provider` | Shortcut for `client -r` | Same as above |
+| `linksocks connector` | Client alias for connector tokens | Local hybrid proxy, exit via a matched provider |
 
 ### Key Flags
 
 | Parameter | Short | Default | Description |
 |-----------|-------|---------|-------------|
-| `--token` | `-t` | | Authentication token. Also supports `LINKSOCKS_TOKEN`. |
-| `--url` | `-u` | `ws://localhost:8765` | WebSocket server URL. Also supports `LINKSOCKS_URL`. |
-| `--reverse` | `-r` | `false` | Turn `client` into a reverse provider |
-| `--socks-host` | `-s` | `127.0.0.1` | Local SOCKS5 listen host for forward or connector mode. Also supports `LINKSOCKS_SOCKS_HOST`. |
-| `--socks-port` | `-p` | `9870` | Local SOCKS5 listen port for forward or connector mode. Also supports `LINKSOCKS_SOCKS_PORT`. |
+| `--token` | `-t` | | Authentication token. Also `LINKSOCKS_TOKEN`. |
+| `--url` | `-u` | `ws://localhost:8765` | WebSocket server URL. Also `LINKSOCKS_URL`. |
+| `--reverse` | `-r` | `false` | Turn `client` into a provider (reverse / relay exit side) |
+| `--socks-host` | `-s` | `127.0.0.1` | Local hybrid proxy host for forward or connector mode. Also `LINKSOCKS_SOCKS_HOST`. |
+| `--socks-port` | `-p` | `9870` | Local hybrid proxy port for forward or connector mode. Also `LINKSOCKS_SOCKS_PORT`. |
 
 ### Other Flags
 
 | Parameter | Short | Default | Description |
 |-----------|-------|---------|-------------|
-| `--connector-token` | `-c` | | Connector token for agent/autonomy mode. Also supports `LINKSOCKS_CONNECTOR_TOKEN`. |
-| `--socks-username` | `-n` | | Local SOCKS5 username. Also supports `LINKSOCKS_SOCKS_USERNAME`. |
-| `--socks-password` | `-w` | | Local SOCKS5 password. Also supports `LINKSOCKS_SOCKS_PASSWORD`. |
-| `--socks-no-wait` | `-i` | `false` | Start SOCKS5 immediately |
-| `--no-reconnect` | `-R` | `false` | Exit when the server disconnects |
-
+| `--connector-token` | `-c` | | Connector token registered by a provider in relay / self-managed mode. Also `LINKSOCKS_CONNECTOR_TOKEN`. |
+| `--socks-username` | `-n` | | Local proxy username (SOCKS5 and HTTP Basic). Also `LINKSOCKS_SOCKS_USERNAME`. |
+| `--socks-password` | `-w` | | Local proxy password (SOCKS5 and HTTP Basic). Also `LINKSOCKS_SOCKS_PASSWORD`. |
+| `--socks-no-wait` | `-i` | `false` | Start the hybrid local proxy immediately |
+| `--no-reconnect` | `-R` | `false` | Exit when the server disconnects (default: reconnect) |
 | `--threads` | `-T` | `1` | Number of transfer threads |
-| `--upstream-proxy` | `-x` | | Outbound proxy used to reach the WebSocket server. Also supports `LINKSOCKS_UPSTREAM_PROXY`. |
+| `--upstream-proxy` | `-x` | | Outbound proxy used to reach the WebSocket server. Also `LINKSOCKS_UPSTREAM_PROXY`. |
 | `--no-env-proxy` | `-E` | `false` | Ignore proxy environment variables |
-| `--fast-open` | `-f` | `false` | Allow data transfer before the remote side is fully confirmed. Also supports `LINKSOCKS_FASTOPEN`. |
+| `--fast-open` | `-f` | `false` | Allow data transfer before the remote side is fully confirmed. Also `LINKSOCKS_FASTOPEN`. |
 | `--direct-mode` | | `auto` | `relay-only`, `auto`, or `direct-only` |
 | `--direct-discovery` | | `stun` | Direct candidate discovery method |
 | `--direct-host-candidates` | | `auto` | Host candidate advertisement policy |
@@ -95,8 +106,8 @@ Use `client` as the general-purpose command:
 | `--direct-upnp` | | `false` | Enable UPnP mapping for direct transport |
 | `--direct-upnp-lease` | | `30m` | UPnP lease duration |
 | `--direct-upnp-keep` | | `false` | Keep UPnP mapping on exit |
-| `--direct-upnp-external-port` | | `0` | Explicit UPnP external port |
-| `--debug` | `-d` | | Debug logging, use `-dd` for trace |
+| `--direct-upnp-external-port` | | `0` | Explicit UPnP external port (`0` = auto) |
+| `--debug` | `-d` | | Debug logging; use `-dd` for trace |
 
 ## Mode Recipes
 
@@ -112,9 +123,12 @@ linksocks client -t my_token -u ws://localhost:8765 -p 9870
 ```bash
 linksocks server -t my_token -r -p 9870
 linksocks client -t my_token -u ws://localhost:8765 -r
+# or: linksocks provider -t my_token -u ws://localhost:8765
 ```
 
-### 3. Agent Mode
+### 3. Relay Proxy
+
+The server manages both provider and connector tokens. The hybrid local proxy listens on the connector.
 
 ```bash
 linksocks server -t provider_token -c connector_token -r -p 9870
@@ -122,7 +136,9 @@ linksocks provider -t provider_token -u ws://localhost:8765
 linksocks connector -t connector_token -u ws://localhost:8765 -p 1180
 ```
 
-### 4. Autonomy Mode
+### 4. Relay Proxy (Self-Managed Connectors)
+
+The server only authenticates providers. Each provider registers its own connector token with `-c`. A connector reaches only its matching provider; there is no cross-provider load balancing.
 
 ```bash
 linksocks server -t provider_token -r -a
@@ -139,7 +155,7 @@ linksocks client -t my_token -u ws://localhost:8765 --direct-mode auto
 
 ## Environment Variables
 
-These flags can also be provided through environment variables:
+These flags can also be provided as environment variables (handy for Docker / Compose):
 
 | Environment Variable | Flag |
 |----------------------|------|
