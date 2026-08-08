@@ -1,6 +1,6 @@
 """linksocks: SOCKS5 over WebSocket proxy library (gopy backend)."""
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 from ._server import Server
 from ._client import Client
