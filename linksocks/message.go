@@ -156,6 +156,8 @@ func protocolVersionDebugString(v byte) string {
 const (
 	DirectServerHelloPrefix = "linksocks_server_hello:"
 	DirectClientHelloPrefix = "linksocks_client_hello:"
+	ProviderLivenessProbe   = "probe:"
+	ProviderLivenessPong    = "pong:"
 )
 
 // BaseMessage defines the common interface for all message types

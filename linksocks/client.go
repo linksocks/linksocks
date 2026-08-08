@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -2707,6 +2708,24 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 				}
 
 			case LogMessage:
+				if m.Level == LogLevelTrace && strings.HasPrefix(m.Msg, ProviderLivenessProbe) {
+					pongInfo, marshalErr := json.Marshal(struct {
+						Version string `json:"version"`
+					}{Version: Version})
+					if marshalErr != nil {
+						return marshalErr
+					}
+					response := LogMessage{
+						Level: LogLevelTrace,
+						Msg:   ProviderLivenessPong + string(pongInfo),
+					}
+					c.relay.logMessage(response, "send", ws.Label())
+					if err := ws.WriteMessage(response); err != nil {
+						return err
+					}
+					continue
+				}
+
 				// Handle log message by outputting to server logs
 				switch m.Level {
 				case LogLevelTrace:
