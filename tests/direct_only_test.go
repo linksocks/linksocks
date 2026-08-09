@@ -2,6 +2,7 @@ package tests
 
 import (
 	"testing"
+	"time"
 
 	"github.com/linksocks/linksocks/linksocks"
 	"github.com/stretchr/testify/require"
@@ -30,6 +31,28 @@ func TestDirectOnly_ExitOnTimeoutWithoutRelay(t *testing.T) {
 	})
 	defer env.Close()
 
+	// Wait for client to exit due to direct-only failure
+	// The client should either fail during WaitReady (fast path) or close shortly after
+	timeout := time.After(2 * time.Second)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	clientClosed := false
+	for !clientClosed {
+		select {
+		case <-timeout:
+			t.Fatal("timeout waiting for client to exit due to direct-only failure")
+		case <-ticker.C:
+			// Check if disconnected channel is closed (client stopped)
+			select {
+			case <-env.Client.Client.DisconnectedChan():
+				clientClosed = true
+			default:
+			}
+		}
+	}
+
+	// Client should be closed, connection attempts should fail
 	err := testWebConnection(globalHTTPServer, &ProxyConfig{Port: env.Client.SocksPort})
 	require.Error(t, err)
 }
