@@ -1158,7 +1158,41 @@ func (s *LinkSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Con
 	} else {
 		internalToken = token
 	}
+	s.mu.Unlock()
 
+	if isValidReverse {
+		// Start the SOCKS server before the auth response is sent so the
+		// local proxy port accepts connections by the time the provider is
+		// told it is authenticated. GetListener synchronously ensures the
+		// port is bound; runSocksServer reuses the same listener.
+		s.mu.Lock()
+		socksPort := s.tokens[token]
+		_, exists := s.socksTasks[socksPort]
+		if socksPort > 0 && !exists {
+			if _, err := s.socketManager.GetListener(socksPort); err != nil {
+				s.log.Warn().Err(err).Int("port", socksPort).Msg("Failed to pre-bind SOCKS listener")
+			}
+			ctx, cancel := context.WithCancel(ctx)
+			s.socksTasks[socksPort] = cancel
+			go func() {
+				if err := s.runSocksServer(ctx, token, socksPort); err != nil {
+					s.log.Debug().Err(err).Int("port", socksPort).Msg("SOCKS server error")
+				}
+			}()
+		}
+		s.mu.Unlock()
+	}
+
+	authResponse := AuthResponseMessage{Success: true}
+	s.relay.logMessage(authResponse, "send", wsConn.Label())
+	if err := wsConn.WriteMessage(authResponse); err != nil {
+		s.log.Debug().Err(err).Msg("Failed to send auth response")
+		return
+	}
+
+	// Publish the connection as available only after the auth response is
+	// written, so pending connects can never overtake it on the wire.
+	s.mu.Lock()
 	if _, exists := s.tokenClients[internalToken]; !exists {
 		s.tokenClients[internalToken] = make([]clientInfo, 0)
 	}
@@ -1186,20 +1220,6 @@ func (s *LinkSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Con
 
 	if isValidReverse {
 		// Handle reverse proxy client
-		s.mu.Lock()
-		// Start SOCKS server if not already running
-		socksPort := s.tokens[token]
-		_, exists := s.socksTasks[socksPort]
-		if socksPort > 0 && !exists {
-			ctx, cancel := context.WithCancel(ctx)
-			s.socksTasks[socksPort] = cancel
-			go func() {
-				if err := s.runSocksServer(ctx, token, socksPort); err != nil {
-					s.log.Debug().Err(err).Int("port", socksPort).Msg("SOCKS server error")
-				}
-			}()
-		}
-		s.mu.Unlock()
 		s.log.Info().Str("client_id", clientID.String()).Str("client_ip", wsConn.GetClientIP()).Msg("Reverse client authenticated")
 		// Notify connectors about new reverse client
 		s.broadcastPartnersToConnectors()
@@ -1211,13 +1231,6 @@ func (s *LinkSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Con
 	} else {
 		// Handle forward proxy client
 		s.log.Info().Str("client_id", clientID.String()).Str("client_ip", wsConn.GetClientIP()).Msg("Forward client authenticated")
-	}
-
-	authResponse := AuthResponseMessage{Success: true}
-	s.relay.logMessage(authResponse, "send", wsConn.Label())
-	if err := wsConn.WriteMessage(authResponse); err != nil {
-		s.log.Debug().Err(err).Msg("Failed to send auth response")
-		return
 	}
 
 	if s.directEnable {
