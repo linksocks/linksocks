@@ -227,7 +227,11 @@ func TestConnectorWaitsForProviderReconnect(t *testing.T) {
 		errCh <- testWebConnection(globalHTTPServer, &ProxyConfig{Port: connector.SocksPort})
 	}()
 
-	time.Sleep(300 * time.Millisecond)
+	// Bring the provider back only once the server has parked the connector
+	// request, so the wait is deterministic instead of timing-dependent.
+	require.Eventually(t, func() bool {
+		return server.Server.GetConnectorWaitCount(server.Token) > 0
+	}, 2*time.Second, 10*time.Millisecond)
 	provider = reverseClient(t, &ProxyTestClientOption{
 		WSPort:       server.WSPort,
 		Token:        server.Token,
@@ -306,4 +310,3 @@ func TestPartnersCountOnProviderDisconnect(t *testing.T) {
 		return connector.Client.GetPartnersCount() == 0
 	}, 3*time.Second, 50*time.Millisecond)
 }
-
