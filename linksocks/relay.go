@@ -984,14 +984,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws MessageWriter, socksC
 
 		r.log.Trace().Int("port", localAddr.Port).Msg("UDP association established")
 
-		// Monitor TCP connection for closure
-		go func() {
-			buffer := make([]byte, 1)
-			socksConn.Read(buffer)
-			udpConn.Close()
-		}()
-
-		// Start UDP relay
+		// HandleSocksUDPForward monitors the TCP connection for closure itself.
 		return r.HandleSocksUDPForward(ctx, ws, udpConn, socksConn, channelID)
 
 	default:
