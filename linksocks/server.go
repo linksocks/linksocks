@@ -47,14 +47,16 @@ type LinkSocksServer struct {
 	clients map[uuid.UUID]*WSConn // Maps client ID to WebSocket connection
 
 	// Token management
-	forwardTokens   map[string]struct{}             // Set of valid forward proxy tokens
-	tokens          map[string]int                  // Maps reverse proxy tokens to ports
-	tokenClients    map[string][]clientInfo         // Maps tokens to their connected clients
-	tokenIndexes    map[string]int                  // Round-robin indexes for load balancing
-	tokenOptions    map[string]*ReverseTokenOptions // options per token
-	connectorTokens map[string]string               // Maps connector tokens to their reverse tokens
-	internalTokens  map[string][]string             // Maps original token to list of internal tokens
-	sha256TokenMap  map[string]string               // Maps SHA256 tokens to original tokens
+	forwardTokens     map[string]struct{}             // Set of valid forward proxy tokens
+	tokens            map[string]int                  // Maps reverse proxy tokens to ports
+	tokenClients      map[string][]clientInfo         // Maps tokens to their connected clients
+	tokenIndexes      map[string]int                  // Round-robin indexes for load balancing
+	tokenOptions      map[string]*ReverseTokenOptions // options per token
+	tokenAvailability map[string]chan struct{}        // Per-token provider availability notification channels
+	tokenWaiters      map[string]int                  // Connector requests currently waiting for a provider
+	connectorTokens   map[string]string               // Maps connector tokens to their reverse tokens
+	internalTokens    map[string][]string             // Maps original token to list of internal tokens
+	sha256TokenMap    map[string]string               // Maps SHA256 tokens to original tokens
 
 	// Connector management
 	connCache *connectorCache
@@ -328,6 +330,8 @@ func NewLinkSocksServer(opt *ServerOption) *LinkSocksServer {
 		tokens:                 make(map[string]int),
 		tokenClients:           make(map[string][]clientInfo),
 		tokenIndexes:           make(map[string]int),
+		tokenAvailability:      make(map[string]chan struct{}),
+		tokenWaiters:           make(map[string]int),
 		connectorTokens:        make(map[string]string),
 		connCache:              newConnectorCache(),
 		tokenOptions:           make(map[string]*ReverseTokenOptions),
@@ -716,6 +720,8 @@ func (s *LinkSocksServer) RemoveToken(token string) bool {
 			delete(s.tokens, internalToken)
 			delete(s.tokenIndexes, internalToken)
 			delete(s.tokenOptions, internalToken)
+			delete(s.tokenAvailability, internalToken)
+			delete(s.tokenWaiters, internalToken)
 		}
 		delete(s.internalTokens, token)
 	}
@@ -790,6 +796,8 @@ func (s *LinkSocksServer) RemoveToken(token string) bool {
 		delete(s.tokens, token)
 		delete(s.tokenIndexes, token)
 		delete(s.tokenOptions, token)
+		delete(s.tokenAvailability, token)
+		delete(s.tokenWaiters, token)
 
 		// Cancel and clean up SOCKS server if it exists
 		if cancel, exists := s.socksTasks[port]; exists {
@@ -925,51 +933,33 @@ func (s *LinkSocksServer) Serve(ctx context.Context) error {
 		}
 	}
 
-	// Start server in background goroutine
-	go func(srv *http.Server) {
+	// Listen explicitly so readiness is signaled by the listener itself
+	// instead of a dial-polling loop.
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		s.reportError(fmt.Errorf("failed to listen on %s: %w", srv.Addr, err))
+		return ctx.Err()
+	}
+
+	s.log.Info().
+		Str("listen", srv.Addr).
+		Str("url", fmt.Sprintf("http://localhost:%d", s.wsPort)).
+		Msg("LinkSocks server started")
+	s.readyOnce.Do(func() {
+		close(s.ready)
+	})
+
+	// Serve on the already-open listener in the background
+	go func(srv *http.Server, listener net.Listener) {
 		defer func() {
 			if r := recover(); r != nil {
 				s.reportError(fmt.Errorf("panic in server ListenAndServe: %v", r))
 			}
 		}()
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
 			s.reportError(err)
 		}
-	}(srv)
-
-	// Wait for server to actually start listening
-	addr := srv.Addr
-	go func(addr string) {
-		defer func() {
-			if r := recover(); r != nil {
-				s.reportError(fmt.Errorf("panic in server readiness loop: %v", r))
-			}
-		}()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			// Check if we can connect to the server
-			conn, err := net.DialTimeout("tcp", addr, 10*time.Millisecond)
-			if err == nil {
-				conn.Close()
-				// Server is listening, signal ready
-				s.log.Info().
-					Str("listen", addr).
-					Str("url", fmt.Sprintf("http://localhost:%d", s.wsPort)).
-					Msg("LinkSocks server started")
-				s.readyOnce.Do(func() {
-					close(s.ready)
-				})
-				return
-			}
-			// Wait a bit before trying again
-			time.Sleep(10 * time.Millisecond)
-		}
-	}(addr)
+	}(srv, listener)
 
 	// Block until context is done
 	<-ctx.Done()
@@ -1202,6 +1192,7 @@ func (s *LinkSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Con
 	metaReverseToken := ""
 	if isValidReverse {
 		role = directClientRoleReverse
+		s.notifyTokenAvailabilityLocked(internalToken)
 	} else if isValidConnector {
 		role = directClientRoleConnector
 		metaReverseToken = reverseToken
@@ -1787,11 +1778,9 @@ func (s *LinkSocksServer) broadcastPartnersToReverseClients(reverseToken string)
 	}
 }
 
-// getNextWebSocket gets next available WebSocket connection using round-robin
-func (s *LinkSocksServer) getNextWebSocket(token string) (*WSConn, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+// getNextWebSocketLocked returns the next available connection for token
+// using round-robin. Caller must hold s.mu.
+func (s *LinkSocksServer) getNextWebSocketLocked(token string) (*WSConn, error) {
 	if _, exists := s.tokenClients[token]; !exists || len(s.tokenClients[token]) == 0 {
 		return nil, fmt.Errorf("no available clients for token")
 	}
@@ -1808,61 +1797,124 @@ func (s *LinkSocksServer) getNextWebSocket(token string) (*WSConn, error) {
 	return clients[0].Conn, nil
 }
 
+// getNextWebSocket gets next available WebSocket connection using round-robin
+func (s *LinkSocksServer) getNextWebSocket(token string) (*WSConn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.getNextWebSocketLocked(token)
+}
+
+// notifyTokenAvailabilityLocked wakes all requests waiting for a provider of
+// token. Caller must hold s.mu.
+func (s *LinkSocksServer) notifyTokenAvailabilityLocked(token string) {
+	if ch, ok := s.tokenAvailability[token]; ok && ch != nil {
+		close(ch)
+	}
+	s.tokenAvailability[token] = make(chan struct{})
+}
+
 func (s *LinkSocksServer) waitForNextWebSocket(ctx context.Context, token string, timeout time.Duration) (*WSConn, error) {
-	ws, err := s.getNextWebSocket(token)
-	if err == nil || timeout <= 0 {
-		return ws, err
+	if timeout <= 0 {
+		return s.getNextWebSocket(token)
 	}
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
+
+	s.mu.Lock()
+	s.tokenWaiters[token]++
+	changed := s.tokenAvailability[token]
+	if changed == nil {
+		changed = make(chan struct{})
+		s.tokenAvailability[token] = changed
+	}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.tokenWaiters[token]--
+		if s.tokenWaiters[token] <= 0 {
+			delete(s.tokenWaiters, token)
+		}
+		s.mu.Unlock()
+	}()
 
 	for {
+		// Check availability and subscribe under the same lock so a provider
+		// published in between cannot be missed.
+		s.mu.Lock()
+		ws, err := s.getNextWebSocketLocked(token)
+		changed = s.tokenAvailability[token]
+		if changed == nil {
+			changed = make(chan struct{})
+			s.tokenAvailability[token] = changed
+		}
+		s.mu.Unlock()
+
+		if err == nil {
+			return ws, nil
+		}
+
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-timer.C:
 			return nil, err
-		case <-ticker.C:
-			ws, err = s.getNextWebSocket(token)
-			if err == nil {
-				return ws, nil
-			}
+		case <-changed:
+			// A provider appeared; re-check.
 		}
 	}
 }
 
+// GetConnectorWaitCount returns the number of connector requests currently
+// waiting for a provider of the given reverse token.
+func (s *LinkSocksServer) GetConnectorWaitCount(token string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.tokenWaiters[token]
+}
+
 // waitForClients waits for clients to be available for the given token
 func (s *LinkSocksServer) waitForClients(token string, addr net.Addr) error {
-	s.mu.RLock()
-	_, hasClients := s.tokenClients[token]
-	s.mu.RUnlock()
+	s.mu.Lock()
+	clients, ok := s.tokenClients[token]
+	hasValidClients := ok && len(clients) > 0
+	changed := s.tokenAvailability[token]
+	if changed == nil {
+		changed = make(chan struct{})
+		s.tokenAvailability[token] = changed
+	}
+	s.mu.Unlock()
 
 	// If clients are already available, return immediately
-	if hasClients {
+	if hasValidClients {
 		return nil
 	}
 
 	// Wait up to 10 seconds for clients to connect if needed
-	timeout := time.After(10 * time.Second)
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
 
 	for {
 		select {
-		case <-timeout:
+		case <-timer.C:
 			s.log.Debug().Str("addr", addr.String()).Msg("No valid clients after timeout")
 			return fmt.Errorf("no valid clients after timeout")
-		case <-ticker.C:
-			s.mu.RLock()
-			clients, ok := s.tokenClients[token]
-			hasValidClients := ok && len(clients) > 0
-			s.mu.RUnlock()
-			if hasValidClients {
-				return nil
-			}
+		case <-changed:
+			// Provider availability changed; re-check.
+		}
+
+		s.mu.Lock()
+		clients, ok = s.tokenClients[token]
+		hasValidClients = ok && len(clients) > 0
+		changed = s.tokenAvailability[token]
+		if changed == nil {
+			changed = make(chan struct{})
+			s.tokenAvailability[token] = changed
+		}
+		s.mu.Unlock()
+
+		if hasValidClients {
+			return nil
 		}
 	}
 }

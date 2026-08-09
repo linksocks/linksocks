@@ -2918,9 +2918,10 @@ func (c *LinkSocksClient) handleSocksRequest(ctx context.Context, socksConn net.
 		}
 	}
 
-	// Wait up to 10 seconds for WebSocket connection
-	startTime := time.Now()
-	for time.Since(startTime) < 10*time.Second {
+	// Wait up to 10 seconds for a WebSocket connection, waking on (re)connect.
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	for {
 		ws := c.getNextWebSocket()
 		if ws != nil {
 			if err := c.relay.HandleLocalProxyRequest(ctx, ws, socksConn, c.socksUsername, c.socksPassword); err != nil && !errors.Is(err, context.Canceled) {
@@ -2932,12 +2933,22 @@ func (c *LinkSocksClient) handleSocksRequest(ctx context.Context, socksConn net.
 			}
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
 
-	c.log.Warn().Msg("No valid websockets connection after waiting 10s, refusing local proxy request")
-	if err := c.relay.RefuseLocalProxyRequest(socksConn, 0x03); err != nil {
-		c.log.Warn().Err(err).Msg("Error refusing local proxy request")
+		// Subscribe to the next (re)connect signal.
+		connectedCh := c.ConnectedChan()
+
+		select {
+		case <-ctx.Done():
+			c.log.Debug().Msg("Context cancelled while waiting for WebSocket connection")
+			_ = c.relay.RefuseLocalProxyRequest(socksConn, 0x03)
+			return
+		case <-timer.C:
+			c.log.Warn().Msg("No valid websockets connection after waiting 10s, refusing local proxy request")
+			_ = c.relay.RefuseLocalProxyRequest(socksConn, 0x03)
+			return
+		case <-connectedCh:
+			// (Re)connected; re-check for a usable socket.
+		}
 	}
 }
 
