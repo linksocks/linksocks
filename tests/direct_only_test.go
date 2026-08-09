@@ -32,8 +32,9 @@ func TestDirectOnly_ExitOnTimeoutWithoutRelay(t *testing.T) {
 	defer env.Close()
 
 	// Wait for client to exit due to direct-only failure
-	// The client should either fail during WaitReady (fast path) or close shortly after
-	timeout := time.After(2 * time.Second)
+	// STUN discovery may take up to its 2s timeout to fail (e.g. macOS sends to
+	// port 0 successfully and waits), so allow generous time for the client to close.
+	timeout := time.After(10 * time.Second)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 
