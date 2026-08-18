@@ -58,6 +58,10 @@ type LinkSocksServer struct {
 	internalTokens    map[string][]string             // Maps original token to list of internal tokens
 	sha256TokenMap    map[string]string               // Maps SHA256 tokens to original tokens
 
+	// Per-token access control (checked on the server before dialing/forwarding)
+	forwardTokenAC   map[string]*AccessControl // Forward token -> destination rules
+	connectorTokenAC map[string]*AccessControl // Connector token -> destination rules
+
 	// Connector management
 	connCache *connectorCache
 
@@ -70,7 +74,8 @@ type LinkSocksServer struct {
 	socketManager  *SocketManager
 
 	// API server
-	apiKey string
+	apiKey  string
+	apiKeys map[string]struct{} // Additional API keys; authentication only
 
 	// Error channel
 	errors chan error // Channel for errors
@@ -140,15 +145,19 @@ func newConnectorCache() *connectorCache {
 
 // ServerOption represents configuration options for LinkSocksServer
 type ServerOption struct {
-	WSHost            string
-	WSPort            int
-	SocksHost         string
-	PortPool          *PortPool
-	SocksWaitClient   bool
-	ConnectorWait     time.Duration
-	Logger            zerolog.Logger
-	BufferSize        int
-	APIKey            string
+	WSHost          string
+	WSPort          int
+	SocksHost       string
+	PortPool        *PortPool
+	SocksWaitClient bool
+	ConnectorWait   time.Duration
+	Logger          zerolog.Logger
+	BufferSize      int
+	APIKey string
+	// APIKeys registers additional API keys accepted for API authentication.
+	// Keys are credentials only and never carry access rules; rules are bound
+	// to tokens (per-token) and to the server (entry/dial access control).
+	APIKeys []string
 	ChannelTimeout    time.Duration
 	ConnectTimeout    time.Duration
 	FastOpen          bool
@@ -164,6 +173,15 @@ type ServerOption struct {
 	DirectRendezvousEnable bool
 	DirectRendezvousHost   string
 	DirectRendezvousPort   int
+
+	// AccessControl restricts which destinations local proxies started by this
+	// server may request at the entry. Nil means no restriction.
+	AccessControl *AccessControl
+
+	// DialAccessControl restricts which destinations this server may actually
+	// connect to when it performs the dial (forward proxy mode). Nil means no
+	// restriction.
+	DialAccessControl *AccessControl
 }
 
 // DefaultServerOption returns default server options
@@ -178,6 +196,7 @@ func DefaultServerOption() *ServerOption {
 		Logger:                 zerolog.New(os.Stdout).With().Timestamp().Logger(),
 		BufferSize:             DefaultBufferSize,
 		APIKey:                 "",
+		APIKeys:                nil,
 		ChannelTimeout:         DefaultChannelTimeout,
 		ConnectTimeout:         DefaultConnectTimeout,
 		FastOpen:               false,
@@ -188,6 +207,7 @@ func DefaultServerOption() *ServerOption {
 		DirectRendezvousEnable: false,
 		DirectRendezvousHost:   "",
 		DirectRendezvousPort:   0,
+		AccessControl:          nil,
 	}
 }
 
@@ -242,6 +262,14 @@ func (o *ServerOption) WithBufferSize(size int) *ServerOption {
 // WithAPI sets apiKey to enable the HTTP API
 func (o *ServerOption) WithAPI(apiKey string) *ServerOption {
 	o.APIKey = apiKey
+	return o
+}
+
+// WithAPIKeys registers additional API keys accepted for API authentication.
+// Keys only authenticate: access rules are attached per token (token creation
+// API) or at the server level (entry/dial access control), never to a key.
+func (o *ServerOption) WithAPIKeys(keys ...string) *ServerOption {
+	o.APIKeys = append([]string(nil), keys...)
 	return o
 }
 
@@ -302,6 +330,20 @@ func (o *ServerOption) WithDirectRendezvousPort(port int) *ServerOption {
 	return o
 }
 
+// WithEntryAccessControl sets the default destination restrictions at the
+// local proxy entry for proxies started by this server.
+func (o *ServerOption) WithEntryAccessControl(ac *AccessControl) *ServerOption {
+	o.AccessControl = ac
+	return o
+}
+
+// WithDialAccessControl sets the destination restrictions applied when this
+// server performs the actual connection to the target.
+func (o *ServerOption) WithDialAccessControl(ac *AccessControl) *ServerOption {
+	o.DialAccessControl = ac
+	return o
+}
+
 // NewLinkSocksServer creates a new LinkSocksServer instance
 func NewLinkSocksServer(opt *ServerOption) *LinkSocksServer {
 	if opt == nil {
@@ -315,7 +357,17 @@ func NewLinkSocksServer(opt *ServerOption) *LinkSocksServer {
 		WithFastOpen(opt.FastOpen).
 		WithUpstreamProxy(opt.UpstreamProxy).
 		WithUpstreamAuth(opt.UpstreamUsername, opt.UpstreamPassword).
-		WithUpstreamProxyType(opt.UpstreamProxyType)
+		WithUpstreamProxyType(opt.UpstreamProxyType).
+		WithEntryAccessControl(opt.AccessControl).
+		WithDialAccessControl(opt.DialAccessControl)
+
+	var apiKeys map[string]struct{}
+	if len(opt.APIKeys) > 0 {
+		apiKeys = make(map[string]struct{}, len(opt.APIKeys))
+		for _, k := range opt.APIKeys {
+			apiKeys[k] = struct{}{}
+		}
+	}
 
 	s := &LinkSocksServer{
 		relay:                  NewRelay(opt.Logger, relayOpt),
@@ -335,12 +387,15 @@ func NewLinkSocksServer(opt *ServerOption) *LinkSocksServer {
 		connectorTokens:        make(map[string]string),
 		connCache:              newConnectorCache(),
 		tokenOptions:           make(map[string]*ReverseTokenOptions),
+		forwardTokenAC:         make(map[string]*AccessControl),
+		connectorTokenAC:       make(map[string]*AccessControl),
 		socksTasks:             make(map[int]context.CancelFunc),
 		socksWaitClient:        opt.SocksWaitClient,
 		connectorWait:          opt.ConnectorWait,
 		waitingSockets:         make(map[int]*waitingSocket),
 		socketManager:          NewSocketManager(opt.SocksHost, opt.Logger),
 		apiKey:                 opt.APIKey,
+		apiKeys:                apiKeys,
 		internalTokens:         make(map[string][]string),
 		sha256TokenMap:         make(map[string]string),
 		errors:                 make(chan error, 16),
@@ -503,6 +558,9 @@ type ReverseTokenOptions struct {
 	Username             string
 	Password             string
 	AllowManageConnector bool // Allows managing connectors via WebSocket messages
+	// AccessControl restricts which destinations this token's local proxy may
+	// connect to. Nil falls back to the server-wide default.
+	AccessControl *AccessControl
 }
 
 // ReverseTokenResult represents the result of adding a reverse token
@@ -701,6 +759,42 @@ func (s *LinkSocksServer) AddConnectorToken(connectorToken string, reverseToken 
 	return connectorToken, nil
 }
 
+// AddForwardTokenWithRules adds a forward token restricted to the given
+// destinations. Rules are checked on the server before dialing on behalf of
+// this token; when nil the server-level dial control applies.
+func (s *LinkSocksServer) AddForwardTokenWithRules(token string, rules []AccessRule) (string, error) {
+	ac, err := NewAccessControl(rules)
+	if err != nil {
+		return "", err
+	}
+	tok, err := s.AddForwardToken(token)
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	s.forwardTokenAC[tok] = ac
+	s.mu.Unlock()
+	return tok, nil
+}
+
+// AddConnectorTokenWithRules adds a connector token restricted to the given
+// destinations. Rules are checked on the server before a request from this
+// connector is forwarded to a reverse provider.
+func (s *LinkSocksServer) AddConnectorTokenWithRules(connectorToken string, reverseToken string, rules []AccessRule) (string, error) {
+	ac, err := NewAccessControl(rules)
+	if err != nil {
+		return "", err
+	}
+	tok, err := s.AddConnectorToken(connectorToken, reverseToken)
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	s.connectorTokenAC[tok] = ac
+	s.mu.Unlock()
+	return tok, nil
+}
+
 // RemoveToken removes a token and disconnects all its clients
 func (s *LinkSocksServer) RemoveToken(token string) bool {
 	s.mu.Lock()
@@ -750,6 +844,7 @@ func (s *LinkSocksServer) RemoveToken(token string) bool {
 
 		// Clean up token related data
 		delete(s.connectorTokens, token)
+		delete(s.connectorTokenAC, token)
 
 		s.log.Info().Str("token", token).Msg("Connector token removed")
 
@@ -779,6 +874,7 @@ func (s *LinkSocksServer) RemoveToken(token string) bool {
 					delete(s.tokenClients, connectorToken)
 				}
 				delete(s.connectorTokens, connectorToken)
+				delete(s.connectorTokenAC, connectorToken)
 				s.log.Info().Str("token", connectorToken).Msg("Connector token removed")
 			}
 		}
@@ -826,6 +922,7 @@ func (s *LinkSocksServer) RemoveToken(token string) bool {
 
 		// Clean up token related data
 		delete(s.forwardTokens, token)
+		delete(s.forwardTokenAC, token)
 
 		s.log.Info().Str("token", token).Msg("Forward token removed")
 
@@ -1374,6 +1471,19 @@ func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, cli
 				s.mu.RUnlock()
 
 				if isForwardClient {
+					// Enforce per-token forward access control before dialing
+					s.mu.RLock()
+					var fwdAC *AccessControl
+					if meta := s.clientMeta[clientID]; meta != nil {
+						fwdAC = s.forwardTokenAC[meta.InternalToken]
+					}
+					s.mu.RUnlock()
+					if fwdAC != nil && !fwdAC.Empty() && !fwdAC.Allow(m.Address, m.Port) {
+						s.log.Warn().Str("address", m.Address).Int("port", m.Port).Msg("Forward connect blocked by token access control")
+						s.rejectConnectRequest(ws, m, "destination blocked by access control")
+						continue
+					}
+
 					// Create buffered channel with larger capacity SYNCHRONOUSLY
 					// This prevents race condition where DataMessage arrives before queue creation
 					msgChan := make(chan BaseMessage, 1000)
@@ -1564,6 +1674,19 @@ func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WS
 
 			case ConnectMessage:
 				go func(m ConnectMessage) {
+					// Enforce per-connector access control before forwarding to a provider
+					s.mu.RLock()
+					var connAC *AccessControl
+					if meta := s.clientMeta[clientID]; meta != nil {
+						connAC = s.connectorTokenAC[meta.InternalToken]
+					}
+					s.mu.RUnlock()
+					if connAC != nil && !connAC.Empty() && !connAC.Allow(m.Address, m.Port) {
+						s.log.Warn().Str("address", m.Address).Int("port", m.Port).Msg("Connector connect blocked by token access control")
+						s.rejectConnectRequest(ws, m, "destination blocked by access control")
+						return
+					}
+
 					reverseWS, err := s.waitForNextWebSocket(ctx, reverseToken, s.connectorWait)
 					if err != nil {
 						s.log.Debug().Err(err).Msg("Refusing connector connect")
@@ -1952,17 +2075,37 @@ func (s *LinkSocksServer) handleSocksRequest(ctx context.Context, socksConn net.
 		break
 	}
 
-	// Get authentication info if configured
+	// Get authentication info and token-level access control if configured
 	var username, password string
+	var tokenAC *AccessControl
 	s.mu.RLock()
 	if auth, ok := s.tokenOptions[token]; ok {
 		username = auth.Username
 		password = auth.Password
+		tokenAC = auth.AccessControl
 	}
 	s.mu.RUnlock()
 
+	// Attach token-level access control so relay checks apply per-token rules
+	if tokenAC != nil {
+		ctx = withAccessControl(ctx, tokenAC)
+	}
+
 	// Handle SOCKS5 / HTTP proxy request using hybrid local proxy demux
 	return s.relay.HandleLocalProxyRequest(ctx, ws, socksConn, username, password)
+}
+
+// rejectConnectRequest replies a failed connection attempt to the requester.
+func (s *LinkSocksServer) rejectConnectRequest(ws *WSConn, m ConnectMessage, reason string) {
+	response := ConnectResponseMessage{
+		ChannelID: m.ChannelID,
+		Success:   false,
+		Error:     reason,
+	}
+	s.relay.logMessage(response, "send", ws.Label())
+	if err := ws.WriteMessage(response); err != nil {
+		s.log.Debug().Err(err).Msg("Failed to send access control failure response")
+	}
 }
 
 // runSocksServer runs a SOCKS5 server for a specific token and port

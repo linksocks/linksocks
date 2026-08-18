@@ -9,9 +9,9 @@ import json
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 _BACKEND: str
 
@@ -88,6 +88,36 @@ def _json_key(snake: str) -> str:
     return snake
 
 
+@dataclass
+class AccessRule:
+    """Single access control rule pairing address ranges with port ranges.
+
+    All addresses in ``addrs`` are OR-ed together; the address must match AND
+    one of the ``ports`` must match for the rule to allow a destination.
+    Ports accept single numbers (e.g. ``22``) or inclusive ``(start, end)``
+    ranges (e.g. ``(90, 150)``).
+
+    Typical usage: ``entry_access_control=[AccessRule(addrs=[...], ports=[22, (90, 150)])]``
+    """
+
+    addrs: List[str]
+    ports: List[Union[int, Tuple[int, int]]] = field(default_factory=list)
+
+
+def _access_rules_to_dicts(rules: List[AccessRule]) -> List[Dict[str, Any]]:
+    """Serialize AccessRule objects to the JSON shape the Go shim expects."""
+    out: List[Dict[str, Any]] = []
+    for rule in rules:
+        ports: List[Any] = []
+        for p in rule.ports:
+            if isinstance(p, (tuple, list)):
+                ports.append([int(p[0]), int(p[1])])
+            else:
+                ports.append(int(p))
+        out.append({"addrs": list(rule.addrs), "ports": ports})
+    return out
+
+
 class _FFIReverseTokenOptions:
     def __init__(self) -> None:
         self.Token = ""
@@ -95,6 +125,7 @@ class _FFIReverseTokenOptions:
         self.Username = ""
         self.Password = ""
         self.AllowManageConnector: Optional[bool] = None
+        self.Rules: Optional[List[AccessRule]] = None
 
 
 class _FFIServerOption:
@@ -131,6 +162,9 @@ class _FFIServerOption:
     def WithAPI(self, v: str) -> None:
         self._cfg[_json_key("api_key")] = v
 
+    def WithAPIKeys(self, keys: List[str]) -> None:
+        self._cfg[_json_key("api_keys")] = list(keys or [])
+
     def WithChannelTimeout(self, v: int) -> None:
         self._cfg[_json_key("channel_timeout_ns")] = int(v)
 
@@ -149,6 +183,12 @@ class _FFIServerOption:
     def WithUpstreamAuth(self, username: str, password: str) -> None:
         self._cfg[_json_key("upstream_username")] = username
         self._cfg[_json_key("upstream_password")] = password
+
+    def WithEntryAccessControl(self, rules: List[AccessRule]) -> None:
+        self._cfg[_json_key("entry_access_control")] = _access_rules_to_dicts(rules)
+
+    def WithDialAccessControl(self, rules: List[AccessRule]) -> None:
+        self._cfg[_json_key("dial_access_control")] = _access_rules_to_dicts(rules)
 
     def to_cfg(self) -> Dict[str, Any]:
         return dict(self._cfg)
@@ -246,6 +286,12 @@ class _FFIClientOption:
     def WithDirectUPnPExtPort(self, v: int) -> None:
         self._cfg[_json_key("direct_upnp_external_port")] = int(v)
 
+    def WithEntryAccessControl(self, rules: List[AccessRule]) -> None:
+        self._cfg[_json_key("entry_access_control")] = _access_rules_to_dicts(rules)
+
+    def WithDialAccessControl(self, rules: List[AccessRule]) -> None:
+        self._cfg[_json_key("dial_access_control")] = _access_rules_to_dicts(rules)
+
     def to_cfg(self) -> Dict[str, Any]:
         return dict(self._cfg)
 
@@ -282,6 +328,9 @@ class _FFIRawServer:
         allow = getattr(opts, "AllowManageConnector", None)
         if allow is not None:
             payload["allow_manage_connector"] = bool(allow)
+        rules = getattr(opts, "Rules", None)
+        if rules is not None:
+            payload["rules"] = _access_rules_to_dicts(rules)
         return self._srv.add_reverse_token(payload)
 
     def RemoveToken(self, token: str) -> bool:

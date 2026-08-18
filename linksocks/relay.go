@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,6 +70,15 @@ type RelayOption struct {
 	LowSpeedThreshold float64
 	// CompressionThreshold defines the data size in bytes above which compression is applied
 	CompressionThreshold int
+
+	// EntryAccessControl restricts which destinations the local proxy entry
+	// may request. Nil means no restriction. Token-level rules passed via
+	// context take precedence.
+	EntryAccessControl *AccessControl
+
+	// DialAccessControl restricts which destinations this relay may actually
+	// connect to. Nil means no restriction.
+	DialAccessControl *AccessControl
 }
 
 // NewDefaultRelayOption creates a RelayOption with default values
@@ -179,6 +189,83 @@ func (o *RelayOption) WithCompressionThreshold(threshold int) *RelayOption {
 	return o
 }
 
+// WithEntryAccessControl sets the destination restrictions applied at the
+// local proxy entry (SOCKS5/HTTP request parsing).
+func (o *RelayOption) WithEntryAccessControl(ac *AccessControl) *RelayOption {
+	o.EntryAccessControl = ac
+	return o
+}
+
+// WithDialAccessControl sets the destination restrictions applied when this
+// relay performs the actual connection to the target.
+func (o *RelayOption) WithDialAccessControl(ac *AccessControl) *RelayOption {
+	o.DialAccessControl = ac
+	return o
+}
+
+// checkEntryAccess verifies a local proxy request target against the
+// token-level rule attached to ctx, falling back to the relay-wide entry rule.
+func (r *Relay) checkEntryAccess(ctx context.Context, host string, port int) error {
+	ac := accessControlFromContext(ctx)
+	if ac == nil {
+		ac = r.entryAC.Load()
+	}
+	if ac == nil {
+		ac = r.option.EntryAccessControl
+	}
+	return r.checkRule(ac, host, port)
+}
+
+// checkDialAccess verifies a destination before dialing against the
+// relay-wide dial rule.
+func (r *Relay) checkDialAccess(ctx context.Context, host string, port int) error {
+	ac := r.dialAC.Load()
+	if ac == nil {
+		ac = r.option.DialAccessControl
+	}
+	return r.checkRule(ac, host, port)
+}
+
+// SetEntryAccessControl replaces the server-wide entry rule at runtime. Nil
+// restores the option value.
+func (r *Relay) SetEntryAccessControl(ac *AccessControl) {
+	r.entryAC.Store(ac)
+}
+
+// SetDialAccessControl replaces the server-wide dial rule at runtime. Nil
+// restores the option value.
+func (r *Relay) SetDialAccessControl(ac *AccessControl) {
+	r.dialAC.Store(ac)
+}
+
+// EntryAccessControl returns the effective server-wide entry rule: the runtime
+// value if set, otherwise the option value.
+func (r *Relay) EntryAccessControl() *AccessControl {
+	if ac := r.entryAC.Load(); ac != nil {
+		return ac
+	}
+	return r.option.EntryAccessControl
+}
+
+// DialAccessControl returns the effective server-wide dial rule: the runtime
+// value if set, otherwise the option value.
+func (r *Relay) DialAccessControl() *AccessControl {
+	if ac := r.dialAC.Load(); ac != nil {
+		return ac
+	}
+	return r.option.DialAccessControl
+}
+
+func (r *Relay) checkRule(ac *AccessControl, host string, port int) error {
+	if ac.Empty() {
+		return nil
+	}
+	if ac.Allow(host, port) {
+		return nil
+	}
+	return fmt.Errorf("destination %s:%d blocked by access control", host, port)
+}
+
 // Relay handles stream transport between SOCKS5 and WebSocket
 type Relay struct {
 	log                  zerolog.Logger
@@ -192,6 +279,12 @@ type Relay struct {
 	connectionSuccessMap sync.Map
 	bufferPool           sync.Pool      // Buffer pool for reusing byte slices
 	cleanupQueue         chan uuid.UUID // Channel for delayed cleanup tasks
+
+	// Runtime-updatable server-wide rules. When set via SetEntryAccessControl /
+	// SetDialAccessControl they override the option values; nil falls back to
+	// the option. The server-side access-control API updates these at runtime.
+	entryAC atomic.Pointer[AccessControl]
+	dialAC  atomic.Pointer[AccessControl]
 }
 
 // NewRelay creates a new Relay instance
@@ -295,6 +388,20 @@ func (r *Relay) HandleNetworkConnection(ctx context.Context, ws MessageWriter, r
 func (r *Relay) HandleTCPConnection(ctx context.Context, ws MessageWriter, request ConnectMessage) error {
 	if request.Port <= 0 || request.Port > 65535 {
 		return fmt.Errorf("invalid port number: %d", request.Port)
+	}
+
+	if err := r.checkDialAccess(ctx, request.Address, request.Port); err != nil {
+		r.log.Warn().Str("address", request.Address).Int("port", request.Port).Msg("TCP connection blocked by access control")
+		response := ConnectResponseMessage{
+			Success:   false,
+			Error:     err.Error(),
+			ChannelID: request.ChannelID,
+		}
+		r.logMessage(response, "send", ws.Label())
+		if err := ws.WriteMessage(response); err != nil {
+			return fmt.Errorf("write error response error: %w", err)
+		}
+		return nil
 	}
 
 	// Connect to target
@@ -594,6 +701,22 @@ func base64Encode(data []byte) string {
 
 // HandleUDPConnection handles UDP network connection
 func (r *Relay) HandleUDPConnection(ctx context.Context, ws MessageWriter, request ConnectMessage) error {
+	if request.Address != "" {
+		if err := r.checkDialAccess(ctx, request.Address, request.Port); err != nil {
+			r.log.Warn().Str("address", request.Address).Int("port", request.Port).Msg("UDP connection blocked by access control")
+			response := ConnectResponseMessage{
+				Success:   false,
+				Error:     err.Error(),
+				ChannelID: request.ChannelID,
+			}
+			r.logMessage(response, "send", ws.Label())
+			if err := ws.WriteMessage(response); err != nil {
+				return fmt.Errorf("write error response error: %w", err)
+			}
+			return nil
+		}
+	}
+
 	// Try dual-stack first
 	localAddr := &net.UDPAddr{
 		IP:   net.IPv6zero,
@@ -810,6 +933,12 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws MessageWriter, socksC
 		channelQueue := make(chan BaseMessage, 1000)
 		r.messageQueues.Store(channelID, channelQueue)
 		defer r.disconnectChannel(channelID)
+
+		if err := r.checkEntryAccess(ctx, targetAddr, int(targetPort)); err != nil {
+			r.log.Warn().Str("address", targetAddr).Int("port", int(targetPort)).Msg("SOCKS CONNECT blocked by access control")
+			sendFailureAndClose(0x02) // connection not allowed by ruleset
+			return err
+		}
 
 		// Send connection request to server
 		requestData := ConnectMessage{
@@ -1438,6 +1567,11 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws MessageWriter, udp
 					payload = buffer[22:n]
 				default:
 					r.log.Trace().Msg("Cannot parse UDP packet from associated port")
+					continue
+				}
+
+				if err := r.checkEntryAccess(ctx, targetAddr, targetPort); err != nil {
+					r.log.Warn().Str("address", targetAddr).Int("port", targetPort).Msg("UDP packet blocked by access control")
 					continue
 				}
 

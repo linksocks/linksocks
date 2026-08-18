@@ -20,6 +20,37 @@ from ._logging_config import init_logging
 from ._utils import get_env_or_flag, parse_socks_proxy, resolve_token
 
 
+def _parse_access_rules(specs: tuple) -> Optional[list]:
+    """Parse repeated --access-rule values of the form ADDR[:PORT]... into AccessRule objects."""
+    from ._base import AccessRule
+
+    if not specs:
+        return None
+    rules = []
+    for spec in specs:
+        sep = spec.rfind(":")
+        if sep <= 0 or sep == len(spec) - 1:
+            raise click.ClickException(f"invalid --access-rule {spec!r}: want ADDR:PORT")
+        addrs = [spec[:sep].strip()]
+        port_part = spec[sep + 1:].strip()
+        try:
+            if "-" in port_part:
+                lo_s, hi_s = port_part.split("-", 1)
+                lo, hi = int(lo_s.strip()), int(hi_s.strip())
+                if lo < 1 or hi > 65535 or hi < lo:
+                    raise ValueError
+                ports = [(lo, hi)]
+            else:
+                port = int(port_part)
+                if port < 1 or port > 65535:
+                    raise ValueError
+                ports = [port]
+        except ValueError:
+            raise click.ClickException(f"invalid --access-rule {spec!r}: bad port {port_part!r}") from None
+        rules.append(AccessRule(addrs=addrs, ports=ports))
+    return rules
+
+
 def _normalize_exit_code(code: object) -> int:
     if code is None:
         return 0
@@ -135,6 +166,7 @@ def version():
 @click.option("--direct-upnp-lease", default=None, help="Lease duration for UPnP port mapping (e.g. 30m, 10s)")
 @click.option("--direct-upnp-keep", is_flag=True, default=False, help="Keep UPnP port mapping on exit")
 @click.option("--direct-upnp-external-port", type=int, default=None, help="External port for UPnP mapping (default: same as internal port)")
+@click.option("--access-rule", multiple=True, help="Destination allow rule as ADDR:PORT (e.g. 192.168.1.0/24:22), repeatable")
 def client(
     token: Optional[str],
     url: str,
@@ -160,6 +192,7 @@ def client(
     direct_upnp_lease: Optional[str],
     direct_upnp_keep: bool,
     direct_upnp_external_port: Optional[int],
+    access_rule: tuple,
 ):
     """Start SOCKS5 over WebSocket proxy client."""
     from ._client import Client
@@ -215,6 +248,8 @@ def client(
             direct_upnp_lease=direct_upnp_lease,
             direct_upnp_keep=direct_upnp_keep,
             direct_upnp_external_port=direct_upnp_external_port,
+            dial_access_control=_parse_access_rules(access_rule) if reverse else None,
+            entry_access_control=_parse_access_rules(access_rule) if not reverse else None,
         )
 
         # Run client
@@ -263,6 +298,7 @@ def client(
 @click.option("--direct-rendezvous-udp", is_flag=True, default=False, help="Enable UDP hole punching for direct connections")
 @click.option("--direct-rendezvous-host", help="Custom rendezvous server host")
 @click.option("--direct-rendezvous-port", type=int, help="Custom rendezvous server port")
+@click.option("--access-rule", multiple=True, help="Destination allow rule as ADDR:PORT (e.g. 192.168.1.0/24:22), repeatable; not allowed in API server mode")
 def server(
     ws_host: str,
     ws_port: int,
@@ -284,6 +320,7 @@ def server(
     direct_rendezvous_udp: bool,
     direct_rendezvous_host: Optional[str],
     direct_rendezvous_port: Optional[int],
+    access_rule: tuple,
 ):
     """Start SOCKS5 over WebSocket proxy server."""
     from ._server import Server
@@ -313,6 +350,13 @@ def server(
         else:
             upstream_host = upstream_username = upstream_password = None
 
+        # Access control rules: dial side in forward mode, per-token entry in reverse mode
+        access_rules = _parse_access_rules(access_rule)
+        if api_key and access_rules:
+            raise click.ClickException(
+                "--access-rule is not allowed in API server mode; configure access control through the HTTP API"
+            )
+
         # Create server
         server = Server(
             ws_host=ws_host,
@@ -329,6 +373,7 @@ def server(
             direct_rendezvous_udp=direct_rendezvous_udp,
             direct_rendezvous_host=direct_rendezvous_host,
             direct_rendezvous_port=direct_rendezvous_port,
+            dial_access_control=access_rules if not reverse else None,
         )
 
         # Configure tokens if no API key
@@ -340,6 +385,7 @@ def server(
                     username=socks_username,
                     password=actual_socks_password,
                     allow_manage_connector=connector_autonomy,
+                    rules=access_rules,
                 )
                 use_token = result.token
                 

@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, List
 
 from ._base import (
     _SnakePassthrough,
     _to_duration,
     _logger,
+    AccessRule,
     BufferZerologLogger,
     DurationLike,
     backend,
@@ -66,6 +67,8 @@ class Client(_SnakePassthrough):
         direct_upnp_lease: Optional[DurationLike] = None,
         direct_upnp_keep: Optional[bool] = None,
         direct_upnp_external_port: Optional[int] = None,
+        entry_access_control: Optional[List[AccessRule]] = None,
+        dial_access_control: Optional[List[AccessRule]] = None,
     ) -> None:
         """Initialize the WebSocket SOCKS5 proxy client.
         
@@ -100,6 +103,8 @@ class Client(_SnakePassthrough):
             direct_upnp_lease: Lease duration for UPnP port mapping
             direct_upnp_keep: Keep UPnP port mapping on exit
             direct_upnp_external_port: External port for UPnP mapping
+            entry_access_control: Rules restricting destinations accepted at the local SOCKS entry
+            dial_access_control: Rules restricting destinations reachable when dialing outbound
         """
         opt = backend.DefaultClientOption()
         if logger is None:
@@ -160,6 +165,10 @@ class Client(_SnakePassthrough):
             opt.WithDirectUPnPKeep(bool(direct_upnp_keep))
         if direct_upnp_external_port is not None:
             opt.WithDirectUPnPExtPort(int(direct_upnp_external_port))
+        if entry_access_control is not None:
+            opt.WithEntryAccessControl(entry_access_control)
+        if dial_access_control is not None:
+            opt.WithDialAccessControl(dial_access_control)
 
         self._raw = backend.NewLinkSocksClient(token or "", opt)
         self._ctx = None

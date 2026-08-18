@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -23,6 +24,7 @@ type WSConn struct {
 
 	pingTime time.Time  // Track when ping was sent
 	pingMu   sync.Mutex // Mutex for ping timing
+	rttNS    int64      // last measured RTT in nanoseconds (atomic)
 
 	label    string
 	clientIP string
@@ -83,19 +85,39 @@ func NewWSConn(conn *websocket.Conn, label string, logger zerolog.Logger) *WSCon
 	// Set pong handler to measure RTT
 	conn.SetPongHandler(func(string) error {
 		wsConn.pingMu.Lock()
-		rtt := time.Since(wsConn.pingTime)
+		sent := wsConn.pingTime
 		wsConn.pingMu.Unlock()
 
-		// Log the actual RTT when pong is received
-		logger.
-			Trace().
-			Int64("rtt_ms", rtt.Milliseconds()).
-			Msg("WebSocket pong received, RTT measured")
+		if !sent.IsZero() {
+			rtt := time.Since(sent)
+			atomic.StoreInt64(&wsConn.rttNS, int64(rtt))
+
+			// Log the actual RTT when pong is received
+			logger.
+				Trace().
+				Int64("rtt_ms", rtt.Milliseconds()).
+				Msg("WebSocket pong received, RTT measured")
+		}
 
 		return conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	})
 
 	return wsConn
+}
+
+// Ping sends a WebSocket ping and records the send time so the pong handler
+// can measure the round-trip time.
+func (c *WSConn) Ping() error {
+	c.pingMu.Lock()
+	c.pingTime = time.Now()
+	c.pingMu.Unlock()
+	return c.SyncWriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
+}
+
+// RTT returns the most recently measured round-trip time, or zero if no pong
+// has been received yet.
+func (c *WSConn) RTT() time.Duration {
+	return time.Duration(atomic.LoadInt64(&c.rttNS))
 }
 
 // SyncWriteBinary performs thread-safe binary writes to the websocket connection

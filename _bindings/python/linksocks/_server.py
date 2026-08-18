@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from ._base import (
     _SnakePassthrough,
     _to_duration,
     _logger,
+    AccessRule,
     BufferZerologLogger,
     ReverseTokenResult,
     DurationLike,
@@ -46,6 +47,7 @@ class Server(_SnakePassthrough):
         socks_wait_client: Optional[bool] = None,
         buffer_size: Optional[int] = None,
         api_key: Optional[str] = None,
+        api_keys: Optional[List[str]] = None,
         channel_timeout: Optional[DurationLike] = None,
         connect_timeout: Optional[DurationLike] = None,
         connector_wait_provider: Optional[DurationLike] = None,
@@ -57,6 +59,8 @@ class Server(_SnakePassthrough):
         direct_rendezvous_udp: Optional[bool] = None,
         direct_rendezvous_host: Optional[str] = None,
         direct_rendezvous_port: Optional[int] = None,
+        entry_access_control: Optional[List[AccessRule]] = None,
+        dial_access_control: Optional[List[AccessRule]] = None,
     ) -> None:
         """Initialize the WebSocket SOCKS5 proxy server.
         
@@ -80,6 +84,10 @@ class Server(_SnakePassthrough):
             direct_rendezvous_udp: Use UDP hole punching for direct mode
             direct_rendezvous_host: Custom rendezvous server host
             direct_rendezvous_port: Custom rendezvous server port
+            api_keys: Additional API keys accepted for API authentication; keys
+                are credentials only and never carry access rules
+            entry_access_control: Rules restricting destinations accepted at the local SOCKS entry
+            dial_access_control: Rules restricting destinations reachable when dialing outbound
         """
         opt = backend.DefaultServerOption()
         if logger is None:
@@ -101,6 +109,8 @@ class Server(_SnakePassthrough):
             opt.WithBufferSize(int(buffer_size))
         if api_key is not None:
             opt.WithAPI(api_key)
+        if api_keys is not None:
+            opt.WithAPIKeys(api_keys)
         if channel_timeout is not None:
             opt.WithChannelTimeout(_to_duration(channel_timeout))
         if connect_timeout is not None:
@@ -122,6 +132,10 @@ class Server(_SnakePassthrough):
             opt.WithDirectRendezvousHost(direct_rendezvous_host)
         if direct_rendezvous_port is not None:
             opt.WithDirectRendezvousPort(direct_rendezvous_port)
+        if entry_access_control is not None:
+            opt.WithEntryAccessControl(entry_access_control)
+        if dial_access_control is not None:
+            opt.WithDialAccessControl(dial_access_control)
 
         self._raw = backend.NewLinkSocksServer(opt)
         self._ctx = None
@@ -161,6 +175,7 @@ class Server(_SnakePassthrough):
         username: Optional[str] = None,
         password: Optional[str] = None,
         allow_manage_connector: Optional[bool] = None,
+        rules: Optional[List[AccessRule]] = None,
     ) -> ReverseTokenResult:
         """Add a reverse proxy token.
         
@@ -170,6 +185,7 @@ class Server(_SnakePassthrough):
             username: SOCKS5 authentication username
             password: SOCKS5 authentication password
             allow_manage_connector: Whether to allow clients to manage connector tokens
+            rules: Access control rules restricting destinations reachable via this token
             
         Returns:
             Result containing the token and assigned port
@@ -185,6 +201,8 @@ class Server(_SnakePassthrough):
             opts.Password = password
         if allow_manage_connector is not None:
             opts.AllowManageConnector = bool(allow_manage_connector)
+        if rules is not None:
+            opts.Rules = list(rules)
         result = self._raw.AddReverseToken(opts)
         return ReverseTokenResult(token=result.token, port=result.port)
 
@@ -196,6 +214,7 @@ class Server(_SnakePassthrough):
         username: Optional[str] = None,
         password: Optional[str] = None,
         allow_manage_connector: Optional[bool] = None,
+        rules: Optional[List[AccessRule]] = None,
     ) -> ReverseTokenResult:
         """Add a reverse proxy token asynchronously.
         
@@ -205,6 +224,7 @@ class Server(_SnakePassthrough):
             username: SOCKS5 authentication username
             password: SOCKS5 authentication password
             allow_manage_connector: Whether to allow clients to manage connector tokens
+            rules: Access control rules restricting destinations reachable via this token
             
         Returns:
             Result containing the token and assigned port
@@ -220,6 +240,8 @@ class Server(_SnakePassthrough):
             opts.Password = password
         if allow_manage_connector is not None:
             opts.AllowManageConnector = bool(allow_manage_connector)
+        if rules is not None:
+            opts.Rules = list(rules)
         result = await asyncio.to_thread(self._raw.AddReverseToken, opts)
         return ReverseTokenResult(token=result.token, port=result.port)
 

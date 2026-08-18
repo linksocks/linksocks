@@ -369,6 +369,12 @@ func (r *Relay) handleHTTPConnect(ctx context.Context, ws MessageWriter, conn *b
 		return err
 	}
 
+	if err := r.checkEntryAccess(ctx, targetHost, targetPort); err != nil {
+		r.log.Warn().Str("address", targetHost).Int("port", targetPort).Msg("HTTP CONNECT blocked by access control")
+		_ = r.writeHTTPProxyError(conn, http.StatusForbidden, "Destination blocked by access control")
+		return err
+	}
+
 	channelID := uuid.New()
 	r.log.Trace().
 		Str("channel_id", channelID.String()).
@@ -426,6 +432,12 @@ func (r *Relay) handleHTTPAbsoluteRequest(ctx context.Context, ws MessageWriter,
 	targetHost, targetPort, err := parseHTTPProxyTarget(request.URL.Host, defaultPort)
 	if err != nil {
 		_ = r.writeHTTPProxyError(conn, http.StatusBadRequest, "Invalid request target")
+		return err
+	}
+
+	if err := r.checkEntryAccess(ctx, targetHost, targetPort); err != nil {
+		r.log.Warn().Str("address", targetHost).Int("port", targetPort).Msg("HTTP proxy request blocked by access control")
+		_ = r.writeHTTPProxyError(conn, http.StatusForbidden, "Destination blocked by access control")
 		return err
 	}
 

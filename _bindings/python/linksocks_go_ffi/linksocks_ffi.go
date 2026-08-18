@@ -156,7 +156,8 @@ type serverConfig struct {
 	SocksHost            string `json:"socks_host"`
 	SocksWaitClient      *bool  `json:"socks_wait_client"`
 	BufferSize           *int   `json:"buffer_size"`
-	APIKey               string `json:"api_key"`
+	APIKey               string   `json:"api_key"`
+	APIKeys              []string `json:"api_keys"`
 	ChannelTimeoutNs     *int64 `json:"channel_timeout_ns"`
 	ConnectTimeoutNs     *int64 `json:"connect_timeout_ns"`
 	ConnectorWaitNs      *int64 `json:"connector_wait_ns"`
@@ -169,14 +170,33 @@ type serverConfig struct {
 	DirectRendezvousHost string `json:"direct_rendezvous_host"`
 	DirectRendezvousPort *int   `json:"direct_rendezvous_port"`
 	LoggerID             string `json:"logger_id"`
+
+	EntryAccessControl []accessRuleJSON `json:"entry_access_control"`
+	DialAccessControl  []accessRuleJSON `json:"dial_access_control"`
 }
 
 type reverseTokenOptions struct {
-	Token                string `json:"token"`
-	Port                 *int   `json:"port"`
-	Username             string `json:"username"`
-	Password             string `json:"password"`
-	AllowManageConnector *bool  `json:"allow_manage_connector"`
+	Token                string            `json:"token"`
+	Port                 *int              `json:"port"`
+	Username             string            `json:"username"`
+	Password             string            `json:"password"`
+	AllowManageConnector *bool             `json:"allow_manage_connector"`
+	Rules                []accessRuleJSON  `json:"rules"`
+}
+
+// accessRuleJSON mirrors linksocks.AccessRule for JSON config parsing. PortSpec
+// handles both a single number (80) and a [start, end] pair ([90,150]).
+type accessRuleJSON struct {
+	Addrs []string             `json:"addrs"`
+	Ports []linksocks.PortSpec `json:"ports"`
+}
+
+func toAccessControl(rules []accessRuleJSON) (*linksocks.AccessControl, error) {
+	goRules := make([]linksocks.AccessRule, 0, len(rules))
+	for _, r := range rules {
+		goRules = append(goRules, linksocks.AccessRule{Addrs: r.Addrs, Ports: r.Ports})
+	}
+	return linksocks.NewAccessControl(goRules)
 }
 
 type clientConfig struct {
@@ -208,6 +228,9 @@ type clientConfig struct {
 	DirectUPnPKeep    *bool    `json:"direct_upnp_keep"`
 	DirectUPnPExtPort *int     `json:"direct_upnp_external_port"`
 	LoggerID          string   `json:"logger_id"`
+
+	EntryAccessControl []accessRuleJSON `json:"entry_access_control"`
+	DialAccessControl  []accessRuleJSON `json:"dial_access_control"`
 }
 
 //export linksocks_server_new
@@ -244,6 +267,9 @@ func linksocks_server_new(cfgJSON *C.char, out *C.uint64_t) *C.char {
 	if cfg.APIKey != "" {
 		opt.WithAPI(cfg.APIKey)
 	}
+	if len(cfg.APIKeys) > 0 {
+		opt.WithAPIKeys(cfg.APIKeys...)
+	}
 	if cfg.ChannelTimeoutNs != nil {
 		opt.WithChannelTimeout(time.Duration(*cfg.ChannelTimeoutNs))
 	}
@@ -273,6 +299,20 @@ func linksocks_server_new(cfgJSON *C.char, out *C.uint64_t) *C.char {
 	}
 	if cfg.UpstreamUsername != "" || cfg.UpstreamPassword != "" {
 		opt.WithUpstreamAuth(cfg.UpstreamUsername, cfg.UpstreamPassword)
+	}
+	if len(cfg.EntryAccessControl) != 0 {
+		ac, err := toAccessControl(cfg.EntryAccessControl)
+		if err != nil {
+			return errStr(err)
+		}
+		opt.WithEntryAccessControl(ac)
+	}
+	if len(cfg.DialAccessControl) != 0 {
+		ac, err := toAccessControl(cfg.DialAccessControl)
+		if err != nil {
+			return errStr(err)
+		}
+		opt.WithDialAccessControl(ac)
 	}
 
 	srv := linksocks.NewLinkSocksServer(opt)
@@ -344,6 +384,13 @@ func linksocks_server_add_reverse_token(h C.uint64_t, optsJSON *C.char) *C.char 
 	}
 	if opts.AllowManageConnector != nil {
 		goOpts.AllowManageConnector = *opts.AllowManageConnector
+	}
+	if len(opts.Rules) != 0 {
+		ac, err := toAccessControl(opts.Rules)
+		if err != nil {
+			return errStr(err)
+		}
+		goOpts.AccessControl = ac
 	}
 
 	res, err := srv.AddReverseToken(goOpts)
@@ -497,6 +544,20 @@ func linksocks_client_new(token *C.char, cfgJSON *C.char, out *C.uint64_t) *C.ch
 	}
 	if cfg.NoEnvProxy != nil {
 		opt.WithNoEnvProxy(*cfg.NoEnvProxy)
+	}
+	if len(cfg.EntryAccessControl) != 0 {
+		ac, err := toAccessControl(cfg.EntryAccessControl)
+		if err != nil {
+			return errStr(err)
+		}
+		opt.WithEntryAccessControl(ac)
+	}
+	if len(cfg.DialAccessControl) != 0 {
+		ac, err := toAccessControl(cfg.DialAccessControl)
+		if err != nil {
+			return errStr(err)
+		}
+		opt.WithDialAccessControl(ac)
 	}
 
 	cli := linksocks.NewLinkSocksClient(C.GoString(token), opt)

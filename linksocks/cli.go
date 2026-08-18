@@ -121,6 +121,7 @@ func (cli *CLI) initCommands() {
 		cmd.Flags().Duration("direct-upnp-lease", 30*time.Minute, "Lease duration for UPnP port mapping")
 		cmd.Flags().Bool("direct-upnp-keep", false, "Keep UPnP port mapping on exit")
 		cmd.Flags().Int("direct-upnp-external-port", 0, "External port for UPnP mapping (default: same as internal port)")
+		cmd.Flags().StringArray("access-rule", nil, "Destination allow rule as ADDR:PORT (e.g. 192.168.1.0/24:22), repeatable")
 	}
 
 	// Add flags to client commands
@@ -153,12 +154,13 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().Bool("direct-rendezvous-udp", false, "Enable server-side UDP rendezvous (experimental)")
 	serverCmd.Flags().String("direct-rendezvous-host", "", "UDP rendezvous listen host (default: ws-host)")
 	serverCmd.Flags().Int("direct-rendezvous-port", 0, "UDP rendezvous listen port (default: ws-port)")
+	serverCmd.Flags().StringArray("access-rule", nil, "Destination allow rule as ADDR:PORT (e.g. 192.168.1.0/24:22), repeatable; not allowed in API server mode")
 	serverCmd.Flags().SortFlags = false
 
 	cli.configureCommandHelp(clientCmd, cliHelpConfig{
 		Overview:   "Use client for the local SOCKS endpoint in forward mode. In reverse deployments, client -r acts as the provider that exits through its local network.",
 		KeyFlags:   []string{"token", "url", "reverse", "socks-port", "socks-host"},
-		OtherFlags: []string{"connector-token", "socks-username", "socks-password", "socks-no-wait", "no-reconnect", "retry-auth", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "debug", "help"},
+		OtherFlags: []string{"connector-token", "socks-username", "socks-password", "socks-no-wait", "no-reconnect", "retry-auth", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "debug", "help"},
 		Examples: []string{
 			"# Forward proxy\nlinksocks client -t my_token -u ws://localhost:8765 -p 9870",
 			"# Reverse provider\nlinksocks client -t my_token -u ws://localhost:8765 -r",
@@ -168,7 +170,7 @@ func (cli *CLI) initCommands() {
 	cli.configureCommandHelp(providerCmd, cliHelpConfig{
 		Overview:   "Provider is a shortcut for client -r. Use it when this machine should provide outbound network access for a reverse proxy deployment.",
 		KeyFlags:   []string{"token", "url"},
-		OtherFlags: []string{"connector-token", "no-reconnect", "retry-auth", "fast-open", "upstream-proxy", "no-env-proxy", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "threads", "debug", "help"},
+		OtherFlags: []string{"connector-token", "no-reconnect", "retry-auth", "fast-open", "upstream-proxy", "no-env-proxy", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "threads", "debug", "help"},
 		Examples: []string{
 			"# Basic provider\nlinksocks provider -t my_token -u ws://localhost:8765",
 			"# Provider with autonomy\nlinksocks provider -t my_token -c my_connector -u ws://localhost:8765",
@@ -177,7 +179,7 @@ func (cli *CLI) initCommands() {
 	cli.configureCommandHelp(connectorCmd, cliHelpConfig{
 		Overview:   "Connector is an alias for client and is commonly used with a connector token to expose a local SOCKS5 port that reaches a reverse provider.",
 		KeyFlags:   []string{"token", "url", "socks-port", "socks-host"},
-		OtherFlags: []string{"socks-username", "socks-password", "socks-no-wait", "no-reconnect", "retry-auth", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "debug", "help"},
+		OtherFlags: []string{"socks-username", "socks-password", "socks-no-wait", "no-reconnect", "retry-auth", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "debug", "help"},
 		Examples: []string{
 			"# Connector side of agent mode\nlinksocks connector -t connector_token -u ws://localhost:8765 -p 1180",
 		},
@@ -185,7 +187,7 @@ func (cli *CLI) initCommands() {
 	cli.configureCommandHelp(serverCmd, cliHelpConfig{
 		Overview:   "Use server to run the WebSocket relay. Add -r when the SOCKS5 listener should live on the server side for reverse or agent deployments.",
 		KeyFlags:   []string{"token", "ws-host", "ws-port", "reverse", "socks-port", "socks-host"},
-		OtherFlags: []string{"connector-token", "connector-autonomy", "socks-username", "socks-password", "socks-nowait", "api-key", "buffer-size", "upstream-proxy", "fast-open", "connector-wait-provider", "direct-enable", "direct-rendezvous-udp", "direct-rendezvous-host", "direct-rendezvous-port", "debug", "help"},
+		OtherFlags: []string{"connector-token", "connector-autonomy", "socks-username", "socks-password", "socks-nowait", "api-key", "buffer-size", "upstream-proxy", "fast-open", "connector-wait-provider", "direct-enable", "direct-rendezvous-udp", "direct-rendezvous-host", "direct-rendezvous-port", "access-rule", "debug", "help"},
 		Examples: []string{
 			"# Forward relay\nlinksocks server -t my_token",
 			"# Reverse proxy\nlinksocks server -t my_token -r -p 9870",
@@ -246,7 +248,6 @@ func (cli *CLI) flagUsages(cmd *cobra.Command, flagNames []string) string {
 	if len(flagNames) == 0 {
 		return ""
 	}
-
 	flagSet := pflag.NewFlagSet(cmd.Name(), pflag.ContinueOnError)
 	flagSet.SortFlags = false
 
@@ -304,6 +305,55 @@ func parseProxy(proxyURL string) (address, username, password string, proxyType 
 	}
 
 	return address, username, password, proxyType, nil
+}
+
+// parseAccessRules parses repeated --access-rule flags of the form
+// "ADDR:PORT", e.g. "192.168.1.0/24:22" or "192.168.1.1-192.168.2.255:22-100".
+func parseAccessRules(cmd *cobra.Command) ([]AccessRule, error) {
+	raw, err := cmd.Flags().GetStringArray("access-rule")
+	if err != nil {
+		return nil, err
+	}
+	rules := make([]AccessRule, 0, len(raw))
+	for _, s := range raw {
+		rule, err := parseAccessRuleSpec(s)
+		if err != nil {
+			return nil, err
+		}
+		rules = append(rules, rule)
+	}
+	return rules, nil
+}
+
+// parseAccessRuleSpec parses a single "ADDR:PORT" allow entry. The address
+// part accepts a CIDR, bare IP, or range ("192.168.1.1-255"); the port part a
+// single port or a "lo-hi" range.
+func parseAccessRuleSpec(spec string) (AccessRule, error) {
+	sep := strings.LastIndex(spec, ":")
+	if sep <= 0 || sep == len(spec)-1 {
+		return AccessRule{}, fmt.Errorf("invalid --access-rule %q: want ADDR:PORT", spec)
+	}
+	addrSpec := strings.TrimSpace(spec[:sep])
+	portSpec := strings.TrimSpace(spec[sep+1:])
+	if _, err := parseAddrSpec(addrSpec); err != nil {
+		return AccessRule{}, fmt.Errorf("invalid --access-rule %q: %w", spec, err)
+	}
+	rule := AccessRule{Addrs: []string{addrSpec}}
+	if lo, hi, ok := strings.Cut(portSpec, "-"); ok {
+		loPort, err1 := strconv.Atoi(strings.TrimSpace(lo))
+		hiPort, err2 := strconv.Atoi(strings.TrimSpace(hi))
+		if err1 != nil || err2 != nil || loPort < 1 || hiPort > 65535 || hiPort < loPort {
+			return AccessRule{}, fmt.Errorf("invalid --access-rule %q: bad port range %q", spec, portSpec)
+		}
+		rule.Ports = append(rule.Ports, PortRange(loPort, hiPort))
+	} else {
+		p, err := strconv.Atoi(portSpec)
+		if err != nil || p < 1 || p > 65535 {
+			return AccessRule{}, fmt.Errorf("invalid --access-rule %q: bad port %q", spec, portSpec)
+		}
+		rule.Ports = append(rule.Ports, SinglePort(p))
+	}
+	return rule, nil
 }
 
 func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
@@ -442,6 +492,23 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 		clientOpt.WithSocksPassword(socksPassword)
 	}
 
+	// Map --access-rule to the entry (local SOCKS) or dial (outbound) side by role
+	rules, err := parseAccessRules(cmd)
+	if err != nil {
+		return err
+	}
+	if len(rules) > 0 {
+		ac, err := NewAccessControl(rules)
+		if err != nil {
+			return err
+		}
+		if cmd.Name() == "provider" || (cmd.Name() == "client" && reverse) {
+			clientOpt.WithDialAccessControl(ac)
+		} else {
+			clientOpt.WithEntryAccessControl(ac)
+		}
+	}
+
 	client := NewLinkSocksClient(token, clientOpt)
 	defer client.Close()
 
@@ -574,6 +641,27 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 		serverOpt.WithAPI(apiKey)
 	}
 
+	// Access control rules: dial side in forward mode, per-token entry in reverse mode
+	rules, err := parseAccessRules(cmd)
+	if err != nil {
+		return err
+	}
+	if apiKey != "" && len(rules) > 0 {
+		return fmt.Errorf("--access-rule is not allowed in API server mode; configure access control through the HTTP API")
+	}
+	var tokenAC *AccessControl
+	if len(rules) > 0 {
+		ac, err := NewAccessControl(rules)
+		if err != nil {
+			return err
+		}
+		if !reverse {
+			serverOpt.WithDialAccessControl(ac)
+		} else {
+			tokenAC = ac
+		}
+	}
+
 	// Create server instance
 	server := NewLinkSocksServer(serverOpt)
 
@@ -587,6 +675,7 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 				Username:             socksUsername,
 				Password:             socksPassword,
 				AllowManageConnector: connectorAutonomy,
+				AccessControl:        tokenAC,
 			})
 			if err != nil {
 				return fmt.Errorf("failed to add reverse token: %w", err)

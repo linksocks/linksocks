@@ -73,6 +73,227 @@ def test_ffi_server_option_connector_wait_serialization():
     assert opt.to_cfg()["connector_wait_ns"] == _to_duration("250ms")
 
 
+def test_cli_parse_access_rules():
+    import click
+    from linksocks._cli import _parse_access_rules
+    from linksocks._base import AccessRule
+
+    assert _parse_access_rules(()) is None
+
+    rules = _parse_access_rules(("192.168.1.0/24:22", "10.0.0.0/8:8000-9000", "fe80::/10:443"))
+    assert rules == [
+        AccessRule(addrs=["192.168.1.0/24"], ports=[22]),
+        AccessRule(addrs=["10.0.0.0/8"], ports=[(8000, 9000)]),
+        AccessRule(addrs=["fe80::/10"], ports=[443]),
+    ]
+
+    with pytest.raises(click.ClickException):
+        _parse_access_rules(("192.168.1.0/24",))  # missing port
+    with pytest.raises(click.ClickException):
+        _parse_access_rules((":22",))  # missing addr
+    with pytest.raises(click.ClickException):
+        _parse_access_rules(("192.168.1.0/24:",))  # empty port
+    with pytest.raises(click.ClickException):
+        _parse_access_rules(("192.168.1.0/24:abc",))  # bad port
+    with pytest.raises(click.ClickException):
+        _parse_access_rules(("192.168.1.0/24:70000",))  # out of range
+    with pytest.raises(click.ClickException):
+        _parse_access_rules(("192.168.1.0/24:100-22",))  # reversed range
+
+
+def test_ffi_option_access_control_serialization():
+    from linksocks._base import _FFIServerOption, _FFIClientOption, AccessRule
+
+    rule = AccessRule(addrs=["192.168.1.0/24"], ports=[22, (90, 150)])
+    expected = [{"addrs": ["192.168.1.0/24"], "ports": [22, [90, 150]]}]
+
+    sopt = _FFIServerOption()
+    sopt.WithEntryAccessControl([rule])
+    sopt.WithDialAccessControl([rule])
+    assert sopt.to_cfg()["entry_access_control"] == expected
+    assert sopt.to_cfg()["dial_access_control"] == expected
+
+    sopt.WithAPIKeys(["restricted"])
+    assert sopt.to_cfg()["api_keys"] == ["restricted"]
+
+    copt = _FFIClientOption()
+    copt.WithEntryAccessControl([rule])
+    copt.WithDialAccessControl([rule])
+    assert copt.to_cfg()["entry_access_control"] == expected
+    assert copt.to_cfg()["dial_access_control"] == expected
+
+
+def test_server_entry_dial_access_control_options(monkeypatch):
+    import linksocks._server as server_module
+    from linksocks._base import AccessRule
+
+    captured = {}
+
+    class DummyOption:
+        def WithLogger(self, _logger):
+            captured["logger"] = True
+
+        def WithEntryAccessControl(self, rules):
+            captured["entry"] = rules
+
+        def WithDialAccessControl(self, rules):
+            captured["dial"] = rules
+
+        def WithAPI(self, key):
+            captured["api_key"] = key
+
+        def WithAPIKeys(self, keys):
+            captured["api_keys"] = keys
+
+    class DummyLogger:
+        def __init__(self, py_logger, logger_id):
+            self.py_logger = py_logger
+            self.go_logger = object()
+
+        def cleanup(self):
+            return None
+
+    class DummyRawServer:
+        def Close(self):
+            return None
+
+    monkeypatch.setattr(server_module, "BufferZerologLogger", DummyLogger)
+    monkeypatch.setattr(server_module.backend, "DefaultServerOption", lambda: DummyOption())
+    monkeypatch.setattr(server_module.backend, "NewLinkSocksServer", lambda opt: DummyRawServer())
+
+    rules = [AccessRule(addrs=["192.168.1.0/24"], ports=[22, (90, 150)])]
+    srv = server_module.Server(
+        entry_access_control=rules,
+        dial_access_control=rules,
+        api_key="primary",
+        api_keys=["restricted"],
+    )
+    try:
+        assert captured["logger"] is True
+        assert captured["entry"] == rules
+        assert captured["dial"] == rules
+        assert captured["api_key"] == "primary"
+        assert captured["api_keys"] == ["restricted"]
+    finally:
+        srv.close()
+
+
+def test_client_entry_access_control_options(monkeypatch):
+    import linksocks._client as client_module
+    from linksocks._base import AccessRule
+
+    captured = {}
+
+    class DummyOption:
+        def WithLogger(self, _logger):
+            captured["logger"] = True
+
+        def WithEntryAccessControl(self, rules):
+            captured["entry"] = rules
+
+        def WithDialAccessControl(self, rules):
+            captured["dial"] = rules
+
+    class DummyManagedLogger:
+        def __init__(self, py_logger, logger_id):
+            self.py_logger = py_logger
+            self.go_logger = object()
+
+        def cleanup(self):
+            return None
+
+    class DummyRawClient:
+        def Close(self):
+            return None
+
+    monkeypatch.setattr(client_module, "BufferZerologLogger", DummyManagedLogger)
+    monkeypatch.setattr(client_module.backend, "DefaultClientOption", lambda: DummyOption())
+    monkeypatch.setattr(client_module.backend, "NewLinkSocksClient", lambda token, opt: DummyRawClient())
+
+    rules = AccessRule(addrs=["10.0.0.0/8"], ports=[(8000, 9000)])
+    client = client_module.Client("token", entry_access_control=[rules], dial_access_control=[rules])
+    try:
+        assert captured["logger"] is True
+        assert captured["entry"] == [rules]
+        assert captured["dial"] == [rules]
+    finally:
+        client.close()
+
+
+def test_ffi_reverse_token_rules_payload():
+    from linksocks._base import _FFIRawServer, _FFIReverseTokenOptions, AccessRule
+
+    class DummyFFIServer:
+        def __init__(self):
+            self.payload = None
+
+        def add_reverse_token(self, payload):
+            self.payload = payload
+            return type("Res", (), {"token": "tok", "port": 1080})()
+
+    raw = object.__new__(_FFIRawServer)
+    raw._srv = DummyFFIServer()
+
+    opts = _FFIReverseTokenOptions()
+    opts.Token = "tok"
+    opts.Rules = [AccessRule(addrs=["192.168.1.1-255"], ports=[(90, 150)])]
+
+    res = raw.AddReverseToken(opts)
+    assert res.token == "tok"
+    assert raw._srv.payload["token"] == "tok"
+    assert raw._srv.payload["rules"] == [{"addrs": ["192.168.1.1-255"], "ports": [[90, 150]]}]
+
+
+def test_server_add_reverse_token_rules(monkeypatch):
+    import linksocks._server as server_module
+    from linksocks._base import _FFIRawServer, AccessRule
+
+    captured = {}
+
+    class DummyOption:
+        def WithLogger(self, _logger):
+            return None
+
+    class DummyLogger:
+        def __init__(self, py_logger, logger_id):
+            self.py_logger = py_logger
+            self.go_logger = object()
+
+        def cleanup(self):
+            return None
+
+    class DummyFFIServer:
+        def add_reverse_token(self, payload):
+            captured["payload"] = payload
+            return type("Res", (), {"token": "tok", "port": 1080})()
+
+    class DummyRawServer:
+        def __init__(self, _opt):
+            raw = object.__new__(_FFIRawServer)
+            raw._srv = DummyFFIServer()
+            self.raw = raw
+
+        def AddReverseToken(self, opts):
+            return self.raw.AddReverseToken(opts)
+
+        def Close(self):
+            return None
+
+    monkeypatch.setattr(server_module, "BufferZerologLogger", DummyLogger)
+    monkeypatch.setattr(server_module.backend, "DefaultServerOption", lambda: DummyOption())
+    monkeypatch.setattr(server_module.backend, "NewLinkSocksServer", lambda opt: DummyRawServer(opt))
+
+    rules = AccessRule(addrs=["192.168.1.1-255"], ports=[80])
+    srv = server_module.Server()
+    try:
+        res = srv.add_reverse_token(token="tok", port=1080, rules=[rules])
+        assert res.token == "tok"
+        assert captured["payload"]["token"] == "tok"
+        assert captured["payload"]["rules"] == [{"addrs": ["192.168.1.1-255"], "ports": [80]}]
+    finally:
+        srv.close()
+
+
 def test_client_command_defaults_to_anonymous_token(monkeypatch):
     import linksocks._cli as cli_module
 

@@ -318,14 +318,14 @@ func TestResolveStringFlagEnv(t *testing.T) {
 
 func TestResolveBoolFlagEnv(t *testing.T) {
 	tests := []struct {
-		name      string
-		flagName  string
-		envName   string
-		envValue  string
-		setFlag   bool
-		current   bool
-		want      bool
-		wantErr   bool
+		name     string
+		flagName string
+		envName  string
+		envValue string
+		setFlag  bool
+		current  bool
+		want     bool
+		wantErr  bool
 	}{
 		{
 			name:     "true env enables fast open",
@@ -464,6 +464,93 @@ func TestResolveAddressFlagEnvForWebsocket(t *testing.T) {
 			}
 			if host != tt.wantHost || port != tt.wantPort {
 				t.Fatalf("unexpected websocket address: got %s:%d want %s:%d", host, port, tt.wantHost, tt.wantPort)
+			}
+		})
+	}
+}
+
+func TestParseAccessRuleSpec(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    string
+		want    AccessRule
+		wantErr bool
+	}{
+		{
+			name: "cidr single port",
+			spec: "192.168.1.0/24:22",
+			want: AccessRule{Addrs: []string{"192.168.1.0/24"}, Ports: []PortSpec{SinglePort(22)}},
+		},
+		{
+			name: "full range with port range",
+			spec: "192.168.1.1-192.168.1.255:22-100",
+			want: AccessRule{Addrs: []string{"192.168.1.1-192.168.1.255"}, Ports: []PortSpec{PortRange(22, 100)}},
+		},
+		{
+			name: "bare ip single port",
+			spec: "10.0.0.5:443",
+			want: AccessRule{Addrs: []string{"10.0.0.5"}, Ports: []PortSpec{SinglePort(443)}},
+		},
+		{
+			name: "last octet range single port",
+			spec: "192.168.1.1-255:80",
+			want: AccessRule{Addrs: []string{"192.168.1.1-255"}, Ports: []PortSpec{SinglePort(80)}},
+		},
+		{
+			name: "ipv6 cidr single port",
+			spec: "fe80::/10:443",
+			want: AccessRule{Addrs: []string{"fe80::/10"}, Ports: []PortSpec{SinglePort(443)}},
+		},
+		{
+			name:    "missing colon",
+			spec:    "192.168.1.0/24",
+			wantErr: true,
+		},
+		{
+			name:    "empty port",
+			spec:    "192.168.1.0/24:",
+			wantErr: true,
+		},
+		{
+			name:    "empty addr",
+			spec:    ":22",
+			wantErr: true,
+		},
+		{
+			name:    "bad addr",
+			spec:    "not-an-ip:22",
+			wantErr: true,
+		},
+		{
+			name:    "bad port",
+			spec:    "192.168.1.0/24:abc",
+			wantErr: true,
+		},
+		{
+			name:    "out of range port",
+			spec:    "192.168.1.0/24:70000",
+			wantErr: true,
+		},
+		{
+			name:    "reversed port range",
+			spec:    "192.168.1.0/24:100-22",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseAccessRuleSpec(tt.spec)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error but got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("unexpected rule: got %+v want %+v", got, tt.want)
 			}
 		})
 	}

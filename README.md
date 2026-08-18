@@ -159,6 +159,10 @@ LinkSocks server provides an HTTP API for dynamic token management:
 linksocks server --api-key your_api_key
 ```
 
+API keys authenticate only and never carry access rules. Access control is
+attached per token (via the token creation API) or at the server level
+(entry/dial access control).
+
 For detailed API usage and examples, see: [HTTP API](https://linksocks.github.io/guide/http-api)
 
 ## License

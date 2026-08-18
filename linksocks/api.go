@@ -11,7 +11,7 @@ import (
 // APIHandler handles HTTP API requests for LinkSocksServer
 type APIHandler struct {
 	server *LinkSocksServer
-	apiKey string
+	apiKey string // Primary key; authentication only
 }
 
 // NewAPIHandler creates a new API handler for the given server
@@ -27,17 +27,19 @@ func (h *APIHandler) RegisterHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/api/token", h.handleToken)
 	mux.HandleFunc("/api/token/", h.handleToken)
 	mux.HandleFunc("/api/status", h.handleStatus)
+	mux.HandleFunc("/api/config/access", h.handleConfigAccess)
 }
 
 // TokenRequest represents a request to create a new token
 type TokenRequest struct {
-	Type                 string `json:"type"`          // "forward" or "reverse" or "connector"
-	Token                string `json:"token"`         // Optional: specific token to use
-	Port                 int    `json:"port"`          // Optional: specific port for reverse proxy
-	Username             string `json:"username"`      // Optional: SOCKS auth username
-	Password             string `json:"password"`      // Optional: SOCKS auth password
-	ReverseToken         string `json:"reverse_token"` // Optional: reverse token for connector token
-	AllowManageConnector bool   `json:"allow_manage_connector"`
+	Type                 string       `json:"type"`          // "forward" or "reverse" or "connector"
+	Token                string       `json:"token"`         // Optional: specific token to use
+	Port                 int          `json:"port"`          // Optional: specific port for reverse proxy
+	Username             string       `json:"username"`      // Optional: SOCKS auth username
+	Password             string       `json:"password"`      // Optional: SOCKS auth password
+	ReverseToken         string       `json:"reverse_token"` // Optional: reverse token for connector token
+	AllowManageConnector bool         `json:"allow_manage_connector"`
+	Rules                []AccessRule `json:"rules"` // Optional: destination allow entries for reverse token
 }
 
 // TokenResponse represents the response for token operations
@@ -85,10 +87,30 @@ type ReverseTokenStatus struct {
 	ConnectorTokens []string `json:"connector_tokens,omitempty"` // List of associated connector tokens
 }
 
-// checkAPIKey verifies the API key in the request header
-func (h *APIHandler) checkAPIKey(w http.ResponseWriter, r *http.Request) bool {
+// authenticatedKey reports whether the request carries a valid API key. The
+// primary key and additional keys authenticate alike; API keys are credentials
+// only and never carry access rules.
+func (h *APIHandler) authenticatedKey(r *http.Request) bool {
 	providedKey := r.Header.Get("X-API-Key")
-	if subtle.ConstantTimeCompare([]byte(providedKey), []byte(h.apiKey)) != 1 {
+
+	// Primary key: constant-time compare.
+	if subtle.ConstantTimeCompare([]byte(providedKey), []byte(h.apiKey)) == 1 {
+		return true
+	}
+
+	// Additional keys (ServerOption.APIKeys): authentication only.
+	for key := range h.server.apiKeys {
+		if subtle.ConstantTimeCompare([]byte(providedKey), []byte(key)) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// checkAPIKey verifies the API key in the request header, writing a 401
+// response when the key is missing or unknown.
+func (h *APIHandler) checkAPIKey(w http.ResponseWriter, r *http.Request) bool {
+	if !h.authenticatedKey(r) {
 		w.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(w).Encode(TokenResponse{
 			Success: false,
@@ -105,6 +127,9 @@ func (h *APIHandler) handleToken(w http.ResponseWriter, r *http.Request) {
 	if !h.checkAPIKey(w, r) {
 		return
 	}
+
+	// Rules are bound to tokens only: the request must supply them explicitly
+	// via TokenRequest.Rules. API keys never contribute rules.
 
 	switch r.Method {
 	case http.MethodDelete:
@@ -140,7 +165,7 @@ func (h *APIHandler) handleToken(w http.ResponseWriter, r *http.Request) {
 
 		switch req.Type {
 		case "forward":
-			token, err := h.server.AddForwardToken(req.Token)
+			token, err := h.server.AddForwardTokenWithRules(req.Token, req.Rules)
 			if err != nil {
 				json.NewEncoder(w).Encode(TokenResponse{
 					Success: false,
@@ -160,6 +185,17 @@ func (h *APIHandler) handleToken(w http.ResponseWriter, r *http.Request) {
 				Username:             req.Username,
 				Password:             req.Password,
 				AllowManageConnector: req.AllowManageConnector,
+			}
+			if rules := req.Rules; len(rules) > 0 {
+				ac, err := NewAccessControl(rules)
+				if err != nil {
+					json.NewEncoder(w).Encode(TokenResponse{
+						Success: false,
+						Error:   err.Error(),
+					})
+					return
+				}
+				opts.AccessControl = ac
 			}
 			result, err := h.server.AddReverseToken(opts)
 			if err != nil {
@@ -184,7 +220,7 @@ func (h *APIHandler) handleToken(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			token, err := h.server.AddConnectorToken(req.Token, req.ReverseToken)
+			token, err := h.server.AddConnectorTokenWithRules(req.Token, req.ReverseToken, req.Rules)
 			if err != nil {
 				json.NewEncoder(w).Encode(TokenResponse{
 					Success: false,
@@ -296,4 +332,76 @@ func (h *APIHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Tokens:  tokens,
 		Direct:  directStatus,
 	})
+}
+
+// AccessConfigRequest is the PUT body for /api/config/access. Fields may be
+// provided independently; an absent side keeps its current value.
+type AccessConfigRequest struct {
+	Entry *[]AccessRule `json:"entry"`
+	Dial  *[]AccessRule `json:"dial"`
+}
+
+// AccessConfigResponse is the GET response for /api/config/access.
+type AccessConfigResponse struct {
+	Entry []AccessRule `json:"entry"`
+	Dial  []AccessRule `json:"dial"`
+}
+
+// handleConfigAccess reads or updates the server-wide entry and dial access
+// control rules. These rules are enforced on the server for every request that
+// has no token-level override, matching the WithEntryAccessControl /
+// WithDialAccessControl server options.
+func (h *APIHandler) handleConfigAccess(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if !h.checkAPIKey(w, r) {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		json.NewEncoder(w).Encode(AccessConfigResponse{
+			Entry: h.server.relay.EntryAccessControl().RawRules(),
+			Dial:  h.server.relay.DialAccessControl().RawRules(),
+		})
+
+	case http.MethodPut:
+		var req AccessConfigRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(TokenResponse{
+				Success: false,
+				Error:   "invalid request body",
+			})
+			return
+		}
+		if req.Entry != nil {
+			ac, err := NewAccessControl(*req.Entry)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(TokenResponse{
+					Success: false,
+					Error:   err.Error(),
+				})
+				return
+			}
+			h.server.relay.SetEntryAccessControl(ac)
+		}
+		if req.Dial != nil {
+			ac, err := NewAccessControl(*req.Dial)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(TokenResponse{
+					Success: false,
+					Error:   err.Error(),
+				})
+				return
+			}
+			h.server.relay.SetDialAccessControl(ac)
+		}
+		json.NewEncoder(w).Encode(TokenResponse{Success: true})
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }

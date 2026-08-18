@@ -99,7 +99,7 @@ if __name__ == "__main__":
 The `Server` class manages WebSocket connections and provides SOCKS5 proxy functionality.
 
 ```python
-from linksocks import Server
+from linksocks import Server, AccessRule
 
 # Create server with options
 server = Server(
@@ -114,7 +114,9 @@ server = Server(
     fast_open=False,             # Enable fast open optimization
     upstream_proxy="socks5://proxy:1080",  # Upstream proxy
     upstream_username="user",    # Upstream proxy username
-    upstream_password="pass"     # Upstream proxy password
+    upstream_password="pass",    # Upstream proxy password
+    entry_access_control=[AccessRule(addrs=["192.168.1.0/24"], ports=[22, (90, 150)])],
+    dial_access_control=[AccessRule(addrs=["10.0.0.0/8"], ports=[(8000, 9000)])],
 )
 ```
 
@@ -133,7 +135,8 @@ result = server.add_reverse_token(
     port=9870,                   # optional, auto-allocated if None
     username="socks_user",       # optional, SOCKS5 auth username
     password="socks_pass",       # optional, SOCKS5 auth password
-    allow_manage_connector=True  # optional, allow client connector management
+    allow_manage_connector=True, # optional, allow client connector management
+    rules=[AccessRule(addrs=["192.168.1.1-255"], ports=[80])],  # optional, per-token access control
 )
 print(f"Token: {result.token}, Port: {result.port}")
 
@@ -167,7 +170,7 @@ await server.async_wait_ready(timeout="30s")  # Go duration string (rarely neede
 The `Client` class connects to WebSocket servers and provides SOCKS5 functionality.
 
 ```python
-from linksocks import Client
+from linksocks import Client, AccessRule
 
 # Create client with options
 client = Client(
@@ -189,7 +192,9 @@ client = Client(
     upstream_proxy="socks5://proxy:1080",  # Upstream proxy
     upstream_username="proxy_user",        # Upstream proxy username
     upstream_password="proxy_pass",        # Upstream proxy password
-    no_env_proxy=False           # Ignore proxy environment variables
+    no_env_proxy=False,          # Ignore proxy environment variables
+    entry_access_control=[AccessRule(addrs=["192.168.1.0/24"], ports=[22])],
+    dial_access_control=[AccessRule(addrs=["0.0.0.0/0"], ports=[443])],
 )
 ```
 
@@ -236,6 +241,26 @@ logger.addHandler(handler)
 server = Server(logger=logger)
 client = Client("token", logger=logger)
 ```
+
+### Access Control
+
+`Server`, `Client` and reverse tokens accept `AccessRule` objects that restrict which destinations can be reached. Each rule pairs an address range with a port range; rules are OR-ed together, and within a rule the address must match **and** the port must match. Empty rules allow everything.
+
+```python
+from linksocks import AccessRule, Server
+
+rules = [
+    AccessRule(addrs=["192.168.1.0/24", "192.168.1.1-255"], ports=[22, (90, 150)]),
+    AccessRule(addrs=["10.0.0.0/8"], ports=[443]),
+]
+
+server = Server(entry_access_control=rules, dial_access_control=rules)
+```
+
+- `addrs`: CIDR blocks (`192.168.1.0/24`), bare IPs (`192.168.1.1`), or address ranges (`1.1.1.1-255` for `1.1.1.1`-`1.1.1.255`, `1.1.1.1-2.2.2.255` for `1.1.1.1`-`2.2.2.255`)
+- `ports`: single numbers (`22`) or inclusive `(start, end)` tuples (`(90, 150)`)
+
+Entry control (`entry_access_control`) restricts what the local SOCKS entry accepts; dial control (`dial_access_control`) restricts the destinations actually dialed outbound. On the server side, per-token `rules` override the server-level entry control for that token.
 
 ## Advanced Examples
 

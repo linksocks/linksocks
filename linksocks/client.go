@@ -82,6 +82,7 @@ type LinkSocksClient struct {
 	relay           *Relay
 	log             zerolog.Logger
 	token           string
+	actualToken     string // Token assigned by the server when connecting anonymously
 	wsURL           string
 	reverse         bool
 	socksHost       string
@@ -336,6 +337,24 @@ func (c *LinkSocksClient) DisconnectedChan() <-chan struct{} {
 	return ch
 }
 
+// GetServerToken returns the token assigned by the server after
+// authentication, or an empty string if the server did not assign one.
+func (c *LinkSocksClient) GetServerToken() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.actualToken
+}
+
+// GetRTT returns the most recent WebSocket round-trip time measured against
+// the link server, or zero if no pong has been received yet.
+func (c *LinkSocksClient) GetRTT() time.Duration {
+	ws := c.getNextWebSocket()
+	if ws == nil {
+		return 0
+	}
+	return ws.RTT()
+}
+
 // ClientOption represents configuration options for LinkSocksClient
 type ClientOption struct {
 	WSURL             string
@@ -371,6 +390,15 @@ type ClientOption struct {
 	DirectUPnPLease   time.Duration
 	DirectUPnPKeep    bool
 	DirectUPnPExtPort int
+
+	// EntryAccessControl restricts which destinations this client's local
+	// SOCKS5/HTTP proxy may request. Nil means no restriction.
+	EntryAccessControl *AccessControl
+
+	// DialAccessControl restricts which destinations this client may connect
+	// to when it acts as the network provider (performs the actual dial).
+	// Nil means no restriction.
+	DialAccessControl *AccessControl
 }
 
 // DefaultClientOption returns default client options
@@ -586,6 +614,20 @@ func (o *ClientOption) WithUpstreamAuth(username, password string) *ClientOption
 	return o
 }
 
+// WithEntryAccessControl sets destination restrictions applied at this
+// client's local SOCKS5/HTTP proxy entry.
+func (o *ClientOption) WithEntryAccessControl(ac *AccessControl) *ClientOption {
+	o.EntryAccessControl = ac
+	return o
+}
+
+// WithDialAccessControl sets destination restrictions applied when this client
+// performs the actual connection as the network provider.
+func (o *ClientOption) WithDialAccessControl(ac *AccessControl) *ClientOption {
+	o.DialAccessControl = ac
+	return o
+}
+
 // WithNoEnvProxy sets whether to ignore environment proxy settings
 func (o *ClientOption) WithNoEnvProxy(noEnvProxy bool) *ClientOption {
 	o.NoEnvProxy = noEnvProxy
@@ -679,7 +721,9 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 		WithFastOpen(opt.FastOpen).
 		WithUpstreamProxy(opt.UpstreamProxy).
 		WithUpstreamAuth(opt.UpstreamUsername, opt.UpstreamPassword).
-		WithUpstreamProxyType(opt.UpstreamProxyType)
+		WithUpstreamProxyType(opt.UpstreamProxyType).
+		WithEntryAccessControl(opt.EntryAccessControl).
+		WithDialAccessControl(opt.DialAccessControl)
 
 	client := &LinkSocksClient{
 		instanceID:              uuid.New(),
@@ -2358,12 +2402,25 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 		if c.retryAuthFailure {
 			return errors.New("authentication failed")
 		}
-		// Return a non-retriable error to prevent reconnection attempts
-		// Provide helpful hint when using anonymous token
+		// Return a non-retriable error to prevent reconnection attempts.
+		// Include the server-provided error message when available.
+		serverErr := strings.TrimSpace(authResponse.Error)
+		if serverErr != "" {
+			return &nonRetriableError{msg: "authentication failed: " + serverErr}
+		}
 		if c.token == "anonymous" {
 			return &nonRetriableError{msg: "authentication failed: please provide a token with -t or set LINKSOCKS_TOKEN"}
 		}
 		return &nonRetriableError{msg: "authentication failed: invalid token"}
+	}
+
+	// Remember the token assigned by the server (e.g. for anonymous
+	// providers) and use it for reconnects so the same relay is reused.
+	if authResponse.Token != "" {
+		c.mu.Lock()
+		c.actualToken = authResponse.Token
+		c.token = authResponse.Token
+		c.mu.Unlock()
 	}
 
 	// Advertise direct signaling support in a backward-compatible way.
@@ -2766,7 +2823,7 @@ func (c *LinkSocksClient) heartbeatHandler(ctx context.Context, ws *WSConn) erro
 			return ctx.Err()
 		case <-ticker.C:
 			// Just send the ping - RTT will be measured when pong is received
-			if err := ws.SyncWriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+			if err := ws.Ping(); err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
 					c.log.Trace().Msg("WebSocket connection closed, stopping heartbeat")
 				} else {

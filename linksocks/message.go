@@ -180,6 +180,9 @@ func (m AuthMessage) GetType() string {
 type AuthResponseMessage struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
+	// Token is the actual token assigned by the server, returned
+	// when the client authenticated with the anonymous token.
+	Token string `json:"token,omitempty"`
 }
 
 func (m AuthResponseMessage) GetType() string {
@@ -438,6 +441,9 @@ func PackMessage(msg BaseMessage) ([]byte, error) {
 		if !m.Success {
 			buf = append(buf, byte(len(m.Error)))
 			buf = append(buf, []byte(m.Error)...)
+		} else if m.Token != "" {
+			buf = append(buf, byte(len(m.Token)))
+			buf = append(buf, []byte(m.Token)...)
 		}
 		return buf, nil
 
@@ -693,7 +699,13 @@ func parseMessageBody(msgType byte, payload []byte) (BaseMessage, error) {
 		}
 		success := byteToBool(payload[0])
 		msg := AuthResponseMessage{Success: success}
-		if !success && len(payload) > 1 {
+		if success && len(payload) > 1 {
+			tokenLen := int(payload[1])
+			if len(payload) < 2+tokenLen {
+				return nil, fmt.Errorf("invalid auth response token length")
+			}
+			msg.Token = string(payload[2 : 2+tokenLen])
+		} else if !success && len(payload) > 1 {
 			errorLen := int(payload[1])
 			if len(payload) < 2+errorLen {
 				return nil, fmt.Errorf("invalid auth response error length")

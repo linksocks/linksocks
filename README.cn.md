@@ -127,12 +127,16 @@ linksocks.js 版本是一个轻量级版本，不包含 API 功能。
 
 ## API 服务
 
+## API 服务端
+
 LinkSocks 服务端提供用于动态令牌管理的 HTTP API：
 
 ```bash
 # 启用 API 功能启动服务端
 linksocks server --api-key your_api_key
 ```
+
+API Key 仅用于认证，不携带任何访问规则。访问控制通过令牌级别（建令牌时指定）或服务器级别（entry/dial access control）配置。
 
 详细的 API 使用说明和示例，请参见：[HTTP API](https://linksocks-docs.zetx.tech/guide/http-api)
 

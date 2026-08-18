@@ -41,6 +41,8 @@ curl -X DELETE \
 X-API-Key: your_secret_api_key
 ```
 
+可在服务器启动时通过 `ServerOption.WithAPIKeys(map[string][]AccessRule)` 注册**附加 API 密钥**。每个附加密钥可绑定自己的默认目标规则：使用该密钥创建令牌且未显式指定 `rules` 时,令牌继承该密钥的规则。主 `--api-key` 密钥本身不携带规则。
+
 ### 错误响应
 
 如果身份验证失败，API 返回：
@@ -60,6 +62,8 @@ X-API-Key: your_secret_api_key
 | POST   | `/api/token` | 添加新令牌 |
 | DELETE | `/api/token/{token}` | 通过 URL 路径删除令牌 |
 | DELETE | `/api/token` | 通过请求主体删除令牌 |
+| GET    | `/api/config/access` | 获取服务器级全局入口/出站规则 |
+| PUT    | `/api/config/access` | 更新服务器级全局入口/出站规则 |
 
 ## 服务器状态
 
@@ -106,7 +110,13 @@ X-API-Key: your_secret_api_key
 ```json
 {
   "type": "forward",
-  "token": "my_forward_token"
+  "token": "my_forward_token",
+  "rules": [
+    {
+      "addrs": ["192.168.1.0/24"],
+      "ports": [22]
+    }
+  ]
 }
 ```
 
@@ -114,6 +124,7 @@ X-API-Key: your_secret_api_key
 
 - `type`（必需）：必须是 "forward"
 - `token`（可选）：要使用的特定令牌，如果未提供则自动生成
+- `rules`（可选）：目标允许条目，由服务器在替该令牌拨号前执行。详见[访问控制](/zh/guide/access-control)。
 
 **响应：**
 
@@ -135,7 +146,17 @@ X-API-Key: your_secret_api_key
   "port": 9870,
   "username": "socks_user",
   "password": "socks_pass",
-  "allow_manage_connector": true
+  "allow_manage_connector": true,
+  "rules": [
+    {
+      "addrs": ["192.168.1.0/24", "192.168.1.1-255"],
+      "ports": [22, [90, 150]]
+    },
+    {
+      "addrs": ["10.0.0.5"],
+      "ports": [443]
+    }
+  ]
 }
 ```
 
@@ -147,6 +168,7 @@ X-API-Key: your_secret_api_key
 - `username`（可选）：SOCKS5 身份验证用户名
 - `password`（可选）：SOCKS5 身份验证密码  
 - `allow_manage_connector`（可选）：允许客户端管理连接者令牌（自助连接者管理）
+- `rules`（可选）：该令牌本地代理入口的目标允许条目。每条条目将 `addrs`（CIDR、裸 IP 或 IP 范围）与 `ports`（单个端口或 `[start, end]` 范围）配对;目标命中至少一条条目即被允许。详见[访问控制](/zh/guide/access-control)。
 
 **响应：**
 
@@ -166,7 +188,13 @@ X-API-Key: your_secret_api_key
 {
   "type": "connector",
   "token": "my_connector_token",
-  "reverse_token": "associated_reverse_token"
+  "reverse_token": "associated_reverse_token",
+  "rules": [
+    {
+      "addrs": ["10.0.0.0/8"],
+      "ports": [[8000, 9000]]
+    }
+  ]
 }
 ```
 
@@ -175,6 +203,7 @@ X-API-Key: your_secret_api_key
 - `type`（必需）：必须是 "connector"
 - `token`（可选）：特定的连接者令牌，如果未提供则自动生成
 - `reverse_token`（必需）：关联的反向代理令牌
+- `rules`（可选）：目标允许条目，由服务器在把该连接者的请求转发给反向 provider 前执行。详见[访问控制](/zh/guide/access-control)。
 
 **响应：**
 
@@ -226,6 +255,52 @@ curl -X DELETE \
   "token": "token_to_remove"
 }
 ```
+
+## 服务器级访问控制
+
+`/api/config/access` 读取和更新服务器级的**入口(entry)**与**出站(dial)**目标规则。这些是服务器上对任何未设置按 token 覆盖的请求执行的服务器级默认规则,等价于用 `WithEntryAccessControl` / `WithDialAccessControl` 服务器选项设置的内容。在 API 服务器模式下,这是配置全局限制的方式,因为该模式下 CLI 的 `--access-rule` 会被拒绝。
+
+### GET /api/config/access
+
+返回当前服务器级规则。
+
+**响应：**
+
+```json
+{
+  "entry": [
+    {
+      "addrs": ["192.168.0.0/16"],
+      "ports": [22]
+    }
+  ],
+  "dial": [
+    {
+      "addrs": ["10.0.0.0/8"],
+      "ports": [[8000, 9000]]
+    }
+  ]
+}
+```
+
+### PUT /api/config/access
+
+设置服务器级规则。任一字段可独立提供;未提供的字段保持当前值。使用空数组 `[]` 清空某侧(该侧允许一切)。
+
+```bash
+curl -X PUT \
+     -H "X-API-Key: your_api_key" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "entry": [
+         {"addrs": ["192.168.1.0/24"], "ports": [22]}
+       ],
+       "dial": []
+     }' \
+     http://localhost:8765/api/config/access
+```
+
+非法地址或端口范围会被拒绝并返回 `400 Bad Request`。
 
 ## 错误响应
 

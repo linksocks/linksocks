@@ -69,6 +69,7 @@ export default defineConfig({
               { text: 'Authentication', link: '/guide/authentication' },
               { text: 'Load Balancing', link: '/guide/load-balancing' },
               { text: 'Fast Open', link: '/guide/fast-open' },
+              { text: 'Access Control', link: '/guide/access-control' },
               { text: 'Message Protocol', link: '/guide/message-protocol' },
               { text: 'HTTP API', link: '/guide/http-api' }
             ]
@@ -138,6 +139,7 @@ export default defineConfig({
               { text: '身份验证', link: '/zh/guide/authentication' },
               { text: '负载均衡', link: '/zh/guide/load-balancing' },
               { text: '快速打开', link: '/zh/guide/fast-open' },
+              { text: '访问控制', link: '/zh/guide/access-control' },
               { text: '消息协议', link: '/zh/guide/message-protocol' },
               { text: 'HTTP API', link: '/zh/guide/http-api' }
             ]

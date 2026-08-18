@@ -41,6 +41,12 @@ All API requests require the `X-API-Key` header with your configured API key:
 X-API-Key: your_secret_api_key
 ```
 
+Additional API keys can be registered at server startup via
+`ServerOption.WithAPIKeys(map[string][]AccessRule)`. Every additional key may
+carry its own default destination rules: tokens created with that key without
+explicit `rules` inherit the key's rules. The primary `--api-key` key never
+carries rules.
+
 ### Error Response
 
 If authentication fails, the API returns:
@@ -60,6 +66,8 @@ If authentication fails, the API returns:
 | POST   | `/api/token` | Add a new token |
 | DELETE | `/api/token/{token}` | Remove a token by URL path |
 | DELETE | `/api/token` | Remove a token by request body |
+| GET    | `/api/config/access` | Get server-wide entry/dial access rules |
+| PUT    | `/api/config/access` | Update server-wide entry/dial access rules |
 
 ## Server Status
 
@@ -106,7 +114,13 @@ Returns server version and a list of all tokens with their types and active clie
 ```json
 {
   "type": "forward",
-  "token": "my_forward_token"
+  "token": "my_forward_token",
+  "rules": [
+    {
+      "addrs": ["192.168.1.0/24"],
+      "ports": [22]
+    }
+  ]
 }
 ```
 
@@ -114,6 +128,7 @@ Returns server version and a list of all tokens with their types and active clie
 
 - `type` (required): Must be "forward"
 - `token` (optional): Specific token to use, auto-generated if not provided
+- `rules` (optional): Destination allow entries enforced by the server before dialing on behalf of this token. See [Access Control](/guide/access-control) for details.
 
 **Response:**
 
@@ -135,7 +150,17 @@ Returns server version and a list of all tokens with their types and active clie
   "port": 9870,
   "username": "socks_user",
   "password": "socks_pass",
-  "allow_manage_connector": true
+  "allow_manage_connector": true,
+  "rules": [
+    {
+      "addrs": ["192.168.1.0/24", "192.168.1.1-255"],
+      "ports": [22, [90, 150]]
+    },
+    {
+      "addrs": ["10.0.0.5"],
+      "ports": [443]
+    }
+  ]
 }
 ```
 
@@ -147,6 +172,7 @@ Returns server version and a list of all tokens with their types and active clie
 - `username` (optional): SOCKS5 authentication username
 - `password` (optional): SOCKS5 authentication password  
 - `allow_manage_connector` (optional): Allow clients to manage connector tokens (self-managed connectors)
+- `rules` (optional): Destination allow entries for the token's local proxy entry. Each entry pairs `addrs` (CIDRs, bare IPs, or IP ranges) with `ports` (single ports or `[start, end]` ranges); a destination is allowed when it matches at least one entry. See [Access Control](/guide/access-control) for details.
 
 **Response:**
 
@@ -166,7 +192,13 @@ Returns server version and a list of all tokens with their types and active clie
 {
   "type": "connector",
   "token": "my_connector_token",
-  "reverse_token": "associated_reverse_token"
+  "reverse_token": "associated_reverse_token",
+  "rules": [
+    {
+      "addrs": ["10.0.0.0/8"],
+      "ports": [[8000, 9000]]
+    }
+  ]
 }
 ```
 
@@ -175,6 +207,7 @@ Returns server version and a list of all tokens with their types and active clie
 - `type` (required): Must be "connector"
 - `token` (optional): Specific connector token, auto-generated if not provided
 - `reverse_token` (required): Associated reverse proxy token
+- `rules` (optional): Destination allow entries enforced by the server before forwarding a request from this connector to a reverse provider. See [Access Control](/guide/access-control) for details.
 
 **Response:**
 
@@ -226,6 +259,59 @@ curl -X DELETE \
   "token": "token_to_remove"
 }
 ```
+
+## Server-Wide Access Control
+
+`/api/config/access` reads and updates the server-wide **entry** and **dial**
+destination rules. These are the server-level defaults enforced on the server
+for any request that has no per-token override — the same rules you would set
+with the `WithEntryAccessControl` / `WithDialAccessControl` server options. In
+API server mode this is how you configure global restrictions, since the CLI's
+`--access-rule` is rejected there.
+
+### GET /api/config/access
+
+Returns the current server-wide rules.
+
+**Response:**
+
+```json
+{
+  "entry": [
+    {
+      "addrs": ["192.168.0.0/16"],
+      "ports": [22]
+    }
+  ],
+  "dial": [
+    {
+      "addrs": ["10.0.0.0/8"],
+      "ports": [[8000, 9000]]
+    }
+  ]
+}
+```
+
+### PUT /api/config/access
+
+Set the server-wide rules. Either field may be provided independently; an
+absent field keeps its current value. Use an empty array `[]` to clear a side
+(allow everything there).
+
+```bash
+curl -X PUT \
+     -H "X-API-Key: your_api_key" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "entry": [
+         {"addrs": ["192.168.1.0/24"], "ports": [22]}
+       ],
+       "dial": []
+     }' \
+     http://localhost:8765/api/config/access
+```
+
+Illegal address or port ranges are rejected with `400 Bad Request`.
 
 ## Error Responses
 

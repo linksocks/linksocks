@@ -62,6 +62,7 @@ Server(
     socks_wait_client: Optional[bool] = None,
     buffer_size: Optional[int] = None,
     api_key: Optional[str] = None,
+    api_keys: Optional[Dict[str, List[AccessRule]]] = None,
     channel_timeout: Optional[DurationLike] = None,
     connect_timeout: Optional[DurationLike] = None,
     connector_wait_provider: Optional[DurationLike] = None,
@@ -84,6 +85,7 @@ Server(
 | `socks_wait_client` | `bool` | `True` | Wait for client connections before starting SOCKS5 |
 | `buffer_size` | `int` | `32768` | Buffer size for data transfer |
 | `api_key` | `str` | `None` | API key for HTTP management interface |
+| `api_keys` | `Dict[str, List[AccessRule]]` | `None` | Additional API keys with default destination rules; tokens created with a key inherit its rules when no explicit `rules` are given |
 | `channel_timeout` | `DurationLike` | `30.0` | Timeout for WebSocket channels |
 | `connect_timeout` | `DurationLike` | `10.0` | Timeout for outbound connections |
 | `connector_wait_provider` | `DurationLike` | `5.0` | How long connector requests wait for a provider to reconnect before failing |
