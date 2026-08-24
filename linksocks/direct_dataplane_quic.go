@@ -73,6 +73,18 @@ func (p *DirectQUICDataPlane) Close() error {
 	return nil
 }
 
+// RTT reports the smoothed round-trip time of the underlying QUIC
+// connection, or zero when the dataplane has no connection.
+func (p *DirectQUICDataPlane) RTT() time.Duration {
+	p.mu.Lock()
+	conn := p.conn
+	p.mu.Unlock()
+	if conn == nil {
+		return 0
+	}
+	return conn.ConnectionStats().SmoothedRTT
+}
+
 func (p *DirectQUICDataPlane) removeChannel(id uuid.UUID) {
 	p.mu.Lock()
 	delete(p.channels, id)

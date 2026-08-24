@@ -151,37 +151,37 @@ func linksocks_parse_duration(s *C.char, out *C.int64_t) *C.char {
 }
 
 type serverConfig struct {
-	WSHost               string `json:"ws_host"`
-	WSPort               int    `json:"ws_port"`
-	SocksHost            string `json:"socks_host"`
-	SocksWaitClient      *bool  `json:"socks_wait_client"`
-	BufferSize           *int   `json:"buffer_size"`
+	WSHost               string   `json:"ws_host"`
+	WSPort               int      `json:"ws_port"`
+	SocksHost            string   `json:"socks_host"`
+	SocksWaitClient      *bool    `json:"socks_wait_client"`
+	BufferSize           *int     `json:"buffer_size"`
 	APIKey               string   `json:"api_key"`
 	APIKeys              []string `json:"api_keys"`
-	ChannelTimeoutNs     *int64 `json:"channel_timeout_ns"`
-	ConnectTimeoutNs     *int64 `json:"connect_timeout_ns"`
-	ConnectorWaitNs      *int64 `json:"connector_wait_ns"`
-	FastOpen             *bool  `json:"fast_open"`
-	UpstreamProxy        string `json:"upstream_proxy"`
-	UpstreamUsername     string `json:"upstream_username"`
-	UpstreamPassword     string `json:"upstream_password"`
-	DirectEnable         *bool  `json:"direct_enable"`
-	DirectRendezvousUDP  *bool  `json:"direct_rendezvous_udp"`
-	DirectRendezvousHost string `json:"direct_rendezvous_host"`
-	DirectRendezvousPort *int   `json:"direct_rendezvous_port"`
-	LoggerID             string `json:"logger_id"`
+	ChannelTimeoutNs     *int64   `json:"channel_timeout_ns"`
+	ConnectTimeoutNs     *int64   `json:"connect_timeout_ns"`
+	ConnectorWaitNs      *int64   `json:"connector_wait_ns"`
+	FastOpen             *bool    `json:"fast_open"`
+	UpstreamProxy        string   `json:"upstream_proxy"`
+	UpstreamUsername     string   `json:"upstream_username"`
+	UpstreamPassword     string   `json:"upstream_password"`
+	DirectEnable         *bool    `json:"direct_enable"`
+	DirectRendezvousUDP  *bool    `json:"direct_rendezvous_udp"`
+	DirectRendezvousHost string   `json:"direct_rendezvous_host"`
+	DirectRendezvousPort *int     `json:"direct_rendezvous_port"`
+	LoggerID             string   `json:"logger_id"`
 
 	EntryAccessControl []accessRuleJSON `json:"entry_access_control"`
 	DialAccessControl  []accessRuleJSON `json:"dial_access_control"`
 }
 
 type reverseTokenOptions struct {
-	Token                string            `json:"token"`
-	Port                 *int              `json:"port"`
-	Username             string            `json:"username"`
-	Password             string            `json:"password"`
-	AllowManageConnector *bool             `json:"allow_manage_connector"`
-	Rules                []accessRuleJSON  `json:"rules"`
+	Token                string           `json:"token"`
+	Port                 *int             `json:"port"`
+	Username             string           `json:"username"`
+	Password             string           `json:"password"`
+	AllowManageConnector *bool            `json:"allow_manage_connector"`
+	Rules                []accessRuleJSON `json:"rules"`
 }
 
 // accessRuleJSON mirrors linksocks.AccessRule for JSON config parsing. PortSpec

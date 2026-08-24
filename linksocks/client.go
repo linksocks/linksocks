@@ -355,6 +355,28 @@ func (c *LinkSocksClient) GetRTT() time.Duration {
 	return ws.RTT()
 }
 
+// DataPath reports which transport currently carries tunnel data: "direct"
+// when the direct QUIC dataplane is active and usable, otherwise "relay".
+func (c *LinkSocksClient) DataPath() string {
+	now := time.Now()
+	if c.directMode != DirectModeRelayOnly && c.directQUICIsActive() && c.directIsUsable(now) {
+		return "direct"
+	}
+	return "relay"
+}
+
+// GetDirectRTT returns the smoothed RTT of the active direct QUIC dataplane,
+// or zero when no direct connection is active.
+func (c *LinkSocksClient) GetDirectRTT() time.Duration {
+	c.directQUICMu.Lock()
+	pl := c.directQUICPlane
+	c.directQUICMu.Unlock()
+	if pl == nil {
+		return 0
+	}
+	return pl.RTT()
+}
+
 // ClientOption represents configuration options for LinkSocksClient
 type ClientOption struct {
 	WSURL             string

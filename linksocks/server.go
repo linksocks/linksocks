@@ -153,11 +153,11 @@ type ServerOption struct {
 	ConnectorWait   time.Duration
 	Logger          zerolog.Logger
 	BufferSize      int
-	APIKey string
+	APIKey          string
 	// APIKeys registers additional API keys accepted for API authentication.
 	// Keys are credentials only and never carry access rules; rules are bound
 	// to tokens (per-token) and to the server (entry/dial access control).
-	APIKeys []string
+	APIKeys           []string
 	ChannelTimeout    time.Duration
 	ConnectTimeout    time.Duration
 	FastOpen          bool
