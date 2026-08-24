@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -194,8 +195,23 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		clientOpt.WithSocksPassword(opt.SocksPassword)
 	}
 
-	client := linksocks.NewLinkSocksClient(opt.Token, clientOpt)
-	require.NoError(t, client.WaitReady(context.Background(), 5*time.Second))
+	var client *linksocks.LinkSocksClient
+	var readyErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		client = linksocks.NewLinkSocksClient(opt.Token, clientOpt)
+		readyErr = client.WaitReady(context.Background(), 5*time.Second)
+		if readyErr == nil {
+			break
+		}
+		if opt.DirectMode == linksocks.DirectModeDirectOnly &&
+			opt.DirectOnlyAction == linksocks.DirectOnlyActionExit &&
+			strings.HasPrefix(readyErr.Error(), "direct-only:") {
+			readyErr = nil
+			break
+		}
+		client.Close()
+	}
+	require.NoError(t, readyErr)
 
 	return &ProxyTestClient{
 		Client:    client,
