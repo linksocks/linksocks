@@ -2408,7 +2408,14 @@ func (s *LinkSocksServer) HasClients() bool {
 func (s *LinkSocksServer) GetTokenClientCount(token string) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.getTokenClientCountLocked(token)
+}
 
+// getTokenClientCountLocked counts clients for a token; caller must hold s.mu
+// (read or write). Kept separate so callers already holding the lock don't
+// re-acquire it: sync.RWMutex is not reentrant and a second RLock while a
+// writer is queued deadlocks (writer-preference RWMutex).
+func (s *LinkSocksServer) getTokenClientCountLocked(token string) int {
 	// Check reverse proxy clients
 	if clients, exists := s.tokenClients[token]; exists {
 		return len(clients)

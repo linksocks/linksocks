@@ -273,7 +273,7 @@ func (h *APIHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
 			TokenStatus: TokenStatus{
 				Token:        token,
 				Type:         "reverse",
-				ClientsCount: h.server.GetTokenClientCount(token),
+				ClientsCount: h.server.getTokenClientCountLocked(token),
 			},
 			Port:            port,
 			ConnectorTokens: reverseToConnectors[token],
@@ -285,7 +285,7 @@ func (h *APIHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
 		tokens = append(tokens, TokenStatus{
 			Token:        token,
 			Type:         "forward",
-			ClientsCount: h.server.GetTokenClientCount(token),
+			ClientsCount: h.server.getTokenClientCountLocked(token),
 		})
 	}
 
