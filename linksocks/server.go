@@ -128,9 +128,10 @@ type waitingSocket struct {
 }
 
 type connectorCache struct {
-	channelIDToClient    map[uuid.UUID]*WSConn  // Maps channel_id to reverse client WebSocket connection
-	channelIDToConnector map[uuid.UUID]*WSConn  // Maps channel_id to connector WebSocket connection
-	tokenCache           map[string][]uuid.UUID // Maps token to list of channel_ids
+	channelIDToClient    map[uuid.UUID]*WSConn       // Maps channel_id to reverse client WebSocket connection
+	channelIDToConnector map[uuid.UUID]*WSConn       // Maps channel_id to connector WebSocket connection
+	channelReady         map[uuid.UUID]chan struct{} // Closed once ConnectMessage is forwarded to the reverse client
+	tokenCache           map[string][]uuid.UUID      // Maps token to list of channel_ids
 	mu                   sync.RWMutex
 }
 
@@ -139,6 +140,7 @@ func newConnectorCache() *connectorCache {
 	return &connectorCache{
 		channelIDToClient:    make(map[uuid.UUID]*WSConn),
 		channelIDToConnector: make(map[uuid.UUID]*WSConn),
+		channelReady:         make(map[uuid.UUID]chan struct{}),
 		tokenCache:           make(map[string][]uuid.UUID),
 	}
 }
@@ -943,6 +945,7 @@ func (s *LinkSocksServer) RemoveToken(token string) bool {
 			for _, id := range ids {
 				delete(s.connCache.channelIDToClient, id)
 				delete(s.connCache.channelIDToConnector, id)
+				delete(s.connCache.channelReady, id)
 			}
 			delete(s.connCache.tokenCache, token)
 		}
@@ -976,6 +979,7 @@ func (s *LinkSocksServer) RemoveToken(token string) bool {
 					for _, id := range ids {
 						delete(s.connCache.channelIDToClient, id)
 						delete(s.connCache.channelIDToConnector, id)
+						delete(s.connCache.channelReady, id)
 					}
 					delete(s.connCache.tokenCache, connectorToken)
 				}
@@ -1828,7 +1832,9 @@ func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WS
 				s.forwardChannelControl(m.ChannelID, ws, m)
 
 			case ConnectMessage:
+				ready := make(chan struct{})
 				go func(m ConnectMessage) {
+					defer close(ready)
 					// Enforce per-connector access control before forwarding to a provider
 					s.mu.RLock()
 					var connAC *AccessControl
@@ -1862,6 +1868,7 @@ func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WS
 					s.connCache.mu.Lock()
 					s.connCache.channelIDToConnector[m.ChannelID] = ws
 					s.connCache.channelIDToClient[m.ChannelID] = reverseWS
+					s.connCache.channelReady[m.ChannelID] = ready
 					if ids, exists := s.connCache.tokenCache[reverseToken]; exists {
 						s.connCache.tokenCache[reverseToken] = append(ids, m.ChannelID)
 					} else {
@@ -1876,11 +1883,11 @@ func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WS
 				}(m)
 
 			case DataMessage:
-				// Route data message based on channel_id
-				s.connCache.mu.RLock()
-				targetWS, exists := s.connCache.channelIDToClient[m.ChannelID]
-				s.connCache.mu.RUnlock()
-				if exists {
+				// Route data message based on channel_id. A fast-open connector
+				// sends data immediately after ConnectMessage, which is handled
+				// in a goroutine above, so the mapping may not exist yet; wait
+				// for the channel to become ready instead of dropping the packet.
+				if targetWS := s.connectorChannelClient(m.ChannelID); targetWS != nil {
 					s.relay.logMessage(m, "send", ws.Label())
 					if err := targetWS.WriteMessage(m); err != nil {
 						s.log.Debug().Err(err).Msg("Failed to forward data message")
@@ -1896,6 +1903,7 @@ func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WS
 					targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]
 					delete(s.connCache.channelIDToConnector, m.ChannelID)
 					delete(s.connCache.channelIDToClient, m.ChannelID)
+					delete(s.connCache.channelReady, m.ChannelID)
 					s.connCache.mu.Unlock()
 					if exists {
 						s.relay.logMessage(m, "send", ws.Label())
@@ -1916,6 +1924,7 @@ func (s *LinkSocksServer) disconnectChannel(channelID uuid.UUID, ws *WSConn, msg
 	targetWS, exists := s.connCache.channelIDToConnector[channelID]
 	delete(s.connCache.channelIDToClient, channelID)
 	delete(s.connCache.channelIDToConnector, channelID)
+	delete(s.connCache.channelReady, channelID)
 	s.connCache.mu.Unlock()
 	if exists {
 		s.relay.logMessage(msg, "send", ws.Label())
@@ -2091,6 +2100,52 @@ func (s *LinkSocksServer) notifyTokenAvailabilityLocked(token string) {
 		close(ch)
 	}
 	s.tokenAvailability[token] = make(chan struct{})
+}
+
+// connectorChannelClient returns the reverse-client WebSocket for a connector
+// channel, waiting briefly for the async ConnectMessage handler to publish it.
+// A fast-open connector sends data immediately after ConnectMessage, so the
+// mapping may not exist yet when its first DataMessage arrives.
+func (s *LinkSocksServer) connectorChannelClient(channelID uuid.UUID) *WSConn {
+	const wait = 2 * time.Second
+	deadline := time.Now().Add(wait)
+	for {
+		s.connCache.mu.RLock()
+		targetWS, exists := s.connCache.channelIDToClient[channelID]
+		ready := s.connCache.channelReady[channelID]
+		s.connCache.mu.RUnlock()
+		if exists {
+			if ready != nil {
+				// ConnectMessage is forwarded before ready is closed, so the
+				// peer has the channel when data reaches it.
+				select {
+				case <-ready:
+					return targetWS
+				case <-time.After(time.Until(deadline)):
+					return nil
+				}
+			}
+			return targetWS
+		}
+		if ready != nil {
+			select {
+			case <-ready:
+				s.connCache.mu.RLock()
+				targetWS, exists = s.connCache.channelIDToClient[channelID]
+				s.connCache.mu.RUnlock()
+				if exists {
+					return targetWS
+				}
+				return nil
+			case <-time.After(time.Until(deadline)):
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return nil
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func (s *LinkSocksServer) waitForNextWebSocket(ctx context.Context, token string, timeout time.Duration) (*WSConn, error) {
