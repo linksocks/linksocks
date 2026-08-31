@@ -65,15 +65,20 @@ def cleanup_embedded_go_mod_files() -> None:
 
 
 def select_go_package_dir() -> tuple[Path, Path]:
-    src_pkg = project_root / "linksocks"
-    if (project_root / "go.mod").exists() and (src_pkg / "_python.go").exists():
+    src_pkg = project_root / "_bindings" / "python_gopy" / "gopybridge"
+    if (project_root / "go.mod").exists() and (src_pkg / "bridge.go").exists():
         # Ensure we don't shadow the repo module with an embedded go.mod under _bindings/python_gopy.
         cleanup_embedded_go_mod_files()
         return src_pkg, project_root
 
-    embedded_pkg = here / "linksocks_go"
+    embedded_pkg = here / "gopybridge"
     ensure_embedded_go_mod_files()
-    ensure_go_sources(embedded_pkg)
+    embedded_pkg.mkdir(parents=True, exist_ok=True)
+    ensure_go_sources(here / "linksocks")
+    source = project_root / "_bindings" / "python_gopy" / "gopybridge" / "bridge.go"
+    if not source.exists():
+        raise RuntimeError("Cannot find gopy bridge Go source")
+    shutil.copy2(source, embedded_pkg / source.name)
     return embedded_pkg, here
 
 
@@ -174,21 +179,21 @@ def patch_generated_bindings(out_dir: Path) -> None:
     changed = False
     replacements = [
         (
-            r'//export linksocks_LinkSocksClient_WaitReady\nfunc linksocks_LinkSocksClient_WaitReady\(_handle CGoHandle, ctx CGoHandle, timeout C\.longlong\) \*C\.char \{\n(?:.|\n)*?\n\}\n\n//export linksocks_LinkSocksClient_Connect',
-            '''//export linksocks_LinkSocksClient_WaitReady
-func linksocks_LinkSocksClient_WaitReady(_handle CGoHandle, ctx CGoHandle, timeout C.longlong) (ret *C.char) {
+            r'//export linksocks_Client_WaitReady\nfunc linksocks_Client_WaitReady\(_handle CGoHandle, ctx CGoHandle, timeout C\.longlong\) \*C\.char \{\n(?:.|\n)*?\n\}\n\n//export linksocks_Client_Close',
+            '''//export linksocks_Client_WaitReady
+func linksocks_Client_WaitReady(_handle CGoHandle, ctx CGoHandle, timeout C.longlong) (ret *C.char) {
 	_saved_thread := C.PyEval_SaveThread()
 	defer func() {
 		C.PyEval_RestoreThread(_saved_thread)
 		if r := recover(); r != nil {
-			ret = setPyRuntimeError(fmt.Sprintf("panic in LinkSocksClient.WaitReady: %v", r))
+            ret = setPyRuntimeError(fmt.Sprintf("panic in Client.WaitReady: %v", r))
 		}
 	}()
-	vifc, __err := gopyh.VarFromHandleTry((gopyh.CGoHandle)(_handle), "*linksocks.LinkSocksClient")
+    vifc, __err := gopyh.VarFromHandleTry((gopyh.CGoHandle)(_handle), "*linksocks.Client")
 	if __err != nil {
 		return setPyRuntimeError(__err.Error())
 	}
-	__err = gopyh.Embed(vifc, reflect.TypeOf(linksocks.LinkSocksClient{})).(*linksocks.LinkSocksClient).WaitReady(ptrFromHandle_context_Context(ctx), time.Duration(int64(timeout)))
+    __err = gopyh.Embed(vifc, reflect.TypeOf(linksocks.Client{})).(*linksocks.Client).WaitReady(ptrFromHandle_context_Context(ctx), time.Duration(int64(timeout)))
 	if __err != nil {
 		return setPyRuntimeError(__err.Error())
 	}
@@ -198,46 +203,46 @@ func linksocks_LinkSocksClient_WaitReady(_handle CGoHandle, ctx CGoHandle, timeo
 //export linksocks_LinkSocksClient_Connect''',
         ),
         (
-            r'//export linksocks_LinkSocksClient_Close\nfunc linksocks_LinkSocksClient_Close\(_handle CGoHandle, goRun C\.char\) \{\n(?:.|\n)*?\n\}\n\n//export linksocks_LinkSocksClient_AddConnector',
-            '''//export linksocks_LinkSocksClient_Close
-func linksocks_LinkSocksClient_Close(_handle CGoHandle, goRun C.char) {
+            r'//export linksocks_Client_Close\nfunc linksocks_Client_Close\(_handle CGoHandle, goRun C\.char\) \{\n(?:.|\n)*?\n\}\n\n//export linksocks_Client_AddConnector',
+            '''//export linksocks_Client_Close
+func linksocks_Client_Close(_handle CGoHandle, goRun C.char) {
 	_saved_thread := C.PyEval_SaveThread()
 	defer func() {
 		C.PyEval_RestoreThread(_saved_thread)
 		if r := recover(); r != nil {
-			setPyRuntimeError(fmt.Sprintf("panic in LinkSocksClient.Close: %v", r))
+            setPyRuntimeError(fmt.Sprintf("panic in Client.Close: %v", r))
 		}
 	}()
-	vifc, __err := gopyh.VarFromHandleTry((gopyh.CGoHandle)(_handle), "*linksocks.LinkSocksClient")
+    vifc, __err := gopyh.VarFromHandleTry((gopyh.CGoHandle)(_handle), "*linksocks.Client")
 	if __err != nil {
 		setPyRuntimeError(__err.Error())
 		return
 	}
 	if boolPyToGo(goRun) {
-		go gopyh.Embed(vifc, reflect.TypeOf(linksocks.LinkSocksClient{})).(*linksocks.LinkSocksClient).Close()
+        go gopyh.Embed(vifc, reflect.TypeOf(linksocks.Client{})).(*linksocks.Client).Close()
 	} else {
-		gopyh.Embed(vifc, reflect.TypeOf(linksocks.LinkSocksClient{})).(*linksocks.LinkSocksClient).Close()
+        gopyh.Embed(vifc, reflect.TypeOf(linksocks.Client{})).(*linksocks.Client).Close()
 	}
 }
 
 //export linksocks_LinkSocksClient_AddConnector''',
         ),
         (
-            r'//export linksocks_LinkSocksServer_WaitReady\nfunc linksocks_LinkSocksServer_WaitReady\(_handle CGoHandle, ctx CGoHandle, timeout C\.longlong\) \*C\.char \{\n(?:.|\n)*?\n\}\n\n//export linksocks_LinkSocksServer_Close',
-            '''//export linksocks_LinkSocksServer_WaitReady
-func linksocks_LinkSocksServer_WaitReady(_handle CGoHandle, ctx CGoHandle, timeout C.longlong) (ret *C.char) {
+            r'//export linksocks_Server_WaitReady\nfunc linksocks_Server_WaitReady\(_handle CGoHandle, ctx CGoHandle, timeout C\.longlong\) \*C\.char \{\n(?:.|\n)*?\n\}\n\n//export linksocks_Server_Close',
+            '''//export linksocks_Server_WaitReady
+func linksocks_Server_WaitReady(_handle CGoHandle, ctx CGoHandle, timeout C.longlong) (ret *C.char) {
 	_saved_thread := C.PyEval_SaveThread()
 	defer func() {
 		C.PyEval_RestoreThread(_saved_thread)
 		if r := recover(); r != nil {
-			ret = setPyRuntimeError(fmt.Sprintf("panic in LinkSocksServer.WaitReady: %v", r))
+            ret = setPyRuntimeError(fmt.Sprintf("panic in Server.WaitReady: %v", r))
 		}
 	}()
-	vifc, __err := gopyh.VarFromHandleTry((gopyh.CGoHandle)(_handle), "*linksocks.LinkSocksServer")
+    vifc, __err := gopyh.VarFromHandleTry((gopyh.CGoHandle)(_handle), "*linksocks.Server")
 	if __err != nil {
 		return setPyRuntimeError(__err.Error())
 	}
-	__err = gopyh.Embed(vifc, reflect.TypeOf(linksocks.LinkSocksServer{})).(*linksocks.LinkSocksServer).WaitReady(ptrFromHandle_context_Context(ctx), time.Duration(int64(timeout)))
+    __err = gopyh.Embed(vifc, reflect.TypeOf(linksocks.Server{})).(*linksocks.Server).WaitReady(ptrFromHandle_context_Context(ctx), time.Duration(int64(timeout)))
 	if __err != nil {
 		return setPyRuntimeError(__err.Error())
 	}
@@ -247,25 +252,25 @@ func linksocks_LinkSocksServer_WaitReady(_handle CGoHandle, ctx CGoHandle, timeo
 //export linksocks_LinkSocksServer_Close''',
         ),
         (
-            r'//export linksocks_LinkSocksServer_Close\nfunc linksocks_LinkSocksServer_Close\(_handle CGoHandle, goRun C\.char\) \{\n(?:.|\n)*?\n\}\n\n//export linksocks_LinkSocksServer_GetClientCount',
-            '''//export linksocks_LinkSocksServer_Close
-func linksocks_LinkSocksServer_Close(_handle CGoHandle, goRun C.char) {
+            r'//export linksocks_Server_Close\nfunc linksocks_Server_Close\(_handle CGoHandle, goRun C\.char\) \{\n(?:.|\n)*?\n\}\n\n//export linksocks_Server_GetClientCount',
+            '''//export linksocks_Server_Close
+func linksocks_Server_Close(_handle CGoHandle, goRun C.char) {
 	_saved_thread := C.PyEval_SaveThread()
 	defer func() {
 		C.PyEval_RestoreThread(_saved_thread)
 		if r := recover(); r != nil {
-			setPyRuntimeError(fmt.Sprintf("panic in LinkSocksServer.Close: %v", r))
+            setPyRuntimeError(fmt.Sprintf("panic in Server.Close: %v", r))
 		}
 	}()
-	vifc, __err := gopyh.VarFromHandleTry((gopyh.CGoHandle)(_handle), "*linksocks.LinkSocksServer")
+    vifc, __err := gopyh.VarFromHandleTry((gopyh.CGoHandle)(_handle), "*linksocks.Server")
 	if __err != nil {
 		setPyRuntimeError(__err.Error())
 		return
 	}
 	if boolPyToGo(goRun) {
-		go gopyh.Embed(vifc, reflect.TypeOf(linksocks.LinkSocksServer{})).(*linksocks.LinkSocksServer).Close()
+        go gopyh.Embed(vifc, reflect.TypeOf(linksocks.Server{})).(*linksocks.Server).Close()
 	} else {
-		gopyh.Embed(vifc, reflect.TypeOf(linksocks.LinkSocksServer{})).(*linksocks.LinkSocksServer).Close()
+        gopyh.Embed(vifc, reflect.TypeOf(linksocks.Server{})).(*linksocks.Server).Close()
 	}
 }
 
