@@ -10,6 +10,7 @@ import (
 
 func TestDirectResetPeerStateLockedClearsPairing(t *testing.T) {
 	c := &LinkSocksClient{}
+	c.remoteProtocolVersion = ProtocolVersion
 	c.directPairSessionID = uuid.New()
 	c.directPairSessionKey = []byte{1, 2, 3}
 	c.directPairKeyReady = true
@@ -37,6 +38,16 @@ func TestDirectResetPeerStateLockedClearsPairing(t *testing.T) {
 	}
 	if !c.directDegradedUntil.IsZero() {
 		t.Fatalf("degraded deadline was not cleared")
+	}
+	if c.GetRemoteProtocolVersion() != ProtocolVersion {
+		t.Fatalf("remote protocol version was cleared by direct reset")
+	}
+}
+
+func TestGetRemoteProtocolVersion(t *testing.T) {
+	c := &LinkSocksClient{remoteProtocolVersion: ProtocolVersion}
+	if got := c.GetRemoteProtocolVersion(); got != ProtocolVersion {
+		t.Fatalf("remote protocol version = 0x%02x, want 0x%02x", got, ProtocolVersion)
 	}
 }
 

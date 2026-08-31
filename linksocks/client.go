@@ -121,8 +121,10 @@ type LinkSocksClient struct {
 	directRemotePublicKey    []byte
 	directLocalReady         bool
 
-	directRemoteSessionID  uuid.UUID
-	directRemoteCandidates []DirectCandidate
+	directRemoteSessionID       uuid.UUID
+	directRemoteCandidates      []DirectCandidate
+	directRemoteProtocolVersion byte
+	remoteProtocolVersion       byte
 	// directProbePeer is the observed UDP endpoint of the peer that responded
 	// to the last successful direct probe. It is used to pick a single QUIC dial
 	// target and avoid creating multiple concurrent QUIC connections that may
@@ -346,13 +348,17 @@ func (c *LinkSocksClient) GetServerToken() string {
 }
 
 // GetRTT returns the most recent WebSocket round-trip time measured against
-// the link server, or zero if no pong has been received yet.
+// the link server, or -1 if no pong has been received yet.
 func (c *LinkSocksClient) GetRTT() time.Duration {
 	ws := c.getNextWebSocket()
 	if ws == nil {
-		return 0
+		return -1
 	}
-	return ws.RTT()
+	rtt := ws.RTT()
+	if rtt <= 0 {
+		return -1
+	}
+	return rtt
 }
 
 // DataPath reports which transport currently carries tunnel data: "direct"
@@ -365,16 +371,34 @@ func (c *LinkSocksClient) DataPath() string {
 	return "relay"
 }
 
+// ChannelPath reports the transport currently selected for a logical channel.
+// It returns an empty string when the channel is not known locally.
+func (c *LinkSocksClient) ChannelPath(channelID uuid.UUID) string {
+	return c.relay.logicalChannelPath(channelID)
+}
+
+// GetRemoteProtocolVersion returns the latest protocol version received from the peer.
+func (c *LinkSocksClient) GetRemoteProtocolVersion() byte {
+	c.directMu.Lock()
+	version := c.remoteProtocolVersion
+	c.directMu.Unlock()
+	return version
+}
+
 // GetDirectRTT returns the smoothed RTT of the active direct QUIC dataplane,
-// or zero when no direct connection is active.
+// or -1 when no direct connection or RTT measurement is available.
 func (c *LinkSocksClient) GetDirectRTT() time.Duration {
 	c.directQUICMu.Lock()
 	pl := c.directQUICPlane
 	c.directQUICMu.Unlock()
 	if pl == nil {
-		return 0
+		return -1
 	}
-	return pl.RTT()
+	rtt := pl.RTT()
+	if rtt <= 0 {
+		return -1
+	}
+	return rtt
 }
 
 // ClientOption represents configuration options for LinkSocksClient
@@ -938,10 +962,26 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 		// Start accept loop to handle inbound QUIC streams.
 		// This must run on both sides, because either peer can initiate streams.
 		_ = plane.Serve(ctx, func(ctx context.Context, ch *directQUICChannel, req ConnectMessage) error {
-			w := newDirectQUICBoundWriter(plane, ch, "direct-quic")
+			w := newDirectQUICBoundWriter(c, plane, ch, "direct-quic")
+			if req.Resume {
+				if channel, ok := c.relay.logicalChannel(req.ChannelID); ok {
+					if err := channel.switchToDirect(w); err != nil {
+						return err
+					}
+					go c.directQUICChannelReadLoop(ctx, ch)
+					return nil
+				}
+				return fmt.Errorf("resume requested for unknown channel %s", req.ChannelID)
+			}
 
 			msgChan := make(chan BaseMessage, 1000)
 			c.relay.messageQueues.Store(req.ChannelID, msgChan)
+			channel := c.relay.registerLogicalChannel(req.ChannelID, req.Protocol, w, newClientRelayWriter(c), channelPathDirect)
+			channel.setRequest(req)
+			c.directMu.Lock()
+			remoteProtocolVersion := c.directRemoteProtocolVersion
+			c.directMu.Unlock()
+			channel.enableMigration(protocolSupportsMigration(remoteProtocolVersion))
 			go c.directQUICChannelReadLoop(ctx, ch)
 			go func() {
 				if err := c.relay.HandleNetworkConnection(ctx, w, req); err != nil && !errors.Is(err, context.Canceled) {
@@ -1003,6 +1043,7 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 		}
 		c.directMu.Lock()
 		remoteSess := c.directRemoteSessionID
+		remoteProtocolVersion := c.directRemoteProtocolVersion
 		c.directMu.Unlock()
 		logSess := pairSession
 		if remoteSess != uuid.Nil {
@@ -1021,7 +1062,30 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 			c.log.Debug().Msg("Direct QUIC dataplane ready")
 		}
 		c.directMarkRecovered(time.Now())
+		if protocolSupportsMigration(remoteProtocolVersion) {
+			c.resumeLogicalChannels(ctx, plane)
+		}
 	}
+}
+
+func (c *LinkSocksClient) resumeLogicalChannels(ctx context.Context, plane *DirectQUICDataPlane) {
+	if plane == nil {
+		return
+	}
+	c.relay.logicalChannels.Range(func(_, value interface{}) bool {
+		channel, ok := value.(*logicalChannel)
+		if !ok || !channel.canResume() || channel.Path() == string(channelPathDirect) {
+			return true
+		}
+		request := channel.requestMessage()
+		request.Resume = true
+		channel.enableMigration(true)
+		writer := newDirectQUICDialWriter(ctx, c, plane, "direct-quic")
+		if err := writer.WriteMessage(request); err != nil {
+			c.log.Debug().Err(err).Str("channel_id", request.ChannelID.String()).Msg("Direct channel resume failed")
+		}
+		return true
+	})
 }
 
 func directSelectQUICDialCandidates(localSession uuid.UUID, pairSession uuid.UUID, probePeer *net.UDPAddr, rcands []DirectCandidate) []DirectCandidate {
@@ -1286,11 +1350,12 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 		}
 
 		capMsg := DirectCapabilitiesMessage{SessionID: localSession, Candidates: cands, Discoveries: []string{discLabel}, PublicKey: localPub}
+		capMsg.ProtocolVersion = ProtocolVersion
 		if err := c.sendDirectMessage(capMsg); err != nil {
 			c.log.Debug().Err(err).Msg("Failed to send direct capabilities")
 		}
 		for _, sid := range pending {
-			rendezvous := DirectRendezvousMessage{SessionID: sid, RemoteSessionID: localSession, Candidates: cands, PublicKey: localPub}
+			rendezvous := DirectRendezvousMessage{SessionID: sid, RemoteSessionID: localSession, Candidates: cands, PublicKey: localPub, ProtocolVersion: ProtocolVersion}
 			_ = c.sendDirectMessage(rendezvous)
 		}
 		c.directNotify()
@@ -1879,6 +1944,7 @@ func (c *LinkSocksClient) directResetUserLog() {
 func (c *LinkSocksClient) directResetPeerStateLocked() {
 	c.directRemoteSessionID = uuid.Nil
 	c.directRemoteCandidates = nil
+	c.directRemoteProtocolVersion = 0
 	c.directRemotePublicKey = nil
 	c.directProbePeer = nil
 	c.directPairSessionID = uuid.Nil
@@ -2378,6 +2444,9 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 		c.websockets[index] = wsConn
 	}
 	c.mu.Unlock()
+	c.directMu.Lock()
+	c.remoteProtocolVersion = 0
+	c.directMu.Unlock()
 
 	// Send authentication if not using /socket path
 	if u.Path != "/socket" {
@@ -2398,7 +2467,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 	}
 
 	// Read auth response
-	msg, err := wsConn.ReadMessage()
+	msg, version, err := wsConn.ReadMessageWithVersion()
 	if err != nil {
 		wsConn.Close()
 		c.batchLogger.log("auth_read_error", c.threads, func(count, total int) {
@@ -2406,6 +2475,9 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 		})
 		return err
 	}
+	c.directMu.Lock()
+	c.remoteProtocolVersion = version
+	c.directMu.Unlock()
 
 	c.relay.logMessage(msg, "recv", wsConn.Label())
 	authResponse, ok := msg.(AuthResponseMessage)
@@ -2447,7 +2519,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 
 	// Advertise direct signaling support in a backward-compatible way.
 	if c.directMode != DirectModeRelayOnly {
-		hello := LogMessage{Level: LogLevelDebug, Msg: DirectClientHelloPrefix + "direct_signaling=1"}
+		hello := LogMessage{Level: LogLevelDebug, Msg: fmt.Sprintf("%sdirect_signaling=1;protocol_version=0x%02X", DirectClientHelloPrefix, ProtocolVersion)}
 		c.relay.logMessage(hello, "send", wsConn.Label())
 		if err := wsConn.WriteMessage(hello); err != nil {
 			wsConn.Close()
@@ -2576,10 +2648,13 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			msg, err := ws.ReadMessage()
+			msg, version, err := ws.ReadMessageWithVersion()
 			if err != nil {
 				return err
 			}
+			c.directMu.Lock()
+			c.remoteProtocolVersion = version
+			c.directMu.Unlock()
 
 			c.relay.logMessage(msg, "recv", ws.Label())
 
@@ -2598,6 +2673,7 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 				}
 				c.directRemoteSessionID = m.SessionID
 				c.directRemoteCandidates = append([]DirectCandidate(nil), m.Candidates...)
+				c.directRemoteProtocolVersion = m.ProtocolVersion
 				if len(m.PublicKey) > 0 {
 					c.directRemotePublicKey = append([]byte(nil), m.PublicKey...)
 				}
@@ -2615,7 +2691,7 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 
 				c.log.Debug().Str("session_id", m.SessionID.String()).Int("candidates", len(m.Candidates)).Msg("Received direct capabilities")
 				if localReady {
-					rendezvous := DirectRendezvousMessage{SessionID: m.SessionID, RemoteSessionID: localSession, Candidates: localCandidates, PublicKey: localPub}
+					rendezvous := DirectRendezvousMessage{SessionID: m.SessionID, RemoteSessionID: localSession, Candidates: localCandidates, PublicKey: localPub, ProtocolVersion: ProtocolVersion}
 					c.relay.logMessage(rendezvous, "send", ws.Label())
 					_ = ws.WriteMessage(rendezvous)
 				}
@@ -2638,6 +2714,7 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 						c.directRemoteSessionID = m.RemoteSessionID
 					}
 					c.directRemoteCandidates = append([]DirectCandidate(nil), m.Candidates...)
+					c.directRemoteProtocolVersion = m.ProtocolVersion
 					if len(m.PublicKey) > 0 {
 						c.directRemotePublicKey = append([]byte(nil), m.PublicKey...)
 					}
@@ -2729,16 +2806,36 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 				c.log.Trace().Int("binary_type", int(m.BinaryType)).Msg("Dropped unknown binary message")
 
 			case DataMessage:
-				if queue, ok := c.relay.messageQueues.Load(m.ChannelID); ok {
-					select {
-					case queue.(chan BaseMessage) <- m:
-						c.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Message forwarded to channel")
-					default:
-						// Drop message if queue is full instead of blocking
-						c.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Message queue full, dropping message")
+				c.deliverDataMessage(m)
+
+			case ChannelBindMessage:
+				// The relay uses this message to establish the peer mapping.
+
+			case ChannelDataAckMessage:
+				if channel, ok := c.relay.logicalChannel(m.ChannelID); ok {
+					channel.acknowledge(m.Sequence)
+				}
+
+			case ChannelMigrateMessage:
+				ack := ChannelMigrateAckMessage{ChannelID: m.ChannelID, Success: false, Error: "unknown channel"}
+				if channel, ok := c.relay.logicalChannel(m.ChannelID); ok {
+					if !channel.migrationEnabled() {
+						continue
 					}
-				} else {
-					c.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Received data for unknown channel, dropping message")
+					if err := channel.switchToRelay(); err == nil {
+						ack.Success = true
+						ack.Error = ""
+						if writer := channel.currentWriter(); writer != nil {
+							_ = writer.WriteMessage(ack)
+							continue
+						}
+					}
+				}
+				_ = ws.WriteMessage(ack)
+
+			case ChannelMigrateAckMessage:
+				if channel, ok := c.relay.logicalChannel(m.ChannelID); ok && channel.migrationEnabled() && !m.Success {
+					_ = c.handleDirectChannelFailure(m.ChannelID, m.Error)
 				}
 
 			case ConnectMessage:

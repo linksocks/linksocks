@@ -392,6 +392,10 @@ func (r *Relay) handleHTTPConnect(ctx context.Context, ws MessageWriter, conn *b
 		Port:      targetPort,
 		ChannelID: channelID,
 	}
+	channel := r.registerLogicalChannel(channelID, "tcp", ws, ws, channelPathRelay)
+	channel.setRequest(connectRequest)
+	channel.markResumeOwner()
+	ws = channel
 	r.log.Debug().Str("address", targetHost).Int("port", targetPort).Msg("Requesting TCP connection via HTTP CONNECT")
 	r.logMessage(connectRequest, "send", ws.Label())
 	if err := ws.WriteMessage(connectRequest); err != nil {
@@ -459,6 +463,10 @@ func (r *Relay) handleHTTPAbsoluteRequest(ctx context.Context, ws MessageWriter,
 		Port:      targetPort,
 		ChannelID: channelID,
 	}
+	channel := r.registerLogicalChannel(channelID, "tcp", ws, ws, channelPathRelay)
+	channel.setRequest(connectRequest)
+	channel.markResumeOwner()
+	ws = channel
 	r.log.Debug().Str("address", targetHost).Int("port", targetPort).Msg("Requesting TCP connection via HTTP proxy")
 	r.logMessage(connectRequest, "send", ws.Label())
 	if err := ws.WriteMessage(connectRequest); err != nil {

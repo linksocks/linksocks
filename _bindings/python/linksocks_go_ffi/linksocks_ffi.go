@@ -19,6 +19,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/google/uuid"
 	linksocks "github.com/linksocks/linksocks/linksocks"
 )
 
@@ -435,6 +436,108 @@ func linksocks_server_add_connector_token(h C.uint64_t, connector *C.char, rever
 	return cstr(tok)
 }
 
+//export linksocks_server_add_forward_token_with_rules
+func linksocks_server_add_forward_token_with_rules(h C.uint64_t, token *C.char, rulesJSON *C.char) *C.char {
+	srv, err := getServer(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	rules := []accessRuleJSON{}
+	if rulesJSON != nil && C.GoString(rulesJSON) != "" {
+		if err := json.Unmarshal([]byte(C.GoString(rulesJSON)), &rules); err != nil {
+			return errStr(err)
+		}
+	}
+	goRules := make([]linksocks.AccessRule, 0, len(rules))
+	for _, rule := range rules {
+		goRules = append(goRules, linksocks.AccessRule{Addrs: rule.Addrs, Ports: rule.Ports})
+	}
+	tok, err := srv.AddForwardTokenWithRules(C.GoString(token), goRules)
+	if err != nil {
+		return errStr(err)
+	}
+	return cstr(tok)
+}
+
+//export linksocks_server_add_connector_token_with_rules
+func linksocks_server_add_connector_token_with_rules(h C.uint64_t, connector *C.char, reverseToken *C.char, rulesJSON *C.char) *C.char {
+	srv, err := getServer(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	rules := []accessRuleJSON{}
+	if rulesJSON != nil && C.GoString(rulesJSON) != "" {
+		if err := json.Unmarshal([]byte(C.GoString(rulesJSON)), &rules); err != nil {
+			return errStr(err)
+		}
+	}
+	goRules := make([]linksocks.AccessRule, 0, len(rules))
+	for _, rule := range rules {
+		goRules = append(goRules, linksocks.AccessRule{Addrs: rule.Addrs, Ports: rule.Ports})
+	}
+	tok, err := srv.AddConnectorTokenWithRules(C.GoString(connector), C.GoString(reverseToken), goRules)
+	if err != nil {
+		return errStr(err)
+	}
+	return cstr(tok)
+}
+
+//export linksocks_server_connector_wait_count
+func linksocks_server_connector_wait_count(h C.uint64_t, token *C.char, out *C.int) *C.char {
+	if out == nil {
+		return errStr(errors.New("out is nil"))
+	}
+	srv, err := getServer(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	*out = C.int(srv.GetConnectorWaitCount(C.GoString(token)))
+	return nil
+}
+
+//export linksocks_server_client_count
+func linksocks_server_client_count(h C.uint64_t, out *C.int) *C.char {
+	if out == nil {
+		return errStr(errors.New("out is nil"))
+	}
+	srv, err := getServer(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	*out = C.int(srv.GetClientCount())
+	return nil
+}
+
+//export linksocks_server_has_clients
+func linksocks_server_has_clients(h C.uint64_t, out *C.int) *C.char {
+	if out == nil {
+		return errStr(errors.New("out is nil"))
+	}
+	srv, err := getServer(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	if srv.HasClients() {
+		*out = 1
+	} else {
+		*out = 0
+	}
+	return nil
+}
+
+//export linksocks_server_token_client_count
+func linksocks_server_token_client_count(h C.uint64_t, token *C.char, out *C.int) *C.char {
+	if out == nil {
+		return errStr(errors.New("out is nil"))
+	}
+	srv, err := getServer(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	*out = C.int(srv.GetTokenClientCount(C.GoString(token)))
+	return nil
+}
+
 //export linksocks_client_new
 func linksocks_client_new(token *C.char, cfgJSON *C.char, out *C.uint64_t) *C.char {
 	if out == nil {
@@ -598,6 +701,98 @@ func linksocks_client_add_connector(h C.uint64_t, token *C.char) *C.char {
 		return errStr(err)
 	}
 	return cstr(tok)
+}
+
+//export linksocks_client_remove_connector
+func linksocks_client_remove_connector(h C.uint64_t, token *C.char) *C.char {
+	cli, err := getClient(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	return errStr(cli.RemoveConnector(C.GoString(token)))
+}
+
+//export linksocks_client_data_path
+func linksocks_client_data_path(h C.uint64_t) *C.char {
+	cli, err := getClient(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	return cstr(cli.DataPath())
+}
+
+//export linksocks_client_channel_path
+func linksocks_client_channel_path(h C.uint64_t, channelID *C.char) *C.char {
+	cli, err := getClient(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	id, err := uuid.Parse(C.GoString(channelID))
+	if err != nil {
+		return errStr(err)
+	}
+	return cstr(cli.ChannelPath(id))
+}
+
+//export linksocks_client_server_token
+func linksocks_client_server_token(h C.uint64_t) *C.char {
+	cli, err := getClient(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	return cstr(cli.GetServerToken())
+}
+
+//export linksocks_client_rtt
+func linksocks_client_rtt(h C.uint64_t, out *C.int64_t) *C.char {
+	if out == nil {
+		return errStr(errors.New("out is nil"))
+	}
+	cli, err := getClient(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	*out = C.int64_t(cli.GetRTT())
+	return nil
+}
+
+//export linksocks_client_direct_rtt
+func linksocks_client_direct_rtt(h C.uint64_t, out *C.int64_t) *C.char {
+	if out == nil {
+		return errStr(errors.New("out is nil"))
+	}
+	cli, err := getClient(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	*out = C.int64_t(cli.GetDirectRTT())
+	return nil
+}
+
+//export linksocks_client_partners_count
+func linksocks_client_partners_count(h C.uint64_t, out *C.int) *C.char {
+	if out == nil {
+		return errStr(errors.New("out is nil"))
+	}
+	cli, err := getClient(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	*out = C.int(cli.GetPartnersCount())
+	return nil
+}
+
+//export linksocks_client_remote_protocol_version
+func linksocks_client_remote_protocol_version(h C.uint64_t, out *C.uint8_t) *C.char {
+	if out == nil {
+		return errStr(errors.New("out is nil"))
+	}
+	cli, err := getClient(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	*out = C.uint8_t(cli.GetRemoteProtocolVersion())
+	return nil
 }
 
 //export linksocks_wait_for_log_entries

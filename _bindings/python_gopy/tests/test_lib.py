@@ -20,6 +20,19 @@ test_logger = logging.getLogger(__name__)
 start_time_limit = 60
 
 
+def test_remote_protocol_version_method_exposed():
+    from linksockslib import linksocks
+
+    opt = linksocks.DefaultClientOption()
+    opt.WithWSURL("ws://127.0.0.1:1")
+    opt.WithNoEnvProxy(True)
+    client = linksocks.NewLinkSocksClient("token", opt)
+    try:
+        assert int(client.GetRemoteProtocolVersion()) == 0
+    finally:
+        client.Close()
+
+
 def test_wait_ready_concurrent_timeout_paths_do_not_crash():
     from linksockslib import linksocks
     import threading

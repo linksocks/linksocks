@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from ._base import (
     _SnakePassthrough,
@@ -121,12 +121,37 @@ class Client(_SnakePassthrough):
     async def async_add_connector(self, connector_token: Optional[str]) -> str:
         return await asyncio.to_thread(self._raw.AddConnector, connector_token or "")
 
+    def remove_connector(self, connector_token: str) -> None:
+        return self._raw.RemoveConnector(connector_token)
+
+    def data_path(self) -> str:
+        return self._raw.DataPath()
+
+    def channel_path(self, channel_id: Any) -> str:
+        return self._raw.ChannelPath(channel_id)
+
+    def get_server_token(self) -> str:
+        return self._raw.GetServerToken()
+
+    def get_rtt(self) -> int:
+        return int(self._raw.GetRTT())
+
+    def get_direct_rtt(self) -> int:
+        return int(self._raw.GetDirectRTT())
+
+    def get_partners_count(self) -> int:
+        return int(self._raw.GetPartnersCount())
+
     @property
     def is_connected(self) -> bool:
         try:
-            return bool(self._raw.IsConnected)
+            value = self._raw.IsConnected
+            return bool(value() if callable(value) else value)
         except Exception:
             return False
+
+    def get_remote_protocol_version(self) -> int:
+        return int(self._raw.GetRemoteProtocolVersion())
 
     @property
     def socks_port(self) -> Optional[int]:

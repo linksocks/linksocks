@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from ._base import (
     _SnakePassthrough,
@@ -15,6 +15,10 @@ from ._base import (
     DurationLike,
     backend,
 )
+
+
+def _rules_to_gopy(rules: List[Any]) -> Any:
+    return backend.AccessRules(rules)
 
 
 class Server(_SnakePassthrough):
@@ -82,6 +86,24 @@ class Server(_SnakePassthrough):
     async def async_add_forward_token(self, token: Optional[str] = None) -> str:
         return await asyncio.to_thread(self._raw.AddForwardToken, token or "")
 
+    def add_forward_token_with_rules(
+        self,
+        token: Optional[str] = None,
+        rules: Optional[List[Any]] = None,
+    ) -> str:
+        return self._raw.AddForwardTokenWithRules(token or "", _rules_to_gopy(rules or []))
+
+    async def async_add_forward_token_with_rules(
+        self,
+        token: Optional[str] = None,
+        rules: Optional[List[Any]] = None,
+    ) -> str:
+        return await asyncio.to_thread(
+            self._raw.AddForwardTokenWithRules,
+            token or "",
+            _rules_to_gopy(rules or []),
+        )
+
     def add_reverse_token(
         self,
         *,
@@ -103,7 +125,7 @@ class Server(_SnakePassthrough):
         if allow_manage_connector is not None:
             opts.AllowManageConnector = bool(allow_manage_connector)
         result = self._raw.AddReverseToken(opts)
-        return ReverseTokenResult(token=result.token, port=result.port)
+        return ReverseTokenResult(token=result.Token, port=result.Port)
 
     async def async_add_reverse_token(
         self,
@@ -126,7 +148,7 @@ class Server(_SnakePassthrough):
         if allow_manage_connector is not None:
             opts.AllowManageConnector = bool(allow_manage_connector)
         result = await asyncio.to_thread(self._raw.AddReverseToken, opts)
-        return ReverseTokenResult(token=result.token, port=result.port)
+        return ReverseTokenResult(token=result.Token, port=result.Port)
 
     def add_connector_token(self, connector_token: Optional[str], reverse_token: str) -> str:
         return self._raw.AddConnectorToken(connector_token or "", reverse_token)
@@ -134,11 +156,48 @@ class Server(_SnakePassthrough):
     async def async_add_connector_token(self, connector_token: Optional[str], reverse_token: str) -> str:
         return await asyncio.to_thread(self._raw.AddConnectorToken, connector_token or "", reverse_token)
 
+    def add_connector_token_with_rules(
+        self,
+        connector_token: Optional[str],
+        reverse_token: str,
+        rules: Optional[List[Any]] = None,
+    ) -> str:
+        return self._raw.AddConnectorTokenWithRules(
+            connector_token or "",
+            reverse_token,
+            _rules_to_gopy(rules or []),
+        )
+
+    async def async_add_connector_token_with_rules(
+        self,
+        connector_token: Optional[str],
+        reverse_token: str,
+        rules: Optional[List[Any]] = None,
+    ) -> str:
+        return await asyncio.to_thread(
+            self._raw.AddConnectorTokenWithRules,
+            connector_token or "",
+            reverse_token,
+            _rules_to_gopy(rules or []),
+        )
+
     def remove_token(self, token: str) -> bool:
         return self._raw.RemoveToken(token)
 
     async def async_remove_token(self, token: str) -> bool:
         return await asyncio.to_thread(self._raw.RemoveToken, token)
+
+    def get_connector_wait_count(self, token: str) -> int:
+        return int(self._raw.GetConnectorWaitCount(token))
+
+    def get_client_count(self) -> int:
+        return int(self._raw.GetClientCount())
+
+    def has_clients(self) -> bool:
+        return bool(self._raw.HasClients())
+
+    def get_token_client_count(self, token: str) -> int:
+        return int(self._raw.GetTokenClientCount(token))
 
     def wait_ready(self, timeout: Optional[DurationLike] = None) -> None:
         if not self._ctx:

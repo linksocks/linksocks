@@ -533,6 +533,121 @@ func (s *LinkSocksServer) forwardDirectMessageFromClient(clientID uuid.UUID, msg
 	}
 }
 
+func (s *LinkSocksServer) forwardChannelControl(channelID uuid.UUID, source *WSConn, msg BaseMessage) {
+	s.connCache.mu.RLock()
+	connector := s.connCache.channelIDToConnector[channelID]
+	client := s.connCache.channelIDToClient[channelID]
+	var target *WSConn
+	if source == connector {
+		target = client
+	} else if source == client {
+		target = connector
+	} else if connector != nil {
+		target = connector
+	} else {
+		target = client
+	}
+	s.connCache.mu.RUnlock()
+	if target == nil || target == source {
+		return
+	}
+	if err := target.WriteMessage(msg); err != nil {
+		s.log.Debug().Err(err).Str("channel_id", channelID.String()).Msg("Failed to forward channel control message")
+	}
+}
+
+func (s *LinkSocksServer) bindChannelPeer(channelID uuid.UUID, source *WSConn, role directClientRole, token string) {
+	s.connCache.mu.Lock()
+	switch role {
+	case directClientRoleConnector:
+		s.connCache.channelIDToConnector[channelID] = source
+	case directClientRoleReverse:
+		s.connCache.channelIDToClient[channelID] = source
+	default:
+		if token != "" {
+			if ids := s.connCache.tokenCache[token]; len(ids) > 0 {
+				for _, id := range ids {
+					if id == channelID {
+						continue
+					}
+					if peer := s.connCache.channelIDToConnector[id]; peer != nil {
+						s.connCache.channelIDToClient[channelID] = peer
+						break
+					}
+				}
+			}
+		}
+	}
+	s.connCache.mu.Unlock()
+}
+
+func (s *LinkSocksServer) findDirectPeer(sessionID uuid.UUID, source *WSConn) *WSConn {
+	if sessionID == uuid.Nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for clientID, meta := range s.clientMeta {
+		if meta == nil || meta.LastCapabilities == nil || meta.LastCapabilities.SessionID != sessionID {
+			continue
+		}
+		peer := s.clients[clientID]
+		if peer != nil && peer != source {
+			return peer
+		}
+	}
+	return nil
+}
+
+func (s *LinkSocksServer) bindDirectChannel(channelID, peerSessionID uuid.UUID, source *WSConn, role directClientRole, token string) {
+	peer := s.findDirectPeer(peerSessionID, source)
+
+	s.connCache.mu.Lock()
+	switch role {
+	case directClientRoleConnector:
+		if _, exists := s.connCache.channelIDToConnector[channelID]; !exists {
+			s.connCache.channelIDToConnector[channelID] = source
+		}
+		if peer != nil {
+			if _, exists := s.connCache.channelIDToClient[channelID]; !exists {
+				s.connCache.channelIDToClient[channelID] = peer
+			}
+		}
+	case directClientRoleReverse:
+		if _, exists := s.connCache.channelIDToClient[channelID]; !exists {
+			s.connCache.channelIDToClient[channelID] = source
+		}
+		if peer != nil {
+			if _, exists := s.connCache.channelIDToConnector[channelID]; !exists {
+				s.connCache.channelIDToConnector[channelID] = peer
+			}
+		}
+	default:
+		if _, exists := s.connCache.channelIDToConnector[channelID]; !exists {
+			s.connCache.channelIDToConnector[channelID] = source
+		}
+		if peer != nil {
+			if _, exists := s.connCache.channelIDToClient[channelID]; !exists {
+				s.connCache.channelIDToClient[channelID] = peer
+			}
+		}
+	}
+	if token != "" {
+		ids := s.connCache.tokenCache[token]
+		found := false
+		for _, id := range ids {
+			if id == channelID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.connCache.tokenCache[token] = append(ids, channelID)
+		}
+	}
+	s.connCache.mu.Unlock()
+}
+
 func (s *LinkSocksServer) reportError(err error) {
 	if err == nil {
 		return
@@ -1435,6 +1550,31 @@ func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, cli
 					s.forwardDirectMessageFromClient(clientID, m)
 				}
 
+			case ChannelBindMessage:
+				s.mu.RLock()
+				meta := s.clientMeta[clientID]
+				role := directClientRoleForward
+				if meta != nil {
+					role = meta.Role
+				}
+				internalToken := ""
+				if meta != nil {
+					internalToken = meta.InternalToken
+				}
+				s.mu.RUnlock()
+				s.bindDirectChannel(m.ChannelID, m.PeerSessionID, ws, role, internalToken)
+				s.bindChannelPeer(m.ChannelID, ws, role, internalToken)
+				s.forwardChannelControl(m.ChannelID, ws, m)
+
+			case ChannelMigrateMessage:
+				s.forwardChannelControl(m.ChannelID, ws, m)
+
+			case ChannelMigrateAckMessage:
+				s.forwardChannelControl(m.ChannelID, ws, m)
+
+			case ChannelDataAckMessage:
+				s.forwardChannelControl(m.ChannelID, ws, m)
+
 			case UnknownMessage:
 				// Forward compatibility: ignore.
 
@@ -1521,7 +1661,9 @@ func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, cli
 					} else {
 						// Forward to connector
 						s.connCache.mu.RLock()
-						if connectorWS, exists := s.connCache.channelIDToConnector[m.ChannelID]; exists {
+						connectorWS, exists := s.connCache.channelIDToConnector[m.ChannelID]
+						s.connCache.mu.RUnlock()
+						if exists {
 							s.relay.logMessage(m, "send", ws.Label())
 							if err := connectorWS.WriteMessage(m); err != nil {
 								s.log.Debug().Err(err).Msg("Failed to forward connect response")
@@ -1530,7 +1672,6 @@ func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, cli
 						} else {
 							s.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("No queue and no connector for connect response")
 						}
-						s.connCache.mu.RUnlock()
 					}
 				}(m)
 
@@ -1672,6 +1813,20 @@ func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WS
 			case UnknownMessage:
 				// Forward compatibility: ignore.
 
+			case ChannelBindMessage:
+				s.bindDirectChannel(m.ChannelID, m.PeerSessionID, ws, directClientRoleConnector, reverseToken)
+				s.bindChannelPeer(m.ChannelID, ws, directClientRoleConnector, reverseToken)
+				s.forwardChannelControl(m.ChannelID, ws, m)
+
+			case ChannelMigrateMessage:
+				s.forwardChannelControl(m.ChannelID, ws, m)
+
+			case ChannelMigrateAckMessage:
+				s.forwardChannelControl(m.ChannelID, ws, m)
+
+			case ChannelDataAckMessage:
+				s.forwardChannelControl(m.ChannelID, ws, m)
+
 			case ConnectMessage:
 				go func(m ConnectMessage) {
 					// Enforce per-connector access control before forwarding to a provider
@@ -1724,6 +1879,7 @@ func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WS
 				// Route data message based on channel_id
 				s.connCache.mu.RLock()
 				targetWS, exists := s.connCache.channelIDToClient[m.ChannelID]
+				s.connCache.mu.RUnlock()
 				if exists {
 					s.relay.logMessage(m, "send", ws.Label())
 					if err := targetWS.WriteMessage(m); err != nil {
@@ -1732,21 +1888,21 @@ func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WS
 				} else {
 					s.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Received data for unknown channel")
 				}
-				s.connCache.mu.RUnlock()
 
 			case DisconnectMessage:
 				go func(m DisconnectMessage) {
 					// Clean up channel mappings and forward message
 					s.connCache.mu.Lock()
-					if targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]; exists {
+					targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]
+					delete(s.connCache.channelIDToConnector, m.ChannelID)
+					delete(s.connCache.channelIDToClient, m.ChannelID)
+					s.connCache.mu.Unlock()
+					if exists {
 						s.relay.logMessage(m, "send", ws.Label())
 						if err := targetWS.WriteMessage(m); err != nil {
 							s.log.Debug().Err(err).Msg("Failed to forward disconnect message")
 						}
-						delete(s.connCache.channelIDToConnector, m.ChannelID)
-						delete(s.connCache.channelIDToClient, m.ChannelID)
 					}
-					s.connCache.mu.Unlock()
 				}(m)
 			}
 		}
@@ -1757,15 +1913,16 @@ func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WS
 func (s *LinkSocksServer) disconnectChannel(channelID uuid.UUID, ws *WSConn, msg BaseMessage) {
 	// Forward disconnect message to connector if exists
 	s.connCache.mu.Lock()
-	if targetWS, exists := s.connCache.channelIDToConnector[channelID]; exists {
+	targetWS, exists := s.connCache.channelIDToConnector[channelID]
+	delete(s.connCache.channelIDToClient, channelID)
+	delete(s.connCache.channelIDToConnector, channelID)
+	s.connCache.mu.Unlock()
+	if exists {
 		s.relay.logMessage(msg, "send", ws.Label())
 		if err := targetWS.WriteMessage(msg); err != nil {
 			s.log.Debug().Err(err).Msg("Failed to forward disconnect message")
 		}
 	}
-	delete(s.connCache.channelIDToClient, channelID)
-	delete(s.connCache.channelIDToConnector, channelID)
-	s.connCache.mu.Unlock()
 
 	s.relay.disconnectChannel(channelID)
 }

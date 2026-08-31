@@ -83,6 +83,11 @@ class _GopyBackend:
     def DefaultReverseTokenOptions(self) -> Any:
         return _gopy_linksocks.DefaultReverseTokenOptions()
 
+    def AccessRules(self, rules: Any) -> Any:
+        if isinstance(rules, _gopy_linksocks.Slice_linksocks_AccessRule):
+            return rules
+        return _gopy_linksocks.Slice_linksocks_AccessRule(rules)
+
     def NewLinkSocksServer(self, opt: Any) -> Any:
         return _gopy_linksocks.NewLinkSocksServer(opt)
 

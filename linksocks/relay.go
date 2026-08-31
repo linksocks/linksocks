@@ -270,6 +270,7 @@ func (r *Relay) checkRule(ac *AccessControl, host string, port int) error {
 type Relay struct {
 	log                  zerolog.Logger
 	messageQueues        sync.Map // map[uuid.UUID]chan Message
+	logicalChannels      sync.Map // map[uuid.UUID]*logicalChannel
 	tcpChannels          sync.Map // map[uuid.UUID]context.CancelFunc
 	udpChannels          sync.Map // map[uuid.UUID]context.CancelFunc
 	udpClientAddrs       sync.Map // map[uuid.UUID]*net.UDPAddr
@@ -285,6 +286,43 @@ type Relay struct {
 	// the option. The server-side access-control API updates these at runtime.
 	entryAC atomic.Pointer[AccessControl]
 	dialAC  atomic.Pointer[AccessControl]
+}
+
+func (r *Relay) registerLogicalChannel(channelID uuid.UUID, protocol string, writer MessageWriter, fallback MessageWriter, path channelPath) *logicalChannel {
+	if provider, ok := writer.(fallbackWriterProvider); ok {
+		fallback = provider.Fallback()
+	}
+	if fallback == nil {
+		fallback = writer
+	}
+	channel := newLogicalChannel(channelID, protocol, writer, fallback, path)
+	r.logicalChannels.Store(channelID, channel)
+	return channel
+}
+
+func (r *Relay) logicalChannel(channelID uuid.UUID) (*logicalChannel, bool) {
+	value, ok := r.logicalChannels.Load(channelID)
+	if !ok {
+		return nil, false
+	}
+	channel, ok := value.(*logicalChannel)
+	return channel, ok
+}
+
+func (r *Relay) switchLogicalChannel(channelID uuid.UUID, writer MessageWriter, path channelPath) error {
+	channel, ok := r.logicalChannel(channelID)
+	if !ok {
+		return fmt.Errorf("logical channel %s not found", channelID)
+	}
+	return channel.Switch(writer, path)
+}
+
+func (r *Relay) logicalChannelPath(channelID uuid.UUID) string {
+	channel, ok := r.logicalChannel(channelID)
+	if !ok {
+		return ""
+	}
+	return channel.Path()
 }
 
 // NewRelay creates a new Relay instance
@@ -376,6 +414,20 @@ func (r *Relay) updateActivityTime(channelID uuid.UUID) {
 
 // HandleNetworkConnection handles network connection based on protocol type
 func (r *Relay) HandleNetworkConnection(ctx context.Context, ws MessageWriter, request ConnectMessage) error {
+	if request.Resume {
+		if channel, ok := r.logicalChannel(request.ChannelID); ok {
+			if err := channel.Switch(ws, channelPathDirect); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+	channel, ok := r.logicalChannel(request.ChannelID)
+	if !ok {
+		channel = r.registerLogicalChannel(request.ChannelID, request.Protocol, ws, ws, channelPathRelay)
+		channel.setRequest(request)
+	}
+	ws = channel
 	if request.Protocol == "tcp" {
 		return r.HandleTCPConnection(ctx, ws, request)
 	} else if request.Protocol == "udp" {
@@ -947,6 +999,10 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws MessageWriter, socksC
 			Port:      int(targetPort),
 			ChannelID: channelID,
 		}
+		channel := r.registerLogicalChannel(channelID, "tcp", ws, ws, channelPathRelay)
+		channel.setRequest(requestData)
+		channel.markResumeOwner()
+		ws = channel
 		r.log.Debug().Str("address", targetAddr).Int("port", int(targetPort)).Msg("Requesting TCP connecting to")
 		r.logMessage(requestData, "send", ws.Label())
 		if err := ws.WriteMessage(requestData); err != nil {
@@ -1062,6 +1118,10 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws MessageWriter, socksC
 			Protocol:  "udp",
 			ChannelID: channelID,
 		}
+		channel := r.registerLogicalChannel(channelID, "udp", ws, ws, channelPathRelay)
+		channel.setRequest(requestData)
+		channel.markResumeOwner()
+		ws = channel
 		r.log.Debug().Msg("Requesting UDP Associate")
 		r.logMessage(requestData, "send", ws.Label())
 		if err := ws.WriteMessage(requestData); err != nil {
@@ -1123,6 +1183,11 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws MessageWriter, socksC
 
 // HandleRemoteTCPForward handles remote TCP forwarding
 func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws MessageWriter, remoteConn net.Conn, channelID uuid.UUID) error {
+	channel, ok := r.logicalChannel(channelID)
+	if !ok {
+		channel = r.registerLogicalChannel(channelID, "tcp", ws, ws, channelPathRelay)
+	}
+	ws = channel
 	// Initialize activity time
 	r.updateActivityTime(channelID)
 
@@ -1176,6 +1241,11 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws MessageWriter, re
 							errChan <- fmt.Errorf("remote write error: %w", err)
 							return
 						}
+						if dataMsg.Sequence != 0 {
+							if channel, ok := r.logicalChannel(channelID); ok {
+								_ = channel.acknowledgeMessage(dataMsg.Sequence)
+							}
+						}
 						r.log.Trace().Int("size", len(dataMsg.Data)).Msg("Sent TCP data to target (drain)")
 					default:
 						return
@@ -1203,6 +1273,11 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws MessageWriter, re
 				if err != nil {
 					errChan <- fmt.Errorf("remote write error: %w", err)
 					return
+				}
+				if dataMsg.Sequence != 0 {
+					if channel, ok := r.logicalChannel(channelID); ok {
+						_ = channel.acknowledgeMessage(dataMsg.Sequence)
+					}
 				}
 				r.log.Trace().Int("size", len(dataMsg.Data)).Msg("Sent TCP data to target")
 			}
@@ -1235,6 +1310,11 @@ func (r *Relay) HandleRemoteTCPForward(ctx context.Context, ws MessageWriter, re
 
 // HandleRemoteUDPForward handles remote UDP forwarding
 func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws MessageWriter, udpConn *net.UDPConn, channelID uuid.UUID) error {
+	channel, ok := r.logicalChannel(channelID)
+	if !ok {
+		channel = r.registerLogicalChannel(channelID, "udp", ws, ws, channelPathRelay)
+	}
+	ws = channel
 	// Initialize activity time
 	r.updateActivityTime(channelID)
 
@@ -1319,6 +1399,11 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws MessageWriter, ud
 					errChan <- fmt.Errorf("udp write error: %w", err)
 					return
 				}
+				if dataMsg.Sequence != 0 {
+					if channel, ok := r.logicalChannel(channelID); ok {
+						_ = channel.acknowledgeMessage(dataMsg.Sequence)
+					}
+				}
 				r.log.Trace().
 					Int("size", len(dataMsg.Data)).
 					Str("addr", targetAddr.String()).
@@ -1348,6 +1433,11 @@ func (r *Relay) HandleRemoteUDPForward(ctx context.Context, ws MessageWriter, ud
 
 // HandleSocksTCPForward handles TCP forwarding between SOCKS client and WebSocket
 func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws MessageWriter, socksConn net.Conn, channelID uuid.UUID) error {
+	channel, ok := r.logicalChannel(channelID)
+	if !ok {
+		channel = r.registerLogicalChannel(channelID, "tcp", ws, ws, channelPathRelay)
+	}
+	ws = channel
 	// Create a child context that can be cancelled
 	ctx, cancel := context.WithCancel(ctx)
 	r.tcpChannels.Store(channelID, cancel)
@@ -1425,6 +1515,11 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws MessageWriter, soc
 							errChan <- fmt.Errorf("socks write error: %w", err)
 							return
 						}
+						if dataMsg.Sequence != 0 {
+							if channel, ok := r.logicalChannel(channelID); ok {
+								_ = channel.acknowledgeMessage(dataMsg.Sequence)
+							}
+						}
 						r.log.Trace().Int("size", len(dataMsg.Data)).Msg("Sent TCP data to SOCKS (drain)")
 					default:
 						return
@@ -1453,6 +1548,11 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws MessageWriter, soc
 					errChan <- fmt.Errorf("socks write error: %w", err)
 					return
 				}
+				if dataMsg.Sequence != 0 {
+					if channel, ok := r.logicalChannel(channelID); ok {
+						_ = channel.acknowledgeMessage(dataMsg.Sequence)
+					}
+				}
 				r.log.Trace().Int("size", len(dataMsg.Data)).Msg("Sent TCP data to SOCKS")
 			}
 		}
@@ -1480,6 +1580,11 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws MessageWriter, soc
 
 // HandleSocksUDPForward handles SOCKS5 UDP forwarding
 func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws MessageWriter, udpConn *net.UDPConn, socksConn net.Conn, channelID uuid.UUID) error {
+	channel, ok := r.logicalChannel(channelID)
+	if !ok {
+		channel = r.registerLogicalChannel(channelID, "udp", ws, ws, channelPathRelay)
+	}
+	ws = channel
 	// Create a child context that can be cancelled
 	ctx, cancel := context.WithCancel(ctx)
 	r.udpChannels.Store(channelID, cancel)
@@ -1660,6 +1765,11 @@ func (r *Relay) HandleSocksUDPForward(ctx context.Context, ws MessageWriter, udp
 					errChan <- fmt.Errorf("udp write error: %w", err)
 					return
 				}
+				if dataMsg.Sequence != 0 {
+					if channel, ok := r.logicalChannel(channelID); ok {
+						_ = channel.acknowledgeMessage(dataMsg.Sequence)
+					}
+				}
 				r.log.Trace().Int("size", len(dataMsg.Data)).Str("addr", clientAddr.String()).Msg("Sent UDP data to SOCKS")
 			}
 		}
@@ -1794,6 +1904,9 @@ func (r *Relay) doCleanup(channelID uuid.UUID) {
 		}
 	}
 	r.messageQueues.Delete(channelID)
+	if channel, ok := r.logicalChannels.LoadAndDelete(channelID); ok {
+		channel.(*logicalChannel).Close()
+	}
 	r.udpClientAddrs.Delete(channelID)
 	r.connectionSuccessMap.Delete(channelID)
 	r.lastActivity.Delete(channelID)

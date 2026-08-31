@@ -192,6 +192,42 @@ def test_import():
     assert hasattr(_ffi, "Server")
 
 
+def test_client_remote_protocol_version_unknown():
+    client = _ffi.Client("token", {"ws_url": "ws://127.0.0.1:1", "no_env_proxy": True})
+    try:
+        assert client.remote_protocol_version() == 0
+    finally:
+        client.close()
+
+
+def test_client_rtt_returns_minus_one_without_measurement():
+    client = _ffi.Client("token", {"ws_url": "ws://127.0.0.1:1", "no_env_proxy": True})
+    try:
+        assert client.rtt() == -1
+        assert client.direct_rtt() == -1
+    finally:
+        client.close()
+
+
+def test_ffi_server_user_api():
+    server = _ffi.Server({})
+    try:
+        rules = [{"addrs": ["127.0.0.1"], "ports": [80]}]
+        forward_token = server.add_forward_token_with_rules("forward", rules)
+        assert forward_token == "forward"
+
+        reverse_token = server.add_reverse_token({"token": "reverse"}).token
+        connector_token = server.add_connector_token_with_rules("connector", reverse_token, rules)
+        assert connector_token == "connector"
+
+        assert server.connector_wait_count(reverse_token) == 0
+        assert server.client_count() == 0
+        assert not server.has_clients()
+        assert server.token_client_count(forward_token) == 0
+    finally:
+        server.close()
+
+
 def test_website(website):
     assert_web_connection(website)
 

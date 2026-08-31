@@ -242,6 +242,27 @@ class Client(_SnakePassthrough):
         """
         return await asyncio.to_thread(self._raw.AddConnector, connector_token or "")
 
+    def remove_connector(self, connector_token: str) -> None:
+        return self._raw.RemoveConnector(connector_token)
+
+    def data_path(self) -> str:
+        return self._raw.DataPath()
+
+    def channel_path(self, channel_id: str) -> str:
+        return self._raw.ChannelPath(channel_id)
+
+    def get_server_token(self) -> str:
+        return self._raw.GetServerToken()
+
+    def get_rtt(self) -> int:
+        return int(self._raw.GetRTT())
+
+    def get_direct_rtt(self) -> int:
+        return int(self._raw.GetDirectRTT())
+
+    def get_partners_count(self) -> int:
+        return int(self._raw.GetPartnersCount())
+
     @property
     def is_connected(self) -> bool:
         """Check if the client is connected to the server.
@@ -268,6 +289,10 @@ class Client(_SnakePassthrough):
             return int(port) if port is not None else None
         except Exception:
             return None
+
+    def get_remote_protocol_version(self) -> int:
+        """Return the latest protocol version received from the peer."""
+        return int(self._raw.GetRemoteProtocolVersion())
 
     def close(self) -> None:
         """Close the client and clean up resources."""

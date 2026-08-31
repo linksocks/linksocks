@@ -10,7 +10,8 @@ import (
 func TestPackParse_DirectCapabilities_RoundTrip(t *testing.T) {
 	sessionID := uuid.New()
 	m := linksocks.DirectCapabilitiesMessage{
-		SessionID: sessionID,
+		SessionID:       sessionID,
+		ProtocolVersion: linksocks.ProtocolVersion,
 		Candidates: []linksocks.DirectCandidate{
 			{Addr: "1.2.3.4", Port: 1234, Kind: "srflx"},
 			{Addr: "2001:db8::1", Port: 2345, Kind: "srflx"},
@@ -35,6 +36,9 @@ func TestPackParse_DirectCapabilities_RoundTrip(t *testing.T) {
 	if got.SessionID != sessionID {
 		t.Fatalf("session_id mismatch: got %s want %s", got.SessionID, sessionID)
 	}
+	if got.ProtocolVersion != linksocks.ProtocolVersion {
+		t.Fatalf("protocol_version mismatch: got 0x%02x want 0x%02x", got.ProtocolVersion, linksocks.ProtocolVersion)
+	}
 	if len(got.Candidates) != 2 {
 		t.Fatalf("candidates len mismatch: %+v", got.Candidates)
 	}
@@ -55,6 +59,7 @@ func TestPackParse_DirectRendezvous_RoundTrip(t *testing.T) {
 	m := linksocks.DirectRendezvousMessage{
 		SessionID:       sessionID,
 		RemoteSessionID: remoteSessionID,
+		ProtocolVersion: linksocks.ProtocolVersion,
 		Candidates: []linksocks.DirectCandidate{
 			{Addr: "8.8.8.8", Port: 3478, Kind: "srflx"},
 		},
@@ -79,6 +84,9 @@ func TestPackParse_DirectRendezvous_RoundTrip(t *testing.T) {
 	}
 	if got.RemoteSessionID != remoteSessionID {
 		t.Fatalf("remote_session_id mismatch: got %s want %s", got.RemoteSessionID, remoteSessionID)
+	}
+	if got.ProtocolVersion != linksocks.ProtocolVersion {
+		t.Fatalf("protocol_version mismatch: got 0x%02x want 0x%02x", got.ProtocolVersion, linksocks.ProtocolVersion)
 	}
 	if len(got.Candidates) != 1 || got.Candidates[0].Addr != "8.8.8.8" || got.Candidates[0].Port != 3478 {
 		t.Fatalf("candidates mismatch: %+v", got.Candidates)

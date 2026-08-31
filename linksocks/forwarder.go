@@ -39,6 +39,9 @@ func NewSendManager(
 	protocol string,
 	errChan chan<- error,
 ) *DynamicForwarder {
+	if channel, ok := relay.logicalChannel(channelID); ok {
+		ws = channel
+	}
 	return &DynamicForwarder{
 		log:                  log,
 		channelID:            channelID,

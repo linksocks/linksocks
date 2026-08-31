@@ -73,6 +73,18 @@ DirectRendezvousMessage:
 
 DirectStatusMessage:
 	Version(1) + Type(1) + DataLen(4) + JSON{...}
+
+ChannelBindMessage:
+	Version(1) + Type(1) + DataLen(4) + JSON{...}
+
+ChannelMigrateMessage:
+	Version(1) + Type(1) + DataLen(4) + JSON{...}
+
+ChannelMigrateAckMessage:
+	Version(1) + Type(1) + DataLen(4) + JSON{...}
+
+ChannelDataAckMessage:
+	Version(1) + Type(1) + DataLen(4) + JSON{...}
 */
 
 const (
@@ -95,7 +107,8 @@ const (
 	//   - Different MAJOR versions MUST NOT connect.
 	//   - Different MINOR versions MAY connect, but SHOULD be clearly reported during the
 	//     connection/auth phase.
-	ProtocolVersion = byte(0x01)
+	ProtocolVersion          = byte(0x02)
+	MigrationProtocolVersion = byte(0x02)
 
 	// Binary message types
 	BinaryTypeAuth               = byte(0x01)
@@ -111,6 +124,10 @@ const (
 	BinaryTypeDirectCapabilities = byte(0x0B)
 	BinaryTypeDirectRendezvous   = byte(0x0C)
 	BinaryTypeDirectStatus       = byte(0x0D)
+	BinaryTypeChannelBind        = byte(0x0E)
+	BinaryTypeChannelMigrate     = byte(0x0F)
+	BinaryTypeChannelMigrateAck  = byte(0x10)
+	BinaryTypeChannelDataAck     = byte(0x11)
 
 	// Protocol types
 	BinaryProtocolTCP = byte(0x01)
@@ -134,6 +151,10 @@ const (
 	TypeDirectCapabilities = "direct_capabilities"
 	TypeDirectRendezvous   = "direct_rendezvous"
 	TypeDirectStatus       = "direct_status"
+	TypeChannelBind        = "channel_bind"
+	TypeChannelMigrate     = "channel_migrate"
+	TypeChannelMigrateAck  = "channel_migrate_ack"
+	TypeChannelDataAck     = "channel_data_ack"
 	TypeUnknown            = "unknown"
 
 	// Compression flags
@@ -147,6 +168,10 @@ func protocolMajor(v byte) byte {
 
 func protocolMinor(v byte) byte {
 	return v & 0x0F
+}
+
+func protocolSupportsMigration(v byte) bool {
+	return protocolMajor(v) == protocolMajor(MigrationProtocolVersion) && protocolMinor(v) >= protocolMinor(MigrationProtocolVersion)
 }
 
 func protocolVersionDebugString(v byte) string {
@@ -195,6 +220,7 @@ type ConnectMessage struct {
 	Address   string    `json:"address,omitempty"`
 	Port      int       `json:"port,omitempty"`
 	ChannelID uuid.UUID `json:"channel_id"`
+	Resume    bool      `json:"resume,omitempty"`
 }
 
 func (m ConnectMessage) GetType() string {
@@ -222,6 +248,7 @@ type DataMessage struct {
 	Port        int       `json:"port,omitempty"`
 	TargetAddr  string    `json:"target_addr,omitempty"`
 	TargetPort  int       `json:"target_port,omitempty"`
+	Sequence    uint64    `json:"sequence,omitempty"`
 }
 
 func (m DataMessage) GetType() string {
@@ -293,10 +320,11 @@ type DirectMetrics struct {
 }
 
 type DirectCapabilitiesMessage struct {
-	SessionID   uuid.UUID         `json:"session_id"`
-	Candidates  []DirectCandidate `json:"candidates,omitempty"`
-	Discoveries []string          `json:"discoveries,omitempty"`
-	PublicKey   []byte            `json:"public_key,omitempty"`
+	SessionID       uuid.UUID         `json:"session_id"`
+	Candidates      []DirectCandidate `json:"candidates,omitempty"`
+	Discoveries     []string          `json:"discoveries,omitempty"`
+	PublicKey       []byte            `json:"public_key,omitempty"`
+	ProtocolVersion byte              `json:"protocol_version,omitempty"`
 }
 
 func (m DirectCapabilitiesMessage) GetType() string {
@@ -308,6 +336,7 @@ type DirectRendezvousMessage struct {
 	RemoteSessionID uuid.UUID         `json:"remote_session_id,omitempty"`
 	Candidates      []DirectCandidate `json:"candidates,omitempty"`
 	PublicKey       []byte            `json:"public_key,omitempty"`
+	ProtocolVersion byte              `json:"protocol_version,omitempty"`
 }
 
 func (m DirectRendezvousMessage) GetType() string {
@@ -322,6 +351,44 @@ type DirectStatusMessage struct {
 
 func (m DirectStatusMessage) GetType() string {
 	return TypeDirectStatus
+}
+
+type ChannelBindMessage struct {
+	ChannelID     uuid.UUID `json:"channel_id"`
+	Protocol      string    `json:"protocol"`
+	PeerSessionID uuid.UUID `json:"peer_session_id,omitempty"`
+}
+
+func (m ChannelBindMessage) GetType() string {
+	return TypeChannelBind
+}
+
+type ChannelMigrateMessage struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	Reason    string    `json:"reason,omitempty"`
+}
+
+func (m ChannelMigrateMessage) GetType() string {
+	return TypeChannelMigrate
+}
+
+type ChannelMigrateAckMessage struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	Success   bool      `json:"success"`
+	Error     string    `json:"error,omitempty"`
+}
+
+func (m ChannelMigrateAckMessage) GetType() string {
+	return TypeChannelMigrateAck
+}
+
+type ChannelDataAckMessage struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	Sequence  uint64    `json:"sequence"`
+}
+
+func (m ChannelDataAckMessage) GetType() string {
+	return TypeChannelDataAck
 }
 
 type UnknownMessage struct {
@@ -394,6 +461,11 @@ func byteToBool(b byte) bool {
 	return b != 0
 }
 
+func binaryUint64(b []byte) uint64 {
+	return uint64(b[0])<<56 | uint64(b[1])<<48 | uint64(b[2])<<40 | uint64(b[3])<<32 |
+		uint64(b[4])<<24 | uint64(b[5])<<16 | uint64(b[6])<<8 | uint64(b[7])
+}
+
 // Helper functions for operation conversion
 func operationToBytes(operation string) byte {
 	switch operation {
@@ -460,6 +532,9 @@ func PackMessage(msg BaseMessage) ([]byte, error) {
 			buf = append(buf, []byte(m.Address)...)
 			buf = append(buf, byte(m.Port>>8), byte(m.Port))
 		}
+		if m.Resume {
+			buf = append(buf, 1)
+		}
 		return buf, nil
 
 	case ConnectResponseMessage:
@@ -511,6 +586,9 @@ func PackMessage(msg BaseMessage) ([]byte, error) {
 			buf = append(buf, byte(len(m.TargetAddr)))
 			buf = append(buf, []byte(m.TargetAddr)...)
 			buf = append(buf, byte(m.TargetPort>>8), byte(m.TargetPort))
+		}
+		if m.Sequence != 0 {
+			buf = append(buf, byte(m.Sequence>>56), byte(m.Sequence>>48), byte(m.Sequence>>40), byte(m.Sequence>>32), byte(m.Sequence>>24), byte(m.Sequence>>16), byte(m.Sequence>>8), byte(m.Sequence))
 		}
 		return buf, nil
 
@@ -611,9 +689,33 @@ func PackMessage(msg BaseMessage) ([]byte, error) {
 		buf = append(buf, jsonData...)
 		return buf, nil
 
+	case ChannelBindMessage:
+		return packJSONMessage(buf, BinaryTypeChannelBind, m, "channel bind")
+
+	case ChannelMigrateMessage:
+		return packJSONMessage(buf, BinaryTypeChannelMigrate, m, "channel migrate")
+
+	case ChannelMigrateAckMessage:
+		return packJSONMessage(buf, BinaryTypeChannelMigrateAck, m, "channel migrate ack")
+
+	case ChannelDataAckMessage:
+		return packJSONMessage(buf, BinaryTypeChannelDataAck, m, "channel data ack")
+
 	default:
 		return nil, fmt.Errorf("unsupported message type for binary serialization")
 	}
+}
+
+func packJSONMessage(buf []byte, msgType byte, msg any, name string) ([]byte, error) {
+	buf = append(buf, msgType)
+	jsonData, err := json.Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal %s message: %w", name, err)
+	}
+	dataLen := uint32(len(jsonData))
+	buf = append(buf, byte(dataLen>>24), byte(dataLen>>16), byte(dataLen>>8), byte(dataLen))
+	buf = append(buf, jsonData...)
+	return buf, nil
 }
 
 // ParseProtocolVersionParam parses a peer-reported protocol version string.
@@ -735,6 +837,11 @@ func parseMessageBody(msgType byte, payload []byte) (BaseMessage, error) {
 			}
 			msg.Address = string(rest[1 : 1+addrLen])
 			msg.Port = int(uint16(rest[1+addrLen])<<8 | uint16(rest[1+addrLen+1]))
+			if len(rest) > 1+addrLen+2 {
+				msg.Resume = rest[1+addrLen+2] != 0
+			}
+		} else if len(payload) > 17 {
+			msg.Resume = payload[17] != 0
 		}
 		return msg, nil
 
@@ -817,6 +924,12 @@ func parseMessageBody(msgType byte, payload []byte) (BaseMessage, error) {
 			}
 			msg.TargetAddr = string(rest[1 : 1+targetAddrLen])
 			msg.TargetPort = int(uint16(rest[1+targetAddrLen])<<8 | uint16(rest[1+targetAddrLen+1]))
+			rest = rest[1+targetAddrLen+2:]
+			if len(rest) >= 8 {
+				msg.Sequence = binaryUint64(rest[:8])
+			}
+		} else if len(payload) >= 22+int(dataLen)+8 {
+			msg.Sequence = binaryUint64(payload[22+int(dataLen) : 22+int(dataLen)+8])
 		}
 		return msg, nil
 
@@ -970,10 +1083,52 @@ func parseMessageBody(msgType byte, payload []byte) (BaseMessage, error) {
 		}
 		return msg, nil
 
+	case BinaryTypeChannelBind:
+		var msg ChannelBindMessage
+		if err := unmarshalJSONMessage(payload, "channel bind", &msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+
+	case BinaryTypeChannelMigrate:
+		var msg ChannelMigrateMessage
+		if err := unmarshalJSONMessage(payload, "channel migrate", &msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+
+	case BinaryTypeChannelMigrateAck:
+		var msg ChannelMigrateAckMessage
+		if err := unmarshalJSONMessage(payload, "channel migrate ack", &msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+
+	case BinaryTypeChannelDataAck:
+		var msg ChannelDataAckMessage
+		if err := unmarshalJSONMessage(payload, "channel data ack", &msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+
 	default:
 		// For forward compatibility, return an UnknownMessage so upper layers can safely drop it.
 		return UnknownMessage{BinaryType: msgType}, nil
 	}
+}
+
+func unmarshalJSONMessage(payload []byte, name string, dst any) error {
+	if len(payload) < 4 {
+		return fmt.Errorf("invalid %s message", name)
+	}
+	dataLen := uint32(payload[0])<<24 | uint32(payload[1])<<16 | uint32(payload[2])<<8 | uint32(payload[3])
+	if len(payload) < 4+int(dataLen) {
+		return fmt.Errorf("invalid %s message length", name)
+	}
+	if err := json.Unmarshal(payload[4:4+dataLen], dst); err != nil {
+		return fmt.Errorf("failed to unmarshal %s message: %w", name, err)
+	}
+	return nil
 }
 
 // ParseMessage parses a binary message.

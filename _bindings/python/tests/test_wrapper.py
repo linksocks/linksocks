@@ -220,6 +220,134 @@ def test_client_entry_access_control_options(monkeypatch):
         client.close()
 
 
+def test_client_remote_protocol_version(monkeypatch):
+    import linksocks._client as client_module
+
+    class DummyOption:
+        def WithLogger(self, _logger):
+            return None
+
+    class DummyLogger:
+        def __init__(self, py_logger, logger_id):
+            self.py_logger = py_logger
+            self.go_logger = object()
+
+        def cleanup(self):
+            return None
+
+    class DummyRawClient:
+        def GetRemoteProtocolVersion(self):
+            return 2
+
+        def Close(self):
+            return None
+
+    monkeypatch.setattr(client_module, "BufferZerologLogger", DummyLogger)
+    monkeypatch.setattr(client_module.backend, "DefaultClientOption", lambda: DummyOption())
+    monkeypatch.setattr(client_module.backend, "NewLinkSocksClient", lambda token, opt: DummyRawClient())
+
+    client = client_module.Client("token")
+    try:
+        assert client.get_remote_protocol_version() == 2
+    finally:
+        client.close()
+
+
+def test_wrapper_user_api_forwarding(monkeypatch):
+    import linksocks._client as client_module
+    import linksocks._server as server_module
+
+    class DummyOption:
+        def WithLogger(self, _logger):
+            return None
+
+    class DummyLogger:
+        def __init__(self, py_logger, logger_id):
+            self.py_logger = py_logger
+            self.go_logger = object()
+
+        def cleanup(self):
+            return None
+
+    class DummyRawClient:
+        def RemoveConnector(self, token):
+            self.removed = token
+
+        def DataPath(self):
+            return "data"
+
+        def ChannelPath(self, channel_id):
+            return f"channel:{channel_id}"
+
+        def GetServerToken(self):
+            return "server"
+
+        def GetRTT(self):
+            return -1
+
+        def GetDirectRTT(self):
+            return -1
+
+        def GetPartnersCount(self):
+            return 0
+
+        def Close(self):
+            return None
+
+    class DummyRawServer:
+        def AddForwardTokenWithRules(self, token, rules):
+            self.forward = (token, rules)
+            return token
+
+        def AddConnectorTokenWithRules(self, connector, reverse, rules):
+            self.connector = (connector, reverse, rules)
+            return connector
+
+        def GetConnectorWaitCount(self, token):
+            return 0
+
+        def GetClientCount(self):
+            return 0
+
+        def HasClients(self):
+            return False
+
+        def GetTokenClientCount(self, token):
+            return 0
+
+        def Close(self):
+            return None
+
+    monkeypatch.setattr(client_module, "BufferZerologLogger", DummyLogger)
+    monkeypatch.setattr(client_module.backend, "DefaultClientOption", lambda: DummyOption())
+    monkeypatch.setattr(client_module.backend, "NewLinkSocksClient", lambda token, opt: DummyRawClient())
+    client = client_module.Client("token")
+    try:
+        client.remove_connector("connector")
+        assert client.data_path() == "data"
+        assert client.channel_path("channel") == "channel:channel"
+        assert client.get_server_token() == "server"
+        assert client.get_rtt() == -1
+        assert client.get_direct_rtt() == -1
+        assert client.get_partners_count() == 0
+    finally:
+        client.close()
+
+    monkeypatch.setattr(server_module, "BufferZerologLogger", DummyLogger)
+    monkeypatch.setattr(server_module.backend, "DefaultServerOption", lambda: DummyOption())
+    monkeypatch.setattr(server_module.backend, "NewLinkSocksServer", lambda opt: DummyRawServer())
+    server = server_module.Server()
+    try:
+        assert server.add_forward_token_with_rules("forward", []) == "forward"
+        assert server.add_connector_token_with_rules("connector", "reverse", []) == "connector"
+        assert server.get_connector_wait_count("reverse") == 0
+        assert server.get_client_count() == 0
+        assert not server.has_clients()
+        assert server.get_token_client_count("forward") == 0
+    finally:
+        server.close()
+
+
 def test_ffi_reverse_token_rules_payload():
     from linksocks._base import _FFIRawServer, _FFIReverseTokenOptions, AccessRule
 

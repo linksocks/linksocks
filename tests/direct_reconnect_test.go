@@ -1,15 +1,120 @@
 package tests
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"testing"
 	"time"
 
 	"github.com/linksocks/linksocks/linksocks"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAuto_ActiveTCPConnectionMigratesAcrossDirectFailure(t *testing.T) {
+	stunAddr, stunClose := startTestStunServer(t)
+	defer stunClose()
+
+	echoListener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer echoListener.Close()
+	echoAddr := echoListener.Addr().(*net.TCPAddr)
+	go func() {
+		conn, acceptErr := echoListener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = io.Copy(conn, conn)
+	}()
+
+	wsPort, err := getFreePort()
+	require.NoError(t, err)
+	server := linksocks.NewLinkSocksServer(linksocks.DefaultServerOption().
+		WithWSPort(wsPort).
+		WithLogger(createPrefixedLogger("SRV-MIGRATE")).
+		WithAPI("TOKEN").
+		WithDirectEnable(true))
+	defer server.Close()
+	require.NoError(t, server.WaitReady(context.Background(), 5*time.Second))
+
+	reverse, err := server.AddReverseToken(nil)
+	require.NoError(t, err)
+	_, err = server.AddConnectorToken("CONNECTOR", reverse.Token)
+	require.NoError(t, err)
+
+	reverseClient := reverseClient(t, &ProxyTestClientOption{
+		WSPort:          wsPort,
+		Token:           reverse.Token,
+		LoggerPrefix:    "CLT-MIGRATE-REVERSE",
+		DirectMode:      linksocks.DirectModeAuto,
+		DirectDiscovery: linksocks.DirectDiscoverySTUN,
+		StunServers:     []string{stunAddr},
+		Reconnect:       true,
+	})
+	defer reverseClient.Close()
+	connectorClient := forwardClient(t, &ProxyTestClientOption{
+		WSPort:          wsPort,
+		Token:           "CONNECTOR",
+		LoggerPrefix:    "CLT-MIGRATE-CONNECTOR",
+		DirectMode:      linksocks.DirectModeAuto,
+		DirectDiscovery: linksocks.DirectDiscoverySTUN,
+		StunServers:     []string{stunAddr},
+		Reconnect:       true,
+	})
+	defer connectorClient.Close()
+
+	require.Eventually(t, func() bool {
+		return reverseClient.Client.IsDirectQUICActive() && connectorClient.Client.IsDirectQUICActive()
+	}, 15*time.Second, 200*time.Millisecond, "direct QUIC dataplane did not become active")
+
+	proxyConn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", connectorClient.SocksPort), 5*time.Second)
+	require.NoError(t, err)
+	defer proxyConn.Close()
+	proxyConn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	_, err = proxyConn.Write([]byte{0x05, 0x01, 0x00})
+	require.NoError(t, err)
+	methodReply := make([]byte, 2)
+	_, err = io.ReadFull(proxyConn, methodReply)
+	require.NoError(t, err)
+	require.Equal(t, []byte{0x05, 0x00}, methodReply)
+
+	connectRequest := []byte{0x05, 0x01, 0x00, 0x01}
+	connectRequest = append(connectRequest, echoAddr.IP.To4()...)
+	connectRequest = append(connectRequest, byte(echoAddr.Port>>8), byte(echoAddr.Port))
+	_, err = proxyConn.Write(connectRequest)
+	require.NoError(t, err)
+	connectReply := make([]byte, 10)
+	_, err = io.ReadFull(proxyConn, connectReply)
+	require.NoError(t, err)
+	require.Equal(t, byte(0x00), connectReply[1])
+
+	firstPayload := []byte("before-direct-failure")
+	_, err = proxyConn.Write(firstPayload)
+	require.NoError(t, err)
+	firstReply := make([]byte, len(firstPayload))
+	_, err = io.ReadFull(proxyConn, firstReply)
+	require.NoError(t, err)
+	require.True(t, bytes.Equal(firstPayload, firstReply))
+
+	reverseClient.Client.ForceCloseDirectQUIC()
+	connectorClient.Client.ForceCloseDirectQUIC()
+	require.Eventually(t, func() bool {
+		return !reverseClient.Client.IsDirectQUICActive() && !connectorClient.Client.IsDirectQUICActive()
+	}, 3*time.Second, 50*time.Millisecond, "direct QUIC dataplane did not close")
+
+	secondPayload := []byte("after-direct-failure")
+	_, err = proxyConn.Write(secondPayload)
+	require.NoError(t, err)
+	secondReply := make([]byte, len(secondPayload))
+	_, err = io.ReadFull(proxyConn, secondReply)
+	require.NoError(t, err)
+	require.True(t, bytes.Equal(secondPayload, secondReply))
+}
 
 // TestAuto_DirectDisconnectReconnect verifies the full direct lifecycle:
 // establish → disconnect → relay fallback → reconnect → direct active again.

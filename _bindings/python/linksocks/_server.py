@@ -167,6 +167,24 @@ class Server(_SnakePassthrough):
         """
         return await asyncio.to_thread(self._raw.AddForwardToken, token or "")
 
+    def add_forward_token_with_rules(
+        self,
+        token: Optional[str] = None,
+        rules: Optional[List[AccessRule]] = None,
+    ) -> str:
+        return self._raw.AddForwardTokenWithRules(token or "", list(rules or []))
+
+    async def async_add_forward_token_with_rules(
+        self,
+        token: Optional[str] = None,
+        rules: Optional[List[AccessRule]] = None,
+    ) -> str:
+        return await asyncio.to_thread(
+            self._raw.AddForwardTokenWithRules,
+            token or "",
+            list(rules or []),
+        )
+
     def add_reverse_token(
         self,
         *,
@@ -269,6 +287,31 @@ class Server(_SnakePassthrough):
         """
         return await asyncio.to_thread(self._raw.AddConnectorToken, connector_token or "", reverse_token)
 
+    def add_connector_token_with_rules(
+        self,
+        connector_token: Optional[str],
+        reverse_token: str,
+        rules: Optional[List[AccessRule]] = None,
+    ) -> str:
+        return self._raw.AddConnectorTokenWithRules(
+            connector_token or "",
+            reverse_token,
+            list(rules or []),
+        )
+
+    async def async_add_connector_token_with_rules(
+        self,
+        connector_token: Optional[str],
+        reverse_token: str,
+        rules: Optional[List[AccessRule]] = None,
+    ) -> str:
+        return await asyncio.to_thread(
+            self._raw.AddConnectorTokenWithRules,
+            connector_token or "",
+            reverse_token,
+            list(rules or []),
+        )
+
     def remove_token(self, token: str) -> bool:
         """Remove a token from the server.
         
@@ -290,6 +333,18 @@ class Server(_SnakePassthrough):
             True if token was removed, False if not found
         """
         return await asyncio.to_thread(self._raw.RemoveToken, token)
+
+    def get_connector_wait_count(self, token: str) -> int:
+        return int(self._raw.GetConnectorWaitCount(token))
+
+    def get_client_count(self) -> int:
+        return int(self._raw.GetClientCount())
+
+    def has_clients(self) -> bool:
+        return bool(self._raw.HasClients())
+
+    def get_token_client_count(self, token: str) -> int:
+        return int(self._raw.GetTokenClientCount(token))
 
     def wait_ready(self, timeout: Optional[DurationLike] = None) -> None:
         """Wait for the server to be ready.

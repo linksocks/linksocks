@@ -36,11 +36,25 @@ _ffi.cdef(
     char* linksocks_server_add_reverse_token(uint64_t h, const char* optsJSON);
     char* linksocks_server_remove_token(uint64_t h, const char* token, int* out);
     char* linksocks_server_add_connector_token(uint64_t h, const char* connector, const char* reverseToken);
+    char* linksocks_server_add_forward_token_with_rules(uint64_t h, const char* token, const char* rulesJSON);
+    char* linksocks_server_add_connector_token_with_rules(uint64_t h, const char* connector, const char* reverseToken, const char* rulesJSON);
+    char* linksocks_server_connector_wait_count(uint64_t h, const char* token, int* out);
+    char* linksocks_server_client_count(uint64_t h, int* out);
+    char* linksocks_server_has_clients(uint64_t h, int* out);
+    char* linksocks_server_token_client_count(uint64_t h, const char* token, int* out);
 
     char* linksocks_client_new(const char* token, const char* cfgJSON, uint64_t* out);
     char* linksocks_client_wait_ready(uint64_t h, int64_t timeoutNs);
     char* linksocks_client_close(uint64_t h);
     char* linksocks_client_add_connector(uint64_t h, const char* token);
+    char* linksocks_client_remove_connector(uint64_t h, const char* token);
+    char* linksocks_client_data_path(uint64_t h);
+    char* linksocks_client_channel_path(uint64_t h, const char* channelID);
+    char* linksocks_client_server_token(uint64_t h);
+    char* linksocks_client_rtt(uint64_t h, int64_t* out);
+    char* linksocks_client_direct_rtt(uint64_t h, int64_t* out);
+    char* linksocks_client_partners_count(uint64_t h, int* out);
+    char* linksocks_client_remote_protocol_version(uint64_t h, uint8_t* out);
     """
 )
 
@@ -197,6 +211,45 @@ class Server:
         )
         return _take_string(ptr)
 
+    def add_forward_token_with_rules(self, token: str, rules: list[dict[str, Any]]) -> str:
+        payload = json.dumps(rules, separators=(",", ":")).encode("utf-8")
+        ptr = _lib.linksocks_server_add_forward_token_with_rules(self._h, token.encode("utf-8"), payload)
+        return _take_string(ptr)
+
+    def add_connector_token_with_rules(self, connector_token: str, reverse_token: str, rules: list[dict[str, Any]]) -> str:
+        payload = json.dumps(rules, separators=(",", ":")).encode("utf-8")
+        ptr = _lib.linksocks_server_add_connector_token_with_rules(
+            self._h,
+            connector_token.encode("utf-8"),
+            reverse_token.encode("utf-8"),
+            payload,
+        )
+        return _take_string(ptr)
+
+    def connector_wait_count(self, token: str) -> int:
+        out = _ffi.new("int*")
+        err = _lib.linksocks_server_connector_wait_count(self._h, token.encode("utf-8"), out)
+        _raise_if_err(err)
+        return int(out[0])
+
+    def client_count(self) -> int:
+        out = _ffi.new("int*")
+        err = _lib.linksocks_server_client_count(self._h, out)
+        _raise_if_err(err)
+        return int(out[0])
+
+    def has_clients(self) -> bool:
+        out = _ffi.new("int*")
+        err = _lib.linksocks_server_has_clients(self._h, out)
+        _raise_if_err(err)
+        return bool(out[0])
+
+    def token_client_count(self, token: str) -> int:
+        out = _ffi.new("int*")
+        err = _lib.linksocks_server_token_client_count(self._h, token.encode("utf-8"), out)
+        _raise_if_err(err)
+        return int(out[0])
+
 
 class Client:
     def __init__(self, token: str, cfg: dict[str, Any]):
@@ -219,3 +272,40 @@ class Client:
     def add_connector(self, connector_token: str) -> str:
         ptr = _lib.linksocks_client_add_connector(self._h, connector_token.encode("utf-8"))
         return _take_string(ptr)
+
+    def remove_connector(self, connector_token: str) -> None:
+        err = _lib.linksocks_client_remove_connector(self._h, connector_token.encode("utf-8"))
+        _raise_if_err(err)
+
+    def data_path(self) -> str:
+        return _take_string(_lib.linksocks_client_data_path(self._h))
+
+    def channel_path(self, channel_id: str) -> str:
+        return _take_string(_lib.linksocks_client_channel_path(self._h, channel_id.encode("utf-8")))
+
+    def server_token(self) -> str:
+        return _take_string(_lib.linksocks_client_server_token(self._h))
+
+    def rtt(self) -> int:
+        out = _ffi.new("int64_t*")
+        err = _lib.linksocks_client_rtt(self._h, out)
+        _raise_if_err(err)
+        return int(out[0])
+
+    def direct_rtt(self) -> int:
+        out = _ffi.new("int64_t*")
+        err = _lib.linksocks_client_direct_rtt(self._h, out)
+        _raise_if_err(err)
+        return int(out[0])
+
+    def partners_count(self) -> int:
+        out = _ffi.new("int*")
+        err = _lib.linksocks_client_partners_count(self._h, out)
+        _raise_if_err(err)
+        return int(out[0])
+
+    def remote_protocol_version(self) -> int:
+        out = _ffi.new("uint8_t*")
+        err = _lib.linksocks_client_remote_protocol_version(self._h, out)
+        _raise_if_err(err)
+        return int(out[0])

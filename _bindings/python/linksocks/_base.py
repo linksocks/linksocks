@@ -339,6 +339,28 @@ class _FFIRawServer:
     def AddConnectorToken(self, connector: str, reverse_token: str) -> str:
         return self._srv.add_connector_token(connector, reverse_token)
 
+    def AddForwardTokenWithRules(self, token: str, rules: List[AccessRule]) -> str:
+        return self._srv.add_forward_token_with_rules(token, _access_rules_to_dicts(rules))
+
+    def AddConnectorTokenWithRules(self, connector: str, reverse_token: str, rules: List[AccessRule]) -> str:
+        return self._srv.add_connector_token_with_rules(
+            connector,
+            reverse_token,
+            _access_rules_to_dicts(rules),
+        )
+
+    def GetConnectorWaitCount(self, token: str) -> int:
+        return self._srv.connector_wait_count(token)
+
+    def GetClientCount(self) -> int:
+        return self._srv.client_count()
+
+    def HasClients(self) -> bool:
+        return self._srv.has_clients()
+
+    def GetTokenClientCount(self, token: str) -> int:
+        return self._srv.token_client_count(token)
+
 
 class _FFIRawClient:
     def __init__(self, token: str, cfg: Dict[str, Any]):
@@ -355,6 +377,30 @@ class _FFIRawClient:
 
     def AddConnector(self, token: str) -> str:
         return self._cli.add_connector(token)
+
+    def RemoveConnector(self, token: str) -> None:
+        self._cli.remove_connector(token)
+
+    def DataPath(self) -> str:
+        return self._cli.data_path()
+
+    def ChannelPath(self, channel_id: str) -> str:
+        return self._cli.channel_path(channel_id)
+
+    def GetServerToken(self) -> str:
+        return self._cli.server_token()
+
+    def GetRTT(self) -> int:
+        return self._cli.rtt()
+
+    def GetDirectRTT(self) -> int:
+        return self._cli.direct_rtt()
+
+    def GetPartnersCount(self) -> int:
+        return self._cli.partners_count()
+
+    def GetRemoteProtocolVersion(self) -> int:
+        return self._cli.remote_protocol_version()
 
 
 class _FFIContextWithCancel:

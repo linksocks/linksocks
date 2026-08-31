@@ -11,6 +11,30 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
+type clientRelayWriter struct {
+	c *LinkSocksClient
+}
+
+func newClientRelayWriter(c *LinkSocksClient) MessageWriter {
+	return &clientRelayWriter{c: c}
+}
+
+func (w *clientRelayWriter) WriteMessage(msg BaseMessage) error {
+	ws := w.c.getNextWebSocket()
+	if ws == nil {
+		return errors.New("relay writer: no websocket")
+	}
+	return ws.WriteMessage(msg)
+}
+
+func (w *clientRelayWriter) Label() string {
+	ws := w.c.getNextWebSocket()
+	if ws == nil {
+		return "relay"
+	}
+	return ws.Label()
+}
+
 type directQUICChannelWriter struct {
 	label string
 
@@ -34,8 +58,8 @@ func newDirectQUICDialWriter(ctx context.Context, c *LinkSocksClient, p *DirectQ
 	return &directQUICChannelWriter{ctx: ctx, c: c, p: p, label: label}
 }
 
-func newDirectQUICBoundWriter(p *DirectQUICDataPlane, ch *directQUICChannel, label string) *directQUICChannelWriter {
-	return &directQUICChannelWriter{p: p, ch: ch, label: label, ctx: context.Background(), disableReadLoop: true}
+func newDirectQUICBoundWriter(c *LinkSocksClient, p *DirectQUICDataPlane, ch *directQUICChannel, label string) *directQUICChannelWriter {
+	return &directQUICChannelWriter{c: c, p: p, ch: ch, label: label, ctx: context.Background(), disableReadLoop: true}
 }
 
 func (w *directQUICChannelWriter) Label() string {
@@ -45,39 +69,91 @@ func (w *directQUICChannelWriter) Label() string {
 	return w.label
 }
 
+func (w *directQUICChannelWriter) Fallback() MessageWriter {
+	if w.c == nil {
+		return nil
+	}
+	return newClientRelayWriter(w.c)
+}
+
 func (w *directQUICChannelWriter) WriteMessage(msg BaseMessage) error {
 	if msg == nil {
 		return errors.New("direct quic writer: nil message")
 	}
 
-	ch, err := w.getOrOpenChannel(msg)
+	ch, opened, err := w.getOrOpenChannel(msg)
 	if err != nil {
 		return err
+	}
+	if req, ok := msg.(ConnectMessage); ok && w.c != nil {
+		fallback := newClientRelayWriter(w.c)
+		channel, exists := w.c.relay.logicalChannel(req.ChannelID)
+		if !exists {
+			channel = w.c.relay.registerLogicalChannel(req.ChannelID, req.Protocol, w, fallback, channelPathDirect)
+			channel.setRequest(req)
+			channel.markResumeOwner()
+			w.c.directMu.Lock()
+			remoteProtocolVersion := w.c.directRemoteProtocolVersion
+			w.c.directMu.Unlock()
+			channel.enableMigration(protocolSupportsMigration(remoteProtocolVersion))
+			if !req.Resume {
+				w.c.directMu.Lock()
+				peerSessionID := w.c.directRemoteSessionID
+				remoteProtocolVersion := w.c.directRemoteProtocolVersion
+				w.c.directMu.Unlock()
+				if protocolSupportsMigration(remoteProtocolVersion) {
+					if err := fallback.WriteMessage(ChannelBindMessage{ChannelID: req.ChannelID, Protocol: req.Protocol, PeerSessionID: peerSessionID}); err != nil {
+						return err
+					}
+				}
+			}
+		} else {
+			if err := channel.switchToDirect(w); err != nil {
+				return err
+			}
+			if !req.Resume {
+				w.c.directMu.Lock()
+				peerSessionID := w.c.directRemoteSessionID
+				remoteProtocolVersion := w.c.directRemoteProtocolVersion
+				w.c.directMu.Unlock()
+				if protocolSupportsMigration(remoteProtocolVersion) {
+					if err := fallback.WriteMessage(ChannelBindMessage{ChannelID: req.ChannelID, Protocol: req.Protocol, PeerSessionID: peerSessionID}); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		if opened {
+			if req.Resume {
+				return channel.replayPending()
+			}
+			return nil
+		}
 	}
 	return ch.WriteMessage(msg)
 }
 
-func (w *directQUICChannelWriter) getOrOpenChannel(msg BaseMessage) (*directQUICChannel, error) {
+func (w *directQUICChannelWriter) getOrOpenChannel(msg BaseMessage) (*directQUICChannel, bool, error) {
 	if w.p == nil {
-		return nil, errors.New("direct quic writer: nil plane")
+		return nil, false, errors.New("direct quic writer: nil plane")
 	}
 
 	if req, ok := msg.(ConnectMessage); ok {
 		if req.ChannelID == uuid.Nil {
-			return nil, errors.New("direct quic writer: empty channel_id")
+			return nil, false, errors.New("direct quic writer: empty channel_id")
 		}
 
 		w.mu.Lock()
 		if w.ch != nil {
 			ch := w.ch
 			w.mu.Unlock()
-			return ch, nil
+			return ch, false, nil
 		}
 		w.mu.Unlock()
 
 		ch, err := w.p.OpenChannel(context.Background(), req)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 
 		w.mu.Lock()
@@ -89,16 +165,16 @@ func (w *directQUICChannelWriter) getOrOpenChannel(msg BaseMessage) (*directQUIC
 				go w.c.directQUICChannelReadLoop(w.ctx, ch)
 			})
 		}
-		return ch, nil
+		return ch, true, nil
 	}
 
 	w.mu.Lock()
 	ch := w.ch
 	w.mu.Unlock()
 	if ch == nil {
-		return nil, errors.New("direct quic writer: channel not initialized")
+		return nil, false, errors.New("direct quic writer: channel not initialized")
 	}
-	return ch, nil
+	return ch, false, nil
 }
 
 func (c *LinkSocksClient) directQUICChannelReadLoop(ctx context.Context, ch *directQUICChannel) {
@@ -115,14 +191,9 @@ func (c *LinkSocksClient) directQUICChannelReadLoop(ctx context.Context, ch *dir
 		default:
 		}
 
-		readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		msg, err := ch.ReadMessage(readCtx)
-		cancel()
+		msg, err := ch.ReadMessage(ctx)
 		if err != nil {
-			if directQUICIsExpectedReadClose(err) {
-				c.log.Trace().Err(err).Str("label", label).Msg("Direct QUIC channel closed")
-				c.relay.disconnectChannel(channelID)
-				_ = ch.Close()
+			if ctx.Err() != nil {
 				return
 			}
 			c.directMu.Lock()
@@ -134,7 +205,7 @@ func (c *LinkSocksClient) directQUICChannelReadLoop(ctx context.Context, ch *dir
 			c.directMu.Unlock()
 			c.log.Debug().Err(err).Str("label", label).Dur("backoff", readBackoff).Msg("Direct QUIC channel read error")
 			c.directMarkDegraded(time.Now(), readBackoff, err.Error())
-			c.relay.disconnectChannel(channelID)
+			_ = c.handleDirectChannelFailure(channelID, err.Error())
 			_ = ch.Close()
 			return
 		}
@@ -144,12 +215,11 @@ func (c *LinkSocksClient) directQUICChannelReadLoop(ctx context.Context, ch *dir
 
 		switch m := msg.(type) {
 		case DataMessage:
-			if queue, ok := c.relay.messageQueues.Load(m.ChannelID); ok {
-				select {
-				case queue.(chan BaseMessage) <- m:
-				default:
-					c.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Direct QUIC message queue full, dropping data")
-				}
+			c.deliverDataMessage(m)
+
+		case ChannelDataAckMessage:
+			if channel, ok := c.relay.logicalChannel(m.ChannelID); ok {
+				channel.acknowledge(m.Sequence)
 			}
 
 		case ConnectResponseMessage:
@@ -172,8 +242,72 @@ func (c *LinkSocksClient) directQUICChannelReadLoop(ctx context.Context, ch *dir
 			_ = ch.Close()
 			return
 
+		case ChannelMigrateAckMessage:
+			if channel, ok := c.relay.logicalChannel(m.ChannelID); ok && channel.migrationEnabled() && !m.Success {
+				_ = c.handleDirectChannelFailure(m.ChannelID, m.Error)
+			}
+
+		case ChannelMigrateMessage:
+			if channel, ok := c.relay.logicalChannel(m.ChannelID); ok {
+				if !channel.migrationEnabled() {
+					continue
+				}
+				ack := ChannelMigrateAckMessage{ChannelID: m.ChannelID, Success: false, Error: "failed to switch to relay"}
+				if err := channel.switchToRelay(); err == nil {
+					ack.Success = true
+					ack.Error = ""
+				}
+				if writer := channel.currentWriter(); writer != nil {
+					_ = writer.WriteMessage(ack)
+				}
+			}
+
 		default:
 			c.log.Debug().Str("type", msg.GetType()).Str("label", label).Msg("Dropped unexpected direct QUIC message")
+		}
+	}
+}
+
+func (c *LinkSocksClient) handleDirectChannelFailure(channelID uuid.UUID, reason string) error {
+	channel, ok := c.relay.logicalChannel(channelID)
+	if !ok {
+		return nil
+	}
+	if channel.Path() == string(channelPathRelay) {
+		return nil
+	}
+	if err := channel.switchToFallback(reason); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *LinkSocksClient) deliverDataMessage(msg DataMessage) {
+	if channel, ok := c.relay.logicalChannel(msg.ChannelID); ok {
+		if !channel.acceptData(msg) {
+			if channel.isDuplicate(msg.Sequence) {
+				_ = channel.acknowledgeMessage(msg.Sequence)
+			}
+			return
+		}
+		if queue, ok := c.relay.messageQueues.Load(msg.ChannelID); ok {
+			select {
+			case queue.(chan BaseMessage) <- msg:
+			default:
+				c.log.Warn().Str("channel_id", msg.ChannelID.String()).Msg("Direct QUIC message queue full, dropping data")
+				channel.rejectData(msg.Sequence)
+				return
+			}
+		} else {
+			channel.rejectData(msg.Sequence)
+		}
+		return
+	}
+	if queue, ok := c.relay.messageQueues.Load(msg.ChannelID); ok {
+		select {
+		case queue.(chan BaseMessage) <- msg:
+		default:
+			c.log.Warn().Str("channel_id", msg.ChannelID.String()).Msg("Direct QUIC message queue full, dropping data")
 		}
 	}
 }
