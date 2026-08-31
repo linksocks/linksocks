@@ -20,12 +20,10 @@ func hasIPv6Support() bool {
 
 // getFreePort returns a free port number
 func getFreePort() (int, error) {
-	addr, err := net.ResolveTCPAddr("tcp", "localhost:0")
-	if err != nil {
-		return 0, err
-	}
-
-	l, err := net.ListenTCP("tcp", addr)
+	// Bind on IPv4 wildcard to match the address family servers actually use
+	// (0.0.0.0). "localhost" can resolve to ::1, whose port space is disjoint
+	// from the IPv4 one the servers bind to, causing false "free" ports.
+	l, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		return 0, err
 	}

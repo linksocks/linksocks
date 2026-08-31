@@ -13,6 +13,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// maxPortRetries bounds how many times a test server/client rebuilds itself
+// after a transient port conflict (EADDRINUSE).
+const maxPortRetries = 5
+
+// isPortConflict reports whether err is a bind port-already-in-use failure.
+// getFreePort releases its probe socket before the server binds, so a
+// parallel test process can grab the port in that window; rebuild with a
+// fresh port instead of failing.
+func isPortConflict(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "address already in use")
+}
+
 // ProxyTestServer encapsulates the server-side test environment
 type ProxyTestServer struct {
 	Server         *linksocks.LinkSocksServer
@@ -77,63 +89,72 @@ type ProxyTestEnv struct {
 
 // forwardServer creates a WSS server in forward mode
 func forwardServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
-	wsPort, err := getFreePort()
-	require.NoError(t, err)
+	for attempt := 0; attempt < maxPortRetries; attempt++ {
+		wsPort, err := getFreePort()
+		require.NoError(t, err)
 
-	token := ""
+		token := ""
 
-	var serverOpt *linksocks.ServerOption
-	if opt == nil {
-		logger := createPrefixedLogger("SRV0")
-		serverOpt = linksocks.DefaultServerOption().
-			WithWSPort(wsPort).
-			WithLogger(logger)
-	} else {
-		// Set Token
-		token = opt.Token
-
-		// Use provided options or defaults
-		var logger zerolog.Logger
-		prefix := opt.LoggerPrefix
-		if prefix == "" {
-			prefix = "SRV0"
-		}
-
-		if opt.LogLevel != 0 {
-			logger = createPrefixedLoggerWithLevel(prefix, opt.LogLevel)
+		var serverOpt *linksocks.ServerOption
+		if opt == nil {
+			logger := createPrefixedLogger("SRV0")
+			serverOpt = linksocks.DefaultServerOption().
+				WithWSPort(wsPort).
+				WithLogger(logger)
 		} else {
-			logger = createPrefixedLogger(prefix)
-		}
-		serverOpt = linksocks.DefaultServerOption().WithLogger(logger)
+			// Set Token
+			token = opt.Token
 
-		// Set WSPort
-		if opt.WSPort != 0 {
-			wsPort = opt.WSPort
-		}
-		serverOpt.WithWSPort(wsPort)
+			// Use provided options or defaults
+			var logger zerolog.Logger
+			prefix := opt.LoggerPrefix
+			if prefix == "" {
+				prefix = "SRV0"
+			}
 
-		// Set PortPool if provided
-		if opt.PortPool != nil {
-			serverOpt.WithPortPool(opt.PortPool)
-		}
+			if opt.LogLevel != 0 {
+				logger = createPrefixedLoggerWithLevel(prefix, opt.LogLevel)
+			} else {
+				logger = createPrefixedLogger(prefix)
+			}
+			serverOpt = linksocks.DefaultServerOption().WithLogger(logger)
 
-		// Set FastOpen
-		serverOpt.WithFastOpen(opt.FastOpen)
-		serverOpt.WithConnectorWait(opt.ConnectorWait)
+			// Set WSPort
+			if opt.WSPort != 0 {
+				wsPort = opt.WSPort
+			}
+			serverOpt.WithWSPort(wsPort)
+
+			// Set PortPool if provided
+			if opt.PortPool != nil {
+				serverOpt.WithPortPool(opt.PortPool)
+			}
+
+			// Set FastOpen
+			serverOpt.WithFastOpen(opt.FastOpen)
+			serverOpt.WithConnectorWait(opt.ConnectorWait)
+		}
+		server := linksocks.NewLinkSocksServer(serverOpt)
+		token, err = server.AddForwardToken(token)
+		require.NoError(t, err)
+		require.NotEmpty(t, token)
+
+		readyErr := server.WaitReady(context.Background(), 5*time.Second)
+		if readyErr == nil {
+			return &ProxyTestServer{
+				Server: server,
+				WSPort: wsPort,
+				Token:  token,
+				Close:  server.Close,
+			}
+		}
+		server.Close()
+		if !isPortConflict(readyErr) {
+			require.NoError(t, readyErr, "forwardServer: WaitReady failed")
+		}
 	}
-	server := linksocks.NewLinkSocksServer(serverOpt)
-	token, err = server.AddForwardToken(token)
-	require.NoError(t, err)
-	require.NotEmpty(t, token)
-
-	require.NoError(t, server.WaitReady(context.Background(), 5*time.Second))
-
-	return &ProxyTestServer{
-		Server: server,
-		WSPort: wsPort,
-		Token:  token,
-		Close:  server.Close,
-	}
+	require.Fail(t, "forwardServer: failed to bind a free port after %d attempts", maxPortRetries)
+	return nil
 }
 
 // forwardClient creates a WSS client in forward mode
@@ -146,58 +167,61 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		opt.LoggerPrefix = "CLT0"
 	}
 
-	socksPort := opt.SocksPort
-	if socksPort == 0 {
-		var err error
-		socksPort, err = getFreePort()
-		require.NoError(t, err)
-	}
-
 	var logger zerolog.Logger
 	if opt.LogLevel != 0 {
 		logger = createPrefixedLoggerWithLevel(opt.LoggerPrefix, opt.LogLevel)
 	} else {
 		logger = createPrefixedLogger(opt.LoggerPrefix)
 	}
-	clientOpt := linksocks.DefaultClientOption().
-		WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", opt.WSPort)).
-		WithSocksPort(socksPort).
-		WithReconnectDelay(1 * time.Second).
-		WithFastOpen(opt.FastOpen).
-		WithLogger(logger).
-		WithNoEnvProxy(true)
 
-	if opt.DirectMode != "" {
-		clientOpt.WithDirectMode(opt.DirectMode)
-	}
-	if opt.DirectDiscovery != "" {
-		clientOpt.WithDirectDiscovery(opt.DirectDiscovery)
-	}
-	if len(opt.StunServers) > 0 {
-		clientOpt.WithStunServers(opt.StunServers)
-	}
-	if opt.DirectOnlyAction != "" {
-		clientOpt.WithDirectOnlyAction(opt.DirectOnlyAction)
-	}
-
-	if opt.Reconnect {
-		clientOpt.WithReconnect(true)
-	}
-
-	if opt.Threads > 0 {
-		clientOpt.WithThreads(opt.Threads)
-	}
-
-	if opt.SocksUsername != "" {
-		clientOpt.WithSocksUsername(opt.SocksUsername)
-	}
-	if opt.SocksPassword != "" {
-		clientOpt.WithSocksPassword(opt.SocksPassword)
-	}
-
+	socksPort := opt.SocksPort
 	var client *linksocks.LinkSocksClient
 	var readyErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < maxPortRetries; attempt++ {
+		// Pick a fresh port per attempt so a transient EADDRINUSE (a parallel
+		// test process racing getFreePort) retries on a new port instead of the same one.
+		if opt.SocksPort == 0 {
+			var err error
+			socksPort, err = getFreePort()
+			require.NoError(t, err)
+		}
+
+		clientOpt := linksocks.DefaultClientOption().
+			WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", opt.WSPort)).
+			WithSocksPort(socksPort).
+			WithReconnectDelay(1 * time.Second).
+			WithFastOpen(opt.FastOpen).
+			WithLogger(logger).
+			WithNoEnvProxy(true)
+
+		if opt.DirectMode != "" {
+			clientOpt.WithDirectMode(opt.DirectMode)
+		}
+		if opt.DirectDiscovery != "" {
+			clientOpt.WithDirectDiscovery(opt.DirectDiscovery)
+		}
+		if len(opt.StunServers) > 0 {
+			clientOpt.WithStunServers(opt.StunServers)
+		}
+		if opt.DirectOnlyAction != "" {
+			clientOpt.WithDirectOnlyAction(opt.DirectOnlyAction)
+		}
+
+		if opt.Reconnect {
+			clientOpt.WithReconnect(true)
+		}
+
+		if opt.Threads > 0 {
+			clientOpt.WithThreads(opt.Threads)
+		}
+
+		if opt.SocksUsername != "" {
+			clientOpt.WithSocksUsername(opt.SocksUsername)
+		}
+		if opt.SocksPassword != "" {
+			clientOpt.WithSocksPassword(opt.SocksPassword)
+		}
+
 		client = linksocks.NewLinkSocksClient(opt.Token, clientOpt)
 		readyErr = client.WaitReady(context.Background(), 5*time.Second)
 		if readyErr == nil {
@@ -210,8 +234,11 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 			break
 		}
 		client.Close()
+		if !isPortConflict(readyErr) {
+			break
+		}
 	}
-	require.NoError(t, readyErr)
+	require.NoError(t, readyErr, "forwardClient: WaitReady failed")
 
 	return &ProxyTestClient{
 		Client:    client,
@@ -222,96 +249,105 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 
 // reverseServer creates a WSS server in reverse mode
 func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
-	wsPort, err := getFreePort()
-	require.NoError(t, err)
-
 	token := ""
 	connectorToken := ""
 	socksUser := ""
 	socksPassword := ""
 	connectorAutonomy := false
 
-	socksPort, err := getFreePort()
-	require.NoError(t, err)
-
-	var serverOpt *linksocks.ServerOption
-	if opt == nil {
-		logger := createPrefixedLogger("SRV0")
-		serverOpt = linksocks.DefaultServerOption().
-			WithWSPort(wsPort).
-			WithLogger(logger)
-	} else {
-		token = opt.Token
-		socksUser = opt.SocksUser
-		socksPassword = opt.SocksPassword
-		connectorAutonomy = opt.ConnectorAutonomy
-
-		// Use provided options or defaults
-		var logger zerolog.Logger
-		prefix := opt.LoggerPrefix
-		if prefix == "" {
-			prefix = "SRV0"
-		}
-
-		if opt.LogLevel != 0 {
-			logger = createPrefixedLoggerWithLevel(prefix, opt.LogLevel)
-		} else {
-			logger = createPrefixedLogger(prefix)
-		}
-		serverOpt = linksocks.DefaultServerOption().WithLogger(logger)
-
-		// Set WSPort
-		if opt.WSPort != 0 {
-			wsPort = opt.WSPort
-		}
-		serverOpt.WithWSPort(wsPort)
-
-		// Set PortPool if provided
-		if opt.PortPool != nil {
-			serverOpt.WithPortPool(opt.PortPool)
-		}
-
-		// Set SocksPort if provided
-		if opt.SocksPort != 0 {
-			socksPort = opt.SocksPort
-		}
-
-		// Set FastOpen
-		serverOpt.WithFastOpen(opt.FastOpen)
-		serverOpt.WithConnectorWait(opt.ConnectorWait)
-	}
-
-	server := linksocks.NewLinkSocksServer(serverOpt)
-	result, err := server.AddReverseToken(&linksocks.ReverseTokenOptions{
-		Port:                 socksPort,
-		Token:                token,
-		Username:             socksUser,
-		Password:             socksPassword,
-		AllowManageConnector: connectorAutonomy,
-	})
-	if err == nil {
-		token = result.Token
-		socksPort = result.Port
-	}
-	require.NoError(t, err)
-	require.NotZero(t, socksPort)
-
-	if opt != nil && opt.ConnectorToken != "" {
-		connectorToken, err := server.AddConnectorToken(opt.ConnectorToken, token)
+	for attempt := 0; attempt < maxPortRetries; attempt++ {
+		wsPort, err := getFreePort()
 		require.NoError(t, err)
-		require.NotEmpty(t, connectorToken)
-	}
 
-	require.NoError(t, server.WaitReady(context.Background(), 5*time.Second))
+		socksPort, err := getFreePort()
+		require.NoError(t, err)
 
-	return &ProxyTestServer{
-		Server:         server,
-		WSPort:         wsPort,
-		SocksPort:      socksPort,
-		Token:          token,
-		ConnectorToken: connectorToken,
-		Close:          server.Close,
+		var serverOpt *linksocks.ServerOption
+		if opt == nil {
+			logger := createPrefixedLogger("SRV0")
+			serverOpt = linksocks.DefaultServerOption().
+				WithWSPort(wsPort).
+				WithLogger(logger)
+		} else {
+			token = opt.Token
+			socksUser = opt.SocksUser
+			socksPassword = opt.SocksPassword
+			connectorAutonomy = opt.ConnectorAutonomy
+
+			// Use provided options or defaults
+			var logger zerolog.Logger
+			prefix := opt.LoggerPrefix
+			if prefix == "" {
+				prefix = "SRV0"
+			}
+
+			if opt.LogLevel != 0 {
+				logger = createPrefixedLoggerWithLevel(prefix, opt.LogLevel)
+			} else {
+				logger = createPrefixedLogger(prefix)
+			}
+			serverOpt = linksocks.DefaultServerOption().WithLogger(logger)
+
+			// Set WSPort
+			if opt.WSPort != 0 {
+				wsPort = opt.WSPort
+			}
+			serverOpt.WithWSPort(wsPort)
+
+			// Set PortPool if provided
+			if opt.PortPool != nil {
+				serverOpt.WithPortPool(opt.PortPool)
+			}
+
+			// Set SocksPort if provided
+			if opt.SocksPort != 0 {
+				socksPort = opt.SocksPort
+			}
+
+			// Set FastOpen
+			serverOpt.WithFastOpen(opt.FastOpen)
+			serverOpt.WithConnectorWait(opt.ConnectorWait)
+		}
+
+		server := linksocks.NewLinkSocksServer(serverOpt)
+		result, err := server.AddReverseToken(&linksocks.ReverseTokenOptions{
+			Port:                 socksPort,
+			Token:                token,
+			Username:             socksUser,
+			Password:             socksPassword,
+			AllowManageConnector: connectorAutonomy,
+		})
+		if err == nil {
+			token = result.Token
+			socksPort = result.Port
+		}
+		require.NoError(t, err)
+		require.NotZero(t, socksPort)
+
+		if opt != nil && opt.ConnectorToken != "" {
+			connectorToken, err := server.AddConnectorToken(opt.ConnectorToken, token)
+			require.NoError(t, err)
+			require.NotEmpty(t, connectorToken)
+		}
+
+		readyErr := server.WaitReady(context.Background(), 5*time.Second)
+		if readyErr == nil {
+			return &ProxyTestServer{
+				Server:         server,
+				WSPort:         wsPort,
+				SocksPort:      socksPort,
+				Token:          token,
+				ConnectorToken: connectorToken,
+				Close:          server.Close,
+			}
+		}
+		server.Close()
+		if !isPortConflict(readyErr) {
+			require.NoError(t, readyErr, "reverseServer: WaitReady failed")
+		}
 	}
+	require.Fail(t, "reverseServer: failed to bind a free port after %d attempts", maxPortRetries)
+	return nil
 }
 
 // reverseClient creates a WSS client in reverse mode
