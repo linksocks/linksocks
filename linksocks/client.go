@@ -865,7 +865,6 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 
 		c.directMu.Lock()
 		ready := c.directReady
-		degraded := !c.directDegradedUntil.IsZero() && time.Now().Before(c.directDegradedUntil)
 		pairSet := c.directPairSessionSet
 		pairSession := c.directPairSessionID
 		localSession := c.directLocalSessionID
@@ -893,7 +892,11 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 			continue
 		}
 
-		if degraded || !pairSet || !pairKeyReady || pairSession == uuid.Nil || len(pairKey) == 0 {
+		// The degraded flag must not gate reconnection attempts: a peer-reported
+		// degraded status carries a 30s cooldown that is refreshed on every
+		// failed connect, which would permanently stall this side while the
+		// peer waits for us to listen. Backoff below is the real anti-flap.
+		if !pairSet || !pairKeyReady || pairSession == uuid.Nil || len(pairKey) == 0 {
 			time.Sleep(quicBackoff)
 			quicBackoff = expBackoff(quicBackoff, quicBackoffFactor, quicBackoffMax)
 			continue
