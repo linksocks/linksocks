@@ -18,6 +18,7 @@ import (
 
 const (
 	udpTestAttempts = 10 // Number of UDP test attempts
+	udpMaxRetries   = 2  // Additional send attempts per packet before giving up
 )
 
 // ProxyConfig contains proxy configuration options
@@ -211,62 +212,66 @@ func testUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConfig
 			t.Fatal(err)
 		}
 
+		// Create SOCKS5 UDP header
+		var header []byte
+		ip := net.ParseIP(host)
+		if ip == nil {
+			// Domain name
+			header = []byte{0, 0, 0, 0x03, byte(len(host))}
+			header = append(header, []byte(host)...)
+		} else if ip4 := ip.To4(); ip4 != nil {
+			// IPv4
+			header = []byte{0, 0, 0, 0x01}
+			header = append(header, ip4...)
+		} else {
+			// IPv6
+			header = []byte{0, 0, 0, 0x04}
+			header = append(header, ip.To16()...)
+		}
+		header = append(header, byte(port>>8), byte(port))
+
+		// Send data with UDP header
+		sendData := append(header, testData...)
+
 		// Test UDP communication
 		for i := 0; i < udpTestAttempts; i++ {
-			conn.SetDeadline(time.Now().Add(5 * time.Second))
+			for attempt := 0; attempt <= udpMaxRetries; attempt++ {
+				conn.SetDeadline(time.Now().Add(5 * time.Second))
 
-			// Create SOCKS5 UDP header
-			var header []byte
-			ip := net.ParseIP(host)
-			if ip == nil {
-				// Domain name
-				header = []byte{0, 0, 0, 0x03, byte(len(host))}
-				header = append(header, []byte(host)...)
-			} else if ip4 := ip.To4(); ip4 != nil {
-				// IPv4
-				header = []byte{0, 0, 0, 0x01}
-				header = append(header, ip4...)
-			} else {
-				// IPv6
-				header = []byte{0, 0, 0, 0x04}
-				header = append(header, ip.To16()...)
-			}
-			header = append(header, byte(port>>8), byte(port))
-
-			// Send data with UDP header
-			sendData := append(header, testData...)
-			_, err = conn.Write(sendData)
-			if err != nil {
-				TestLogger.Error().Err(err).Msg("UDP test failed")
-				continue
-			}
-			// TestLogger.Info().Int("bytes", len(sendData)).Msg("UDP tester sent")
-
-			// Read response with a larger buffer to accommodate any header format
-			buf := make([]byte, 1024) // Large enough for any SOCKS5 UDP header + data
-			n, err := conn.Read(buf)
-			if err != nil {
-				TestLogger.Error().Err(err).Msg("UDP test failed")
-				continue
-			}
-			// TestLogger.Info().Int("bytes", n).Msg("UDP tester received")
-
-			// Find the actual data after the UDP header
-			var responseData []byte
-			if n > 10 { // Minimum SOCKS5 UDP header size is 10 bytes
-				switch buf[3] { // Address type
-				case 0x01: // IPv4
-					responseData = buf[10:n]
-				case 0x03: // Domain
-					domainLen := int(buf[4])
-					responseData = buf[5+domainLen+2 : n]
-				case 0x04: // IPv6
-					responseData = buf[22:n]
+				_, err = conn.Write(sendData)
+				if err != nil {
+					TestLogger.Error().Err(err).Msg("UDP test failed")
+					continue
 				}
-			}
+				// TestLogger.Info().Int("bytes", len(sendData)).Msg("UDP tester sent")
 
-			if responseData != nil && bytes.Equal(responseData, testData) {
-				successCount++
+				// Read response with a larger buffer to accommodate any header format
+				buf := make([]byte, 1024) // Large enough for any SOCKS5 UDP header + data
+				n, err := conn.Read(buf)
+				if err != nil {
+					TestLogger.Error().Err(err).Msg("UDP test failed")
+					continue
+				}
+				// TestLogger.Info().Int("bytes", n).Msg("UDP tester received")
+
+				// Find the actual data after the UDP header
+				var responseData []byte
+				if n > 10 { // Minimum SOCKS5 UDP header size is 10 bytes
+					switch buf[3] { // Address type
+					case 0x01: // IPv4
+						responseData = buf[10:n]
+					case 0x03: // Domain
+						domainLen := int(buf[4])
+						responseData = buf[5+domainLen+2 : n]
+					case 0x04: // IPv6
+						responseData = buf[22:n]
+					}
+				}
+
+				if responseData != nil && bytes.Equal(responseData, testData) {
+					successCount++
+				}
+				break // Received a response (or it arrived during retry); move to next packet
 			}
 		}
 	} else {
@@ -277,24 +282,27 @@ func testUDPConnection(t *testing.T, serverAddr string, proxyConfig *ProxyConfig
 		defer conn.Close()
 
 		for i := 0; i < udpTestAttempts; i++ {
-			conn.SetDeadline(time.Now().Add(5 * time.Second))
-			_, err = conn.Write(testData)
-			if err != nil {
-				TestLogger.Error().Err(err).Msg("UDP test failed")
-				continue
-			}
-			// TestLogger.Info().Int("data", len(testData)).Msg("UDP tester sent")
+			for attempt := 0; attempt <= udpMaxRetries; attempt++ {
+				conn.SetDeadline(time.Now().Add(5 * time.Second))
+				_, err = conn.Write(testData)
+				if err != nil {
+					TestLogger.Error().Err(err).Msg("UDP test failed")
+					continue
+				}
+				// TestLogger.Info().Int("data", len(testData)).Msg("UDP tester sent")
 
-			buf := make([]byte, len(testData))
-			n, err := conn.Read(buf)
-			if err != nil {
-				TestLogger.Error().Err(err).Msg("UDP test failed")
-				continue
-			}
-			// TestLogger.Info().Int("bytes", n).Msg("UDP tester received")
+				buf := make([]byte, len(testData))
+				n, err := conn.Read(buf)
+				if err != nil {
+					TestLogger.Error().Err(err).Msg("UDP test failed")
+					continue
+				}
+				// TestLogger.Info().Int("bytes", n).Msg("UDP tester received")
 
-			if n == len(testData) && string(buf[:n]) == string(testData) {
-				successCount++
+				if n == len(testData) && string(buf[:n]) == string(testData) {
+					successCount++
+				}
+				break // Received a response (or it arrived during retry); move to next packet
 			}
 		}
 	}
