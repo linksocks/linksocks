@@ -2845,6 +2845,7 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 				if c.reverse {
 					msgChan := make(chan BaseMessage, 1000)
 					c.relay.messageQueues.Store(m.ChannelID, msgChan)
+					c.relay.flushOrphanData(m.ChannelID, msgChan)
 					go func() {
 						if err := c.relay.HandleNetworkConnection(ctx, ws, m); err != nil && !errors.Is(err, context.Canceled) {
 							c.log.Debug().Err(err).Msg("Error handling network connection")

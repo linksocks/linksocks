@@ -127,25 +127,11 @@ type waitingSocket struct {
 	cancelTimer *time.Timer
 }
 
-// connectorPendingQueueSize bounds the per-channel buffer for data that
-// arrives before the channel is bound (fast-open pipelining, out-of-band
-// signaling, etc.).
-const connectorPendingQueueSize = 1000
-
-// connectorPendingTTL bounds how long data for an unbound channel is
-// retained before it is dropped.
-const connectorPendingTTL = 30 * time.Second
-
-type pendingConnectorData struct {
-	queue chan BaseMessage
-	timer *time.Timer
-}
-
 type connectorCache struct {
-	channelIDToClient    map[uuid.UUID]*WSConn               // Maps channel_id to reverse client WebSocket connection
-	channelIDToConnector map[uuid.UUID]*WSConn               // Maps channel_id to connector WebSocket connection
-	pendingQueues        map[uuid.UUID]*pendingConnectorData // Data for channels that are not bound yet
-	tokenCache           map[string][]uuid.UUID              // Maps token to list of channel_ids
+	channelIDToClient    map[uuid.UUID]*WSConn     // Maps channel_id to reverse client WebSocket connection
+	channelIDToConnector map[uuid.UUID]*WSConn     // Maps channel_id to connector WebSocket connection
+	orphanQueues         map[uuid.UUID]*orphanData // Data for channels that are not bound yet
+	tokenCache           map[string][]uuid.UUID    // Maps token to list of channel_ids
 	mu                   sync.RWMutex
 }
 
@@ -154,7 +140,7 @@ func newConnectorCache() *connectorCache {
 	return &connectorCache{
 		channelIDToClient:    make(map[uuid.UUID]*WSConn),
 		channelIDToConnector: make(map[uuid.UUID]*WSConn),
-		pendingQueues:        make(map[uuid.UUID]*pendingConnectorData),
+		orphanQueues:         make(map[uuid.UUID]*orphanData),
 		tokenCache:           make(map[string][]uuid.UUID),
 	}
 }
@@ -959,7 +945,7 @@ func (s *LinkSocksServer) RemoveToken(token string) bool {
 			for _, id := range ids {
 				delete(s.connCache.channelIDToClient, id)
 				delete(s.connCache.channelIDToConnector, id)
-				delete(s.connCache.pendingQueues, id)
+				delete(s.connCache.orphanQueues, id)
 			}
 			delete(s.connCache.tokenCache, token)
 		}
@@ -993,7 +979,7 @@ func (s *LinkSocksServer) RemoveToken(token string) bool {
 					for _, id := range ids {
 						delete(s.connCache.channelIDToClient, id)
 						delete(s.connCache.channelIDToConnector, id)
-						delete(s.connCache.pendingQueues, id)
+						delete(s.connCache.orphanQueues, id)
 					}
 					delete(s.connCache.tokenCache, connectorToken)
 				}
@@ -1851,7 +1837,7 @@ func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WS
 				// message order), and the provider lookup below runs in a
 				// goroutine. Reserve the buffer synchronously so no data is
 				// dropped while the mapping is unpublished.
-				s.reserveConnectorChannel(m.ChannelID)
+				s.reserveOrphanQueue(m.ChannelID)
 
 				go func(m ConnectMessage) {
 					defer s.cleanupConnectorChannel(m.ChannelID)
@@ -1896,11 +1882,11 @@ func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WS
 						s.connCache.tokenCache[reverseToken] = []uuid.UUID{m.ChannelID}
 					}
 					var queue chan BaseMessage
-					if pd, ok := s.connCache.pendingQueues[m.ChannelID]; ok {
-						if pd.timer != nil {
-							pd.timer.Stop()
+					if od, ok := s.connCache.orphanQueues[m.ChannelID]; ok {
+						if od.timer != nil {
+							od.timer.Stop()
 						}
-						queue = pd.queue
+						queue = od.queue
 					}
 					s.connCache.mu.Unlock()
 
@@ -2145,16 +2131,16 @@ func (s *LinkSocksServer) notifyTokenAvailabilityLocked(token string) {
 // queue under a send; they are non-blocking and never stall the dispatcher.
 func (s *LinkSocksServer) routeConnectorData(m DataMessage, src *WSConn) {
 	s.connCache.mu.RLock()
-	pd, queued := s.connCache.pendingQueues[m.ChannelID]
+	od, queued := s.connCache.orphanQueues[m.ChannelID]
 	targetWS := s.connCache.channelIDToClient[m.ChannelID]
 	if queued {
 		select {
-		case pd.queue <- m:
+		case od.queue <- m:
 			s.connCache.mu.RUnlock()
 			return
 		default:
 			s.connCache.mu.RUnlock()
-			s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Pending data queue full, dropping message")
+			s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Orphan data queue full, dropping message")
 			return
 		}
 	}
@@ -2166,49 +2152,49 @@ func (s *LinkSocksServer) routeConnectorData(m DataMessage, src *WSConn) {
 		}
 		return
 	}
-	s.bufferChannelData(m)
+	s.bufferOrphanData(m)
 }
 
-// bufferChannelData retains data for a channel that is not bound yet.
-// There are no preconditions: any unknown channel's data is held until its
+// bufferOrphanData retains data for a channel that is not bound yet.
+// There are no preconditions: data for any unknown channel is held until its
 // ConnectMessage binds the channel (then drained in order) or until
-// connectorPendingTTL expires and the data is dropped.
-func (s *LinkSocksServer) bufferChannelData(m DataMessage) {
+// orphanDataTTL expires and the data is dropped.
+func (s *LinkSocksServer) bufferOrphanData(m DataMessage) {
 	s.connCache.mu.Lock()
-	pd, ok := s.connCache.pendingQueues[m.ChannelID]
+	od, ok := s.connCache.orphanQueues[m.ChannelID]
 	if !ok {
-		pd = &pendingConnectorData{queue: make(chan BaseMessage, connectorPendingQueueSize)}
-		s.connCache.pendingQueues[m.ChannelID] = pd
-		pd.timer = time.AfterFunc(connectorPendingTTL, func() { s.expirePendingConnectorData(m.ChannelID) })
+		od = &orphanData{queue: make(chan BaseMessage, orphanDataQueueSize)}
+		s.connCache.orphanQueues[m.ChannelID] = od
+		od.timer = time.AfterFunc(orphanDataTTL, func() { s.expireOrphanData(m.ChannelID) })
 	}
 	select {
-	case pd.queue <- m:
+	case od.queue <- m:
 		s.connCache.mu.Unlock()
 		s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Buffered data for unbound channel")
 	default:
 		s.connCache.mu.Unlock()
-		s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Pending data queue full, dropping message")
+		s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Orphan data queue full, dropping message")
 	}
 }
 
-// reserveConnectorChannel ensures a per-channel buffer exists before the
-// async provider lookup publishes the channel mapping, so data for the
-// channel is never dropped in between.
-func (s *LinkSocksServer) reserveConnectorChannel(channelID uuid.UUID) {
+// reserveOrphanQueue ensures a per-channel buffer exists before the async
+// provider lookup publishes the channel mapping, so data for the channel is
+// never dropped in between.
+func (s *LinkSocksServer) reserveOrphanQueue(channelID uuid.UUID) {
 	s.connCache.mu.Lock()
-	if _, ok := s.connCache.pendingQueues[channelID]; !ok {
-		pd := &pendingConnectorData{queue: make(chan BaseMessage, connectorPendingQueueSize)}
-		s.connCache.pendingQueues[channelID] = pd
-		pd.timer = time.AfterFunc(connectorPendingTTL, func() { s.expirePendingConnectorData(channelID) })
+	if _, ok := s.connCache.orphanQueues[channelID]; !ok {
+		od := &orphanData{queue: make(chan BaseMessage, orphanDataQueueSize)}
+		s.connCache.orphanQueues[channelID] = od
+		od.timer = time.AfterFunc(orphanDataTTL, func() { s.expireOrphanData(channelID) })
 	}
 	s.connCache.mu.Unlock()
 }
 
-// expirePendingConnectorData drops buffered data whose channel never became
-// bound within connectorPendingTTL.
-func (s *LinkSocksServer) expirePendingConnectorData(channelID uuid.UUID) {
+// expireOrphanData drops buffered data whose channel never became bound
+// within orphanDataTTL.
+func (s *LinkSocksServer) expireOrphanData(channelID uuid.UUID) {
 	s.connCache.mu.Lock()
-	pd, ok := s.connCache.pendingQueues[channelID]
+	od, ok := s.connCache.orphanQueues[channelID]
 	if !ok {
 		s.connCache.mu.Unlock()
 		return
@@ -2217,27 +2203,27 @@ func (s *LinkSocksServer) expirePendingConnectorData(channelID uuid.UUID) {
 		s.connCache.mu.Unlock()
 		return
 	}
-	delete(s.connCache.pendingQueues, channelID)
-	close(pd.queue)
+	delete(s.connCache.orphanQueues, channelID)
+	close(od.queue)
 	s.connCache.mu.Unlock()
 	s.log.Warn().Str("channel_id", channelID.String()).Msg("Dropped buffered data for channel that never connected")
 }
 
 // cleanupConnectorChannel removes all server-side state for a connector
-// channel and closes its pending queue, waking a goroutine draining it.
+// channel and closes its orphan queue, waking a goroutine draining it.
 // Safe to call more than once; must not be called while holding connCache.mu.
 func (s *LinkSocksServer) cleanupConnectorChannel(channelID uuid.UUID) {
 	s.connCache.mu.Lock()
 	delete(s.connCache.channelIDToClient, channelID)
 	delete(s.connCache.channelIDToConnector, channelID)
-	if pd, ok := s.connCache.pendingQueues[channelID]; ok {
+	if od, ok := s.connCache.orphanQueues[channelID]; ok {
 		// Closing the queue is safe: buffered sends hold the cache lock, so
 		// a concurrent sender cannot write to a closed channel.
-		if pd.timer != nil {
-			pd.timer.Stop()
+		if od.timer != nil {
+			od.timer.Stop()
 		}
-		delete(s.connCache.pendingQueues, channelID)
-		close(pd.queue)
+		delete(s.connCache.orphanQueues, channelID)
+		close(od.queue)
 	}
 	s.connCache.mu.Unlock()
 }

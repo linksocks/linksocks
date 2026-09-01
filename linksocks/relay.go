@@ -266,6 +266,23 @@ func (r *Relay) checkRule(ac *AccessControl, host string, port int) error {
 	return fmt.Errorf("destination %s:%d blocked by access control", host, port)
 }
 
+// orphanDataQueueSize bounds the per-channel buffer for data that arrives
+// before the channel is bound.
+const orphanDataQueueSize = 1000
+
+// orphanDataTTL bounds how long data for an unbound channel is retained
+// before it is dropped.
+const orphanDataTTL = 30 * time.Second
+
+// orphanData is data that arrived for a channel that is not bound yet.
+// Binding is asynchronous, so data may legitimately arrive first; once the
+// channel's message queue exists the buffer is drained in order. Data for a
+// channel that never binds expires after orphanDataTTL.
+type orphanData struct {
+	queue chan BaseMessage
+	timer *time.Timer
+}
+
 // Relay handles stream transport between SOCKS5 and WebSocket
 type Relay struct {
 	log                  zerolog.Logger
@@ -280,6 +297,11 @@ type Relay struct {
 	connectionSuccessMap sync.Map
 	bufferPool           sync.Pool      // Buffer pool for reusing byte slices
 	cleanupQueue         chan uuid.UUID // Channel for delayed cleanup tasks
+
+	// orphanMu guards orphanData; buffered sends hold it, and expiry closes
+	// queues under it, so a queue is never closed under a send.
+	orphanMu   sync.Mutex
+	orphanData map[uuid.UUID]*orphanData
 
 	// Runtime-updatable server-wide rules. When set via SetEntryAccessControl /
 	// SetDialAccessControl they override the option values; nil falls back to
@@ -309,6 +331,73 @@ func (r *Relay) logicalChannel(channelID uuid.UUID) (*logicalChannel, bool) {
 	return channel, ok
 }
 
+// bufferOrphanData retains data for a channel that is not bound yet. There
+// are no preconditions: data for any unbound channel is held until its
+// ConnectMessage binds the channel (then drained in order via
+// flushOrphanData) or until orphanDataTTL expires.
+func (r *Relay) bufferOrphanData(m DataMessage) {
+	r.orphanMu.Lock()
+	od, ok := r.orphanData[m.ChannelID]
+	if !ok {
+		od = &orphanData{queue: make(chan BaseMessage, orphanDataQueueSize)}
+		r.orphanData[m.ChannelID] = od
+		od.timer = time.AfterFunc(orphanDataTTL, func() { r.expireOrphanData(m.ChannelID) })
+	}
+	select {
+	case od.queue <- m:
+		r.orphanMu.Unlock()
+		r.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Buffered data for unbound channel")
+	default:
+		r.orphanMu.Unlock()
+		r.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Orphan data queue full, dropping message")
+	}
+}
+
+// flushOrphanData moves buffered data into the channel's message queue in
+// order. Called once when the channel binds; takes the buffer under the lock
+// so expiry can never close it mid-drain.
+func (r *Relay) flushOrphanData(channelID uuid.UUID, msgChan chan BaseMessage) {
+	r.orphanMu.Lock()
+	od, ok := r.orphanData[channelID]
+	if !ok {
+		r.orphanMu.Unlock()
+		return
+	}
+	if od.timer != nil {
+		od.timer.Stop()
+	}
+	delete(r.orphanData, channelID)
+	r.orphanMu.Unlock()
+	for {
+		select {
+		case dm := <-od.queue:
+			select {
+			case msgChan <- dm:
+			default:
+				r.log.Warn().Str("channel_id", channelID.String()).Msg("Message queue full, dropping buffered data")
+				return
+			}
+		default:
+			return
+		}
+	}
+}
+
+// expireOrphanData drops buffered data whose channel never became bound
+// within orphanDataTTL.
+func (r *Relay) expireOrphanData(channelID uuid.UUID) {
+	r.orphanMu.Lock()
+	od, ok := r.orphanData[channelID]
+	if !ok {
+		r.orphanMu.Unlock()
+		return
+	}
+	delete(r.orphanData, channelID)
+	close(od.queue)
+	r.orphanMu.Unlock()
+	r.log.Warn().Str("channel_id", channelID.String()).Msg("Dropped buffered data for channel that never connected")
+}
+
 func (r *Relay) switchLogicalChannel(channelID uuid.UUID, writer MessageWriter, path channelPath) error {
 	channel, ok := r.logicalChannel(channelID)
 	if !ok {
@@ -336,6 +425,7 @@ func NewRelay(logger zerolog.Logger, option *RelayOption) *Relay {
 		option:       option,
 		done:         make(chan struct{}),
 		cleanupQueue: make(chan uuid.UUID, 1000),
+		orphanData:   make(map[uuid.UUID]*orphanData),
 		bufferPool: sync.Pool{
 			New: func() interface{} {
 				b := make([]byte, option.BufferSize)
@@ -984,6 +1074,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws MessageWriter, socksC
 	case 0x01: // CONNECT
 		channelQueue := make(chan BaseMessage, 1000)
 		r.messageQueues.Store(channelID, channelQueue)
+		r.flushOrphanData(channelID, channelQueue)
 		defer r.disconnectChannel(channelID)
 
 		if err := r.checkEntryAccess(ctx, targetAddr, int(targetPort)); err != nil {
@@ -1111,6 +1202,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws MessageWriter, socksC
 		// Create temporary queue for connection response
 		connectQueue := make(chan BaseMessage, 1000)
 		r.messageQueues.Store(channelID, connectQueue)
+		r.flushOrphanData(channelID, connectQueue)
 		defer r.disconnectChannel(channelID)
 
 		// Send UDP associate request to server

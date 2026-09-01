@@ -309,7 +309,11 @@ func (c *LinkSocksClient) deliverDataMessage(msg DataMessage) {
 		default:
 			c.log.Warn().Str("channel_id", msg.ChannelID.String()).Msg("Direct QUIC message queue full, dropping data")
 		}
+		return
 	}
+	// Channel not bound yet: hold the data until the channel binds, like the
+	// relay-side orphan buffer, instead of dropping it.
+	c.relay.bufferOrphanData(msg)
 }
 
 func directQUICIsExpectedReadClose(err error) bool {

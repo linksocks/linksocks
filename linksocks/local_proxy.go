@@ -384,6 +384,7 @@ func (r *Relay) handleHTTPConnect(ctx context.Context, ws MessageWriter, conn *b
 
 	channelQueue := make(chan BaseMessage, 1000)
 	r.messageQueues.Store(channelID, channelQueue)
+	r.flushOrphanData(channelID, channelQueue)
 	defer r.disconnectChannel(channelID)
 
 	connectRequest := ConnectMessage{
@@ -455,6 +456,7 @@ func (r *Relay) handleHTTPAbsoluteRequest(ctx context.Context, ws MessageWriter,
 
 	channelQueue := make(chan BaseMessage, 1000)
 	r.messageQueues.Store(channelID, channelQueue)
+	r.flushOrphanData(channelID, channelQueue)
 	defer r.disconnectChannel(channelID)
 
 	connectRequest := ConnectMessage{
