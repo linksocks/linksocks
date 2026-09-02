@@ -26,6 +26,10 @@ const (
 	DefaultConnectTimeout   = 10 * time.Second
 	DefaultMinBatchWaitTime = 20 * time.Millisecond
 	DefaultMaxBatchWaitTime = 500 * time.Millisecond
+	// DefaultTransportGrace is how long an established channel is kept alive
+	// while its WebSocket link is down, so it can resume after a reconnect.
+	// Zero disables channel survival (channels die with their link).
+	DefaultTransportGrace = 30 * time.Second
 	// Default threshold in bytes/sec for increasing batch delay
 	DefaultHighSpeedThreshold = 256 * 1024
 	// Default threshold in bytes/sec for reverting to immediate send
@@ -50,6 +54,9 @@ type RelayOption struct {
 	BufferSize     int
 	ChannelTimeout time.Duration
 	ConnectTimeout time.Duration
+	// TransportGrace is how long an established channel survives a broken
+	// WebSocket link before being torn down. Zero disables survival.
+	TransportGrace time.Duration
 	// FastOpen controls whether to wait for connect success response
 	// When false, assumes connection success immediately
 	FastOpen bool
@@ -87,6 +94,7 @@ func NewDefaultRelayOption() *RelayOption {
 		BufferSize:            DefaultBufferSize,
 		ChannelTimeout:        DefaultChannelTimeout,
 		ConnectTimeout:        DefaultConnectTimeout,
+		TransportGrace:        DefaultTransportGrace,
 		FastOpen:              false,
 		EnableDynamicBatching: true,
 		MinBatchWaitTime:      DefaultMinBatchWaitTime,
@@ -106,6 +114,13 @@ func (o *RelayOption) WithBufferSize(size int) *RelayOption {
 // WithChannelTimeout sets the channel timeout for the relay
 func (o *RelayOption) WithChannelTimeout(timeout time.Duration) *RelayOption {
 	o.ChannelTimeout = timeout
+	return o
+}
+
+// WithTransportGrace sets how long an established channel survives a broken
+// WebSocket link before being torn down. Zero disables survival.
+func (o *RelayOption) WithTransportGrace(grace time.Duration) *RelayOption {
+	o.TransportGrace = grace
 	return o
 }
 
@@ -310,6 +325,46 @@ type Relay struct {
 	dialAC  atomic.Pointer[AccessControl]
 }
 
+// transportDownError marks a write failure caused by the transport link
+// (WebSocket) itself being down. Such failures are recoverable within the
+// channel's grace window, unlike failures caused by the channel being closed.
+type transportDownError struct {
+	cause error
+}
+
+func (e *transportDownError) Error() string { return e.cause.Error() }
+func (e *transportDownError) Unwrap() error { return e.cause }
+
+func isTransportDown(err error) bool {
+	var e *transportDownError
+	return errors.As(err, &e)
+}
+
+// writeWithTransportGrace writes to the channel, retrying while the link is
+// down until the channel's transport grace expires or ctx is cancelled. It
+// returns the last write error once the channel must be torn down.
+func (r *Relay) writeWithTransportGrace(ctx context.Context, ch *logicalChannel, msg BaseMessage) error {
+	for {
+		err := ch.WriteMessage(msg)
+		if err == nil {
+			ch.resume()
+			return nil
+		}
+		if !isTransportDown(err) || r.option.TransportGrace <= 0 {
+			return err
+		}
+		if !ch.suspend(r.option.TransportGrace) {
+			r.log.Warn().Str("channel_id", ch.id.String()).Msg("Transport grace expired, closing channel")
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
 func (r *Relay) registerLogicalChannel(channelID uuid.UUID, protocol string, writer MessageWriter, fallback MessageWriter, path channelPath) *logicalChannel {
 	if provider, ok := writer.(fallbackWriterProvider); ok {
 		fallback = provider.Fallback()
@@ -505,12 +560,14 @@ func (r *Relay) updateActivityTime(channelID uuid.UUID) {
 // HandleNetworkConnection handles network connection based on protocol type
 func (r *Relay) HandleNetworkConnection(ctx context.Context, ws MessageWriter, request ConnectMessage) error {
 	if request.Resume {
-		if channel, ok := r.logicalChannel(request.ChannelID); ok {
-			if err := channel.Switch(ws, channelPathDirect); err != nil {
-				return err
-			}
-			return nil
+		channel, ok := r.logicalChannel(request.ChannelID)
+		if !ok {
+			return fmt.Errorf("resume requested for unknown channel %s", request.ChannelID)
 		}
+		if err := channel.Switch(ws, channelPathRelay); err != nil {
+			return err
+		}
+		return nil
 	}
 	channel, ok := r.logicalChannel(request.ChannelID)
 	if !ok {
@@ -2003,6 +2060,43 @@ func (r *Relay) doCleanup(channelID uuid.UUID) {
 	r.connectionSuccessMap.Delete(channelID)
 	r.lastActivity.Delete(channelID)
 	r.log.Trace().Str("channel_id", channelID.String()).Msg("Disconnected channel")
+}
+
+// scheduleChannelExpiry tears down channels still bound to a departed link
+// once the transport grace window expires, unless they were switched onto a
+// live link in the meantime. This covers idle channels that have no traffic
+// to trigger the write-retry teardown path (writeWithTransportGrace).
+func (r *Relay) scheduleChannelExpiry(ws MessageWriter, grace time.Duration) {
+	if ws == nil || grace <= 0 {
+		return
+	}
+	var ids []uuid.UUID
+	r.logicalChannels.Range(func(key, value any) bool {
+		if value.(*logicalChannel).currentWriter() == ws {
+			ids = append(ids, key.(uuid.UUID))
+		}
+		return true
+	})
+	for _, id := range ids {
+		id := id
+		time.AfterFunc(grace, func() {
+			ch, ok := r.logicalChannel(id)
+			if !ok {
+				return
+			}
+			if ch.currentWriter() != ws {
+				// Rebound onto a live link; no longer pending expiry.
+				return
+			}
+			// Try to notify the peer before closing so it tears the channel
+			// down promptly; this fails silently while the link is down.
+			disc := DisconnectMessage{ChannelID: id, Error: "transport link not restored"}
+			r.logMessage(disc, "send", ch.Label())
+			_ = ch.WriteMessage(disc)
+			r.disconnectChannel(id)
+			r.log.Warn().Str("channel_id", id.String()).Msg("Channel expired after transport grace")
+		})
+	}
 }
 
 // SetConnectionSuccess sets the connection success status for a channel

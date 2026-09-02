@@ -417,8 +417,11 @@ type ClientOption struct {
 	BufferSize        int
 	ChannelTimeout    time.Duration
 	ConnectTimeout    time.Duration
-	Threads           int
-	FastOpen          bool
+	// TransportGrace is how long established channels survive a broken
+	// WebSocket link before being torn down. Zero disables survival.
+	TransportGrace time.Duration
+	Threads        int
+	FastOpen       bool
 	UpstreamProxy     string
 	UpstreamUsername  string
 	UpstreamPassword  string
@@ -462,6 +465,7 @@ func DefaultClientOption() *ClientOption {
 		BufferSize:       DefaultBufferSize,
 		ChannelTimeout:   DefaultChannelTimeout,
 		ConnectTimeout:   DefaultConnectTimeout,
+		TransportGrace:   DefaultTransportGrace,
 		Threads:          1,
 		FastOpen:         false,
 		UpstreamProxy:    "",
@@ -629,6 +633,13 @@ func (o *ClientOption) WithConnectTimeout(timeout time.Duration) *ClientOption {
 	return o
 }
 
+// WithTransportGrace sets how long established channels survive a broken
+// WebSocket link before being torn down. Zero disables survival.
+func (o *ClientOption) WithTransportGrace(grace time.Duration) *ClientOption {
+	o.TransportGrace = grace
+	return o
+}
+
 // WithThreads sets the number of concurrent WebSocket connections
 func (o *ClientOption) WithThreads(threads int) *ClientOption {
 	o.Threads = threads
@@ -764,6 +775,7 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 		WithBufferSize(opt.BufferSize).
 		WithChannelTimeout(opt.ChannelTimeout).
 		WithConnectTimeout(opt.ConnectTimeout).
+		WithTransportGrace(opt.TransportGrace).
 		WithFastOpen(opt.FastOpen).
 		WithUpstreamProxy(opt.UpstreamProxy).
 		WithUpstreamAuth(opt.UpstreamUsername, opt.UpstreamPassword).
@@ -2569,6 +2581,9 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 
 	// Wait for first error
 	err = <-errChan
+	// Close the dead link explicitly so pending writers fail fast instead of
+	// hanging on a half-open TCP connection.
+	_ = wsConn.Close()
 
 	c.mu.Lock()
 	if index < len(c.websockets) {
@@ -2843,11 +2858,15 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 
 			case ConnectMessage:
 				if c.reverse {
-					msgChan := make(chan BaseMessage, 1000)
-					c.relay.messageQueues.Store(m.ChannelID, msgChan)
-					c.relay.flushOrphanData(m.ChannelID, msgChan)
+					// Reuse the existing queue on resume so the channel's
+					// forwarding loop keeps draining the same buffer.
+					if _, ok := c.relay.messageQueues.Load(m.ChannelID); !ok {
+						msgChan := make(chan BaseMessage, 1000)
+						c.relay.messageQueues.Store(m.ChannelID, msgChan)
+						c.relay.flushOrphanData(m.ChannelID, msgChan)
+					}
 					go func() {
-						if err := c.relay.HandleNetworkConnection(ctx, ws, m); err != nil && !errors.Is(err, context.Canceled) {
+						if err := c.relay.HandleNetworkConnection(context.Background(), newClientRelayWriter(c), m); err != nil && !errors.Is(err, context.Canceled) {
 							c.log.Debug().Err(err).Msg("Error handling network connection")
 						}
 					}()
@@ -3104,7 +3123,9 @@ func (c *LinkSocksClient) handleSocksRequest(ctx context.Context, socksConn net.
 	for {
 		ws := c.getNextWebSocket()
 		if ws != nil {
-			if err := c.relay.HandleLocalProxyRequest(ctx, ws, socksConn, c.socksUsername, c.socksPassword); err != nil && !errors.Is(err, context.Canceled) {
+			// The relay writer picks the current link per write, so a channel
+			// surviving a link drop resumes on the reconnected link.
+			if err := c.relay.HandleLocalProxyRequest(ctx, newClientRelayWriter(c), socksConn, c.socksUsername, c.socksPassword); err != nil && !errors.Is(err, context.Canceled) {
 				if errors.Is(err, io.EOF) {
 					c.log.Debug().Err(err).Msg("Error handling local proxy request")
 				} else {
@@ -3128,6 +3149,25 @@ func (c *LinkSocksClient) handleSocksRequest(ctx context.Context, socksConn net.
 			return
 		case <-connectedCh:
 			// (Re)connected; re-check for a usable socket.
+		}
+	}
+}
+
+// DisconnectWebSockets closes all current WebSocket links without stopping the
+// client, so established channels can be observed surviving a link drop and
+// resuming on reconnect. Intended for tests and diagnostics.
+func (c *LinkSocksClient) DisconnectWebSockets() {
+	c.mu.Lock()
+	conns := make([]*WSConn, 0, len(c.websockets))
+	for _, ws := range c.websockets {
+		if ws != nil {
+			conns = append(conns, ws)
+		}
+	}
+	c.mu.Unlock()
+	for _, ws := range conns {
+		if err := ws.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			c.log.Warn().Err(err).Msg("Error closing WebSocket connection")
 		}
 	}
 }

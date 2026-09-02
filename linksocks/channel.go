@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -36,6 +37,9 @@ type logicalChannel struct {
 	received    uint64
 	pending     map[uint64]DataMessage
 	closed      bool
+	// suspendSince records when the transport link first failed; zero means
+	// the link is healthy. Writes retry within the grace window.
+	suspendSince time.Time
 }
 
 func newLogicalChannel(id uuid.UUID, protocol string, writer MessageWriter, fallback MessageWriter, path channelPath) *logicalChannel {
@@ -76,12 +80,15 @@ func (c *logicalChannel) WriteMessage(msg BaseMessage) error {
 			return err
 		}
 		if err := c.switchToFallback("write failure"); err != nil {
-			return err
+			return &transportDownError{cause: err}
 		}
 		if _, ok := msg.(DataMessage); ok && migration {
 			return nil
 		}
-		return c.currentWriter().WriteMessage(msg)
+		if err := c.currentWriter().WriteMessage(msg); err != nil {
+			return &transportDownError{cause: err}
+		}
+		return nil
 	}
 	return nil
 }
@@ -277,6 +284,33 @@ func (c *logicalChannel) Path() string {
 	path := c.path
 	c.mu.Unlock()
 	return string(path)
+}
+
+// suspend marks the transport link as down and reports whether the channel
+// is still inside its grace window. Call on each failed write.
+func (c *logicalChannel) suspend(grace time.Duration) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	if c.suspendSince.IsZero() {
+		c.suspendSince = now
+	}
+	return now.Sub(c.suspendSince) <= grace
+}
+
+// resume clears the suspended state after a successful write.
+func (c *logicalChannel) resume() {
+	c.mu.Lock()
+	c.suspendSince = time.Time{}
+	c.mu.Unlock()
+}
+
+// suspended reports whether the transport link is currently marked down.
+func (c *logicalChannel) suspended() bool {
+	c.mu.Lock()
+	suspended := !c.suspendSince.IsZero()
+	c.mu.Unlock()
+	return suspended
 }
 
 func (c *logicalChannel) Close() {

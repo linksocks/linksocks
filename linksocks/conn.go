@@ -15,6 +15,9 @@ import (
 
 const (
 	MaxWebSocketMessageSize = 32 * 1024 * 1024 // 32MB max message size
+	// defaultWriteTimeout bounds a single WebSocket write so a half-open
+	// link cannot block a dispatcher or forwarding loop forever.
+	defaultWriteTimeout = 60 * time.Second
 )
 
 // WSConn wraps a websocket.Conn with mutex protection
@@ -120,10 +123,15 @@ func (c *WSConn) RTT() time.Duration {
 	return time.Duration(atomic.LoadInt64(&c.rttNS))
 }
 
-// SyncWriteBinary performs thread-safe binary writes to the websocket connection
+// SyncWriteBinary performs a mutex-protected WebSocket binary write with a
+// bounded write deadline, so a dead link cannot block callers indefinitely.
 func (c *WSConn) SyncWriteBinary(data []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.conn.SetWriteDeadline(time.Now().Add(defaultWriteTimeout)); err != nil {
+		return err
+	}
+	defer c.conn.SetWriteDeadline(time.Time{})
 	return c.conn.WriteMessage(websocket.BinaryMessage, data)
 }
 

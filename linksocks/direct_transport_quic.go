@@ -22,7 +22,19 @@ func newClientRelayWriter(c *LinkSocksClient) MessageWriter {
 func (w *clientRelayWriter) WriteMessage(msg BaseMessage) error {
 	ws := w.c.getNextWebSocket()
 	if ws == nil {
-		return errors.New("relay writer: no websocket")
+		return &transportDownError{cause: errors.New("relay writer: no websocket")}
+	}
+	if dm, ok := msg.(DataMessage); ok {
+		// After a link drop this channel was suspended; rebind it on the new
+		// link before resuming data so the peer keeps routing this channel.
+		if ch, ok := w.c.relay.logicalChannel(dm.ChannelID); ok && ch.canResume() && ch.suspended() {
+			req := ch.requestMessage()
+			req.Resume = true
+			if err := ws.WriteMessage(req); err != nil {
+				return err
+			}
+			ch.resume()
+		}
 	}
 	return ws.WriteMessage(msg)
 }

@@ -104,6 +104,7 @@ func (cli *CLI) initCommands() {
 		cmd.Flags().StringP("socks-password", "w", "", "SOCKS5 authentication password")
 		cmd.Flags().BoolP("socks-no-wait", "i", false, "Start the SOCKS server immediately")
 		cmd.Flags().BoolP("no-reconnect", "R", false, "Stop when the server disconnects")
+		cmd.Flags().Duration("transport-grace", DefaultTransportGrace, "How long established channels survive a WebSocket drop before being closed (0 disables)")
 		cmd.Flags().Bool("retry-auth", false, "Retry on authentication failure instead of exiting")
 		cmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
 		cmd.Flags().IntP("threads", "T", 1, "Number of threads for data transfer")
@@ -139,6 +140,7 @@ func (cli *CLI) initCommands() {
 	serverCmd.Flags().StringP("connector-token", "c", "", "Specify connector token for reverse proxy, auto-generate if not provided")
 	serverCmd.Flags().BoolP("connector-autonomy", "a", false, "Allow clients to manage their connector tokens")
 	serverCmd.Flags().IntP("buffer-size", "b", DefaultBufferSize, "Set buffer size for data transfer")
+	serverCmd.Flags().Duration("transport-grace", DefaultTransportGrace, "How long established channels survive a WebSocket drop before being closed (0 disables)")
 	serverCmd.Flags().BoolP("reverse", "r", false, "Use reverse socks5 proxy")
 	serverCmd.Flags().StringP("socks-host", "s", "127.0.0.1", "SOCKS5 server listen address for reverse proxy")
 	serverCmd.Flags().IntP("socks-port", "p", 9870, "SOCKS5 server listen port for reverse proxy")
@@ -383,6 +385,7 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 
 	socksNoWait, _ := cmd.Flags().GetBool("socks-no-wait")
 	noReconnect, _ := cmd.Flags().GetBool("no-reconnect")
+	transportGrace, _ := cmd.Flags().GetDuration("transport-grace")
 	retryAuth, _ := cmd.Flags().GetBool("retry-auth")
 	retryAuth, err = resolveBoolFlagEnv(cmd, "retry-auth", "LINKSOCKS_RETRY_AUTH", retryAuth)
 	if err != nil {
@@ -460,6 +463,7 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 		WithSocksPort(socksPort).
 		WithSocksWaitServer(!socksNoWait).
 		WithReconnect(!noReconnect).
+		WithTransportGrace(transportGrace).
 		WithRetryAuthFailure(retryAuth).
 		WithLogger(logger).
 		WithThreads(threads).
@@ -581,6 +585,7 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	bufferSize, _ := cmd.Flags().GetInt("buffer-size")
+	transportGrace, _ := cmd.Flags().GetDuration("transport-grace")
 
 	// Get new flags
 	upstreamProxy, _ := cmd.Flags().GetString("upstream-proxy")
@@ -619,6 +624,7 @@ func (cli *CLI) runServer(cmd *cobra.Command, args []string) error {
 		WithWSPort(wsPort).
 		WithSocksHost(socksHost).
 		WithConnectorWait(connectorWaitProvider).
+		WithTransportGrace(transportGrace).
 		WithLogger(logger).
 		WithBufferSize(bufferSize).
 		WithDirectEnable(directEnable).

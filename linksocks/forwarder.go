@@ -60,6 +60,15 @@ func NewSendManager(
 	}
 }
 
+// write retries the write while the channel transport is down, within the
+// channel's grace window, so data surviving a WebSocket drop is not lost.
+func (s *DynamicForwarder) write(msg BaseMessage) error {
+	if channel, ok := s.ws.(*logicalChannel); ok {
+		return s.relay.writeWithTransportGrace(s.ctx, channel, msg)
+	}
+	return s.ws.WriteMessage(msg)
+}
+
 // ProcessReads handles reading from a network connection and forwarding to WebSocket with dynamic batching
 func (s *DynamicForwarder) ProcessReads(conn io.Reader) {
 	// Get a buffer from the pool
@@ -120,7 +129,7 @@ func (s *DynamicForwarder) ProcessReads(conn io.Reader) {
 				Compression: s.relay.determineCompression(sentBytes),
 			}
 			s.relay.logMessage(msg, "send", s.ws.Label())
-			if err := s.ws.WriteMessage(msg); err != nil {
+			if err := s.write(msg); err != nil {
 				select {
 				case s.errChan <- err:
 				default:
@@ -315,7 +324,7 @@ func (s *DynamicForwarder) processReadsImmediate(conn io.Reader, buffer []byte) 
 		}
 
 		s.relay.logMessage(msg, "send", s.ws.Label())
-		if err := s.ws.WriteMessage(msg); err != nil {
+		if err := s.write(msg); err != nil {
 			select {
 			case s.errChan <- err:
 			default:
@@ -366,7 +375,7 @@ func (s *DynamicForwarder) ProcessUDPReads(conn *net.UDPConn) {
 			Compression: s.relay.determineCompression(n),
 		}
 		s.relay.logMessage(msg, "send", s.ws.Label())
-		if err := s.ws.WriteMessage(msg); err != nil {
+		if err := s.write(msg); err != nil {
 			select {
 			case s.errChan <- err:
 			default:

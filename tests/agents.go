@@ -49,6 +49,7 @@ type ProxyTestServerOption struct {
 	LogLevel          zerolog.Level
 	Reconnect         bool
 	FastOpen          bool
+	TransportGrace    time.Duration
 }
 
 // ProxyTestClient encapsulates the client-side test environment
@@ -68,6 +69,7 @@ type ProxyTestClientOption struct {
 	Reverse       bool          // Whether to use reverse mode
 	FastOpen      bool          // Whether to enable fast-open mode
 	Reconnect     bool          // Whether to enable auto-reconnection
+	TransportGrace time.Duration // How long established channels survive a WebSocket drop
 	SocksUsername string        // Local proxy username (SOCKS5 + HTTP Basic)
 	SocksPassword string        // Local proxy password (SOCKS5 + HTTP Basic)
 
@@ -133,6 +135,9 @@ func forwardServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 			// Set FastOpen
 			serverOpt.WithFastOpen(opt.FastOpen)
 			serverOpt.WithConnectorWait(opt.ConnectorWait)
+			if opt.TransportGrace != 0 {
+				serverOpt.WithTransportGrace(opt.TransportGrace)
+			}
 		}
 		server := linksocks.NewLinkSocksServer(serverOpt)
 		token, err = server.AddForwardToken(token)
@@ -193,6 +198,9 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 			WithFastOpen(opt.FastOpen).
 			WithLogger(logger).
 			WithNoEnvProxy(true)
+		if opt.TransportGrace != 0 {
+			clientOpt.WithTransportGrace(opt.TransportGrace)
+		}
 
 		if opt.DirectMode != "" {
 			clientOpt.WithDirectMode(opt.DirectMode)
@@ -307,6 +315,9 @@ func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 			// Set FastOpen
 			serverOpt.WithFastOpen(opt.FastOpen)
 			serverOpt.WithConnectorWait(opt.ConnectorWait)
+			if opt.TransportGrace != 0 {
+				serverOpt.WithTransportGrace(opt.TransportGrace)
+			}
 		}
 
 		server := linksocks.NewLinkSocksServer(serverOpt)
@@ -373,6 +384,9 @@ func reverseClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		WithFastOpen(opt.FastOpen).
 		WithLogger(logger).
 		WithNoEnvProxy(true)
+	if opt.TransportGrace != 0 {
+		clientOpt.WithTransportGrace(opt.TransportGrace)
+	}
 
 	if opt.DirectMode != "" {
 		clientOpt.WithDirectMode(opt.DirectMode)
