@@ -1083,6 +1083,25 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 	}
 }
 
+func (c *LinkSocksClient) resumeRelayChannels(ws MessageWriter) {
+	if ws == nil {
+		return
+	}
+	c.relay.logicalChannels.Range(func(_, value interface{}) bool {
+		channel, ok := value.(*logicalChannel)
+		if !ok || !channel.canResume() || channel.Path() == string(channelPathDirect) {
+			return true
+		}
+		request := channel.requestMessage()
+		request.Resume = true
+		c.relay.logMessage(request, "send", ws.Label())
+		if err := ws.WriteMessage(request); err != nil {
+			c.log.Debug().Err(err).Str("channel_id", request.ChannelID.String()).Msg("Relay channel resume on reconnect failed")
+		}
+		return true
+	})
+}
+
 func (c *LinkSocksClient) resumeLogicalChannels(ctx context.Context, plane *DirectQUICDataPlane) {
 	if plane == nil {
 		return
@@ -2554,6 +2573,13 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 		c.setConnectionStatus(true)
 		c.startDirectAgent(ctx)
 	}
+
+	// A reconnect carries over the previously established relay channels whose
+	// server-side writer is still bound to the dead link. Send Resume for each
+	// so the server rebinds them onto this fresh connection, even when the
+	// channel was idle at link-drop time and never hit a write failure (which
+	// is what normally triggers the resume path).
+	c.resumeRelayChannels(wsConn)
 
 	// Measure latency using ping/pong asynchronously
 	go func() {

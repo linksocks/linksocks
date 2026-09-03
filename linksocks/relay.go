@@ -359,7 +359,8 @@ func (r *Relay) writeWithTransportGrace(ctx context.Context, ch *logicalChannel,
 		}
 		select {
 		case <-ctx.Done():
-			return err
+			ch.resume()
+			return ctx.Err()
 		case <-time.After(200 * time.Millisecond):
 		}
 	}

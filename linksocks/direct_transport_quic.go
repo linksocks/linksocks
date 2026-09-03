@@ -31,12 +31,23 @@ func (w *clientRelayWriter) WriteMessage(msg BaseMessage) error {
 			req := ch.requestMessage()
 			req.Resume = true
 			if err := ws.WriteMessage(req); err != nil {
-				return err
+				return &transportDownError{cause: err}
+			}
+			if err := ws.WriteMessage(msg); err != nil {
+				return &transportDownError{cause: err}
 			}
 			ch.resume()
+			return nil
 		}
 	}
-	return ws.WriteMessage(msg)
+	if err := ws.WriteMessage(msg); err != nil {
+		// A write that fails while the link is shutting down (connection is
+		// closed but not yet removed from the pool) is a transport failure,
+		// not a channel failure: mark it so writeWithTransportGrace keeps
+		// retrying until the link recovers or the grace window expires.
+		return &transportDownError{cause: err}
+	}
+	return nil
 }
 
 func (w *clientRelayWriter) Label() string {

@@ -2205,13 +2205,6 @@ func (s *LinkSocksServer) notifyTokenAvailabilityLocked(token string) {
 // the queue, which ends the pump.
 func (s *LinkSocksServer) startConnectorPump(m ConnectMessage, ws *WSConn, reverseToken string, clientID uuid.UUID, connCtx context.Context) {
 	go func() {
-		defer s.cleanupConnectorChannel(m.ChannelID)
-		defer func() {
-			s.connCache.mu.Lock()
-			delete(s.connCache.pumpActive, m.ChannelID)
-			s.connCache.mu.Unlock()
-		}()
-
 		// A resume on a reconnected connector link must not start a second
 		// pump over the same queue; rebind the mapping only.
 		s.connCache.mu.Lock()
@@ -2224,6 +2217,16 @@ func (s *LinkSocksServer) startConnectorPump(m ConnectMessage, ws *WSConn, rever
 		}
 		s.connCache.pumpActive[m.ChannelID] = true
 		s.connCache.mu.Unlock()
+
+		// The pump owns the channel state: only a pump that actually started
+		// may tear the mappings down when it exits. A Resume handled by the
+		// rebind path above must not run cleanup.
+		defer s.cleanupConnectorChannel(m.ChannelID)
+		defer func() {
+			s.connCache.mu.Lock()
+			delete(s.connCache.pumpActive, m.ChannelID)
+			s.connCache.mu.Unlock()
+		}()
 
 		// Enforce per-connector access control before forwarding to a provider
 		s.mu.RLock()
