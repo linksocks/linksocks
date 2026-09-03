@@ -231,14 +231,3 @@ func TestForwardChannelExpiresAfterTransportGrace(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
-
-// splitHostPort separates addr into host and port, both required for SOCKS.
-func splitHostPort(t *testing.T, addr string) (string, int) {
-	t.Helper()
-	host, portStr, err := net.SplitHostPort(addr)
-	require.NoError(t, err)
-	var port int
-	_, err = fmt.Sscanf(portStr, "%d", &port)
-	require.NoError(t, err)
-	return host, port
-}

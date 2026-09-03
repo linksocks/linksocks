@@ -146,3 +146,14 @@ func TestConnectorChannelExpiresAfterProviderGrace(t *testing.T) {
 	}
 	t.Logf("tunnel closed: %v", err)
 }
+
+// splitHostPort separates addr into host and port, both required for SOCKS.
+func splitHostPort(t *testing.T, addr string) (string, int) {
+	t.Helper()
+	host, portStr, err := net.SplitHostPort(addr)
+	require.NoError(t, err)
+	var port int
+	_, err = fmt.Sscanf(portStr, "%d", &port)
+	require.NoError(t, err)
+	return host, port
+}
