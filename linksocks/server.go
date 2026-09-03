@@ -132,7 +132,11 @@ type connectorCache struct {
 	channelIDToClient    map[uuid.UUID]*WSConn     // Maps channel_id to reverse client WebSocket connection
 	channelIDToConnector map[uuid.UUID]*WSConn     // Maps channel_id to connector WebSocket connection
 	orphanQueues         map[uuid.UUID]*orphanData // Data for channels that are not bound yet
-	tokenCache           map[string][]uuid.UUID    // Maps token to list of channel_ids
+	// returnQueues holds provider return-path data (provider -> connector)
+	// that could not be delivered while the connector link was down; it is
+	// drained onto the fresh link when the connector reconnects.
+	returnQueues map[uuid.UUID]*orphanData
+	tokenCache   map[string][]uuid.UUID // Maps token to list of channel_ids
 	// pumpActive tracks channels with a running forwarder pump, so a resume on
 	// a reconnected connector link only rebinds the mapping instead of
 	// launching a second pump over the same queue.
@@ -146,6 +150,7 @@ func newConnectorCache() *connectorCache {
 		channelIDToClient:    make(map[uuid.UUID]*WSConn),
 		channelIDToConnector: make(map[uuid.UUID]*WSConn),
 		orphanQueues:         make(map[uuid.UUID]*orphanData),
+		returnQueues:         make(map[uuid.UUID]*orphanData),
 		tokenCache:           make(map[string][]uuid.UUID),
 		pumpActive:           make(map[uuid.UUID]bool),
 	}
@@ -1638,9 +1643,14 @@ func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, cli
 					s.relay.logMessage(m, "send", ws.Label())
 					if err := targetWS.WriteMessage(m); err != nil {
 						s.log.Debug().Err(err).Msg("Failed to forward data message to connector client")
+						// The connector link is down but may come back within
+						// the transport grace window; retain the return-path
+						// data so it is replayed on the reconnected link
+						// instead of being silently dropped.
+						s.bufferConnectorReturn(m)
 					}
 				} else {
-					s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Received data for unknown channel, dropping message")
+					s.bufferConnectorReturn(m)
 				}
 
 			case ConnectMessage:
@@ -2048,6 +2058,12 @@ func (s *LinkSocksServer) rebindConnectorChannels(reverseToken string, ws *WSCon
 			s.log.Info().Str("channel_id", id.String()).Msg("Rebound connector channel onto reconnected link")
 		}
 		s.connCache.mu.Unlock()
+
+		if cur != nil && !online[cur] {
+			// The previous link was dead: replay any return-path data that
+			// arrived while the connector was away onto the fresh link.
+			s.drainConnectorReturn(id, ws)
+		}
 	}
 }
 
@@ -2324,6 +2340,11 @@ func (s *LinkSocksServer) startConnectorPump(m ConnectMessage, ws *WSConn, rever
 			boundBefore = true
 			s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Channel bound to provider")
 
+			// The connector side of the mapping is live again: replay any
+			// return-path data that arrived while the connector was away so
+			// those messages are not lost.
+			s.drainConnectorReturn(m.ChannelID, ws)
+
 			// Forward buffered (and subsequent) data in order. The queue
 			// outlives the buffer phase so data is never sent directly while
 			// draining; it is closed by channel cleanup.
@@ -2410,6 +2431,90 @@ func (s *LinkSocksServer) routeConnectorData(m DataMessage, src *WSConn) {
 	s.bufferOrphanData(m)
 }
 
+// bufferConnectorReturn retains return-path data (provider -> connector) that
+// could not be delivered because the connector link was down. It is replayed
+// onto the reconnected link by rebindConnectorChannels, or dropped after
+// orphanDataTTL if the connector never returns.
+func (s *LinkSocksServer) bufferConnectorReturn(m DataMessage) {
+	s.connCache.mu.Lock()
+	od, ok := s.connCache.returnQueues[m.ChannelID]
+	if !ok {
+		od = &orphanData{queue: make(chan BaseMessage, orphanDataQueueSize)}
+		s.connCache.returnQueues[m.ChannelID] = od
+		od.timer = time.AfterFunc(orphanDataTTL, func() { s.expireConnectorReturn(m.ChannelID) })
+	}
+	select {
+	case od.queue <- m:
+		s.connCache.mu.Unlock()
+		s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Buffered return-path data for connector link")
+	default:
+		s.connCache.mu.Unlock()
+		s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Return-path data queue full, dropping message")
+	}
+}
+
+// expireConnectorReturn drops buffered return-path data whose connector link
+// never came back within orphanDataTTL.
+func (s *LinkSocksServer) expireConnectorReturn(channelID uuid.UUID) {
+	s.connCache.mu.Lock()
+	od, ok := s.connCache.returnQueues[channelID]
+	if !ok {
+		s.connCache.mu.Unlock()
+		return
+	}
+	// The connector link is back (or a rebind happened): a drain will take
+	// the data, keep the queue intact.
+	if _, bound := s.connCache.channelIDToConnector[channelID]; bound {
+		s.connCache.mu.Unlock()
+		return
+	}
+	delete(s.connCache.returnQueues, channelID)
+	close(od.queue)
+	s.connCache.mu.Unlock()
+	s.log.Warn().Str("channel_id", channelID.String()).Msg("Dropped buffered return-path data for channel that never reconnected")
+}
+
+// drainConnectorReturn forwards buffered return-path data onto a (re)bound
+// connector link. It is called after the channel mapping is published, so
+// replayed data can never overtake a fresh ReturnPathMessage stream.
+func (s *LinkSocksServer) drainConnectorReturn(channelID uuid.UUID, target *WSConn) {
+	for {
+		s.connCache.mu.Lock()
+		od, ok := s.connCache.returnQueues[channelID]
+		if !ok {
+			s.connCache.mu.Unlock()
+			return
+		}
+		select {
+		case msg, ok := <-od.queue:
+			if !ok {
+				s.connCache.mu.Unlock()
+				return
+			}
+			s.connCache.mu.Unlock()
+			s.relay.logMessage(msg, "send", target.Label())
+			if err := target.WriteMessage(msg); err != nil {
+				s.log.Debug().Err(err).Msg("Failed to deliver buffered return-path data")
+				s.connCache.mu.Lock()
+				if od, ok := s.connCache.returnQueues[channelID]; ok {
+					select {
+					case od.queue <- msg:
+					default:
+						s.connCache.mu.Unlock()
+						s.log.Warn().Str("channel_id", channelID.String()).Msg("Return-path data dropped after redelivery failure")
+						return
+					}
+				}
+				s.connCache.mu.Unlock()
+				return
+			}
+		default:
+			s.connCache.mu.Unlock()
+			return
+		}
+	}
+}
+
 // bufferOrphanData retains data for a channel that is not bound yet.
 // There are no preconditions: data for any unknown channel is held until its
 // ConnectMessage binds the channel (then drained in order) or until
@@ -2465,8 +2570,9 @@ func (s *LinkSocksServer) expireOrphanData(channelID uuid.UUID) {
 }
 
 // cleanupConnectorChannel removes all server-side state for a connector
-// channel and closes its orphan queue, waking a goroutine draining it.
-// Safe to call more than once; must not be called while holding connCache.mu.
+// channel and closes its orphan/return queues, waking goroutines draining
+// them. Safe to call more than once; must not be called while holding
+// connCache.mu.
 func (s *LinkSocksServer) cleanupConnectorChannel(channelID uuid.UUID) {
 	s.connCache.mu.Lock()
 	delete(s.connCache.channelIDToClient, channelID)
@@ -2478,6 +2584,13 @@ func (s *LinkSocksServer) cleanupConnectorChannel(channelID uuid.UUID) {
 			od.timer.Stop()
 		}
 		delete(s.connCache.orphanQueues, channelID)
+		close(od.queue)
+	}
+	if od, ok := s.connCache.returnQueues[channelID]; ok {
+		if od.timer != nil {
+			od.timer.Stop()
+		}
+		delete(s.connCache.returnQueues, channelID)
 		close(od.queue)
 	}
 	s.connCache.mu.Unlock()
