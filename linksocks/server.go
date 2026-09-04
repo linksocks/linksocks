@@ -1647,10 +1647,10 @@ func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, cli
 						// the transport grace window; retain the return-path
 						// data so it is replayed on the reconnected link
 						// instead of being silently dropped.
-						s.bufferConnectorReturn(m)
+						s.bufferConnectorReturn(m.ChannelID, m)
 					}
 				} else {
-					s.bufferConnectorReturn(m)
+					s.bufferConnectorReturn(m.ChannelID, m)
 				}
 
 			case ConnectMessage:
@@ -1738,6 +1738,11 @@ func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, cli
 							s.relay.logMessage(m, "send", ws.Label())
 							if err := connectorWS.WriteMessage(m); err != nil {
 								s.log.Debug().Err(err).Msg("Failed to forward connect response")
+								// The connector link may be down; replay the
+								// response on the reconnected link so a
+								// connect started right before the drop is not
+								// left hanging on the caller's socket.
+								s.bufferConnectorReturn(m.ChannelID, m)
 							}
 							s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Forwarded connect response to connector")
 						} else {
@@ -2431,25 +2436,25 @@ func (s *LinkSocksServer) routeConnectorData(m DataMessage, src *WSConn) {
 	s.bufferOrphanData(m)
 }
 
-// bufferConnectorReturn retains return-path data (provider -> connector) that
-// could not be delivered because the connector link was down. It is replayed
-// onto the reconnected link by rebindConnectorChannels, or dropped after
-// orphanDataTTL if the connector never returns.
-func (s *LinkSocksServer) bufferConnectorReturn(m DataMessage) {
+// bufferConnectorReturn retains return-path messages (provider -> connector)
+// that could not be delivered because the connector link was down. It is
+// replayed onto the reconnected link by rebindConnectorChannels, or dropped
+// after orphanDataTTL if the connector never returns.
+func (s *LinkSocksServer) bufferConnectorReturn(channelID uuid.UUID, m BaseMessage) {
 	s.connCache.mu.Lock()
-	od, ok := s.connCache.returnQueues[m.ChannelID]
+	od, ok := s.connCache.returnQueues[channelID]
 	if !ok {
 		od = &orphanData{queue: make(chan BaseMessage, orphanDataQueueSize)}
-		s.connCache.returnQueues[m.ChannelID] = od
-		od.timer = time.AfterFunc(orphanDataTTL, func() { s.expireConnectorReturn(m.ChannelID) })
+		s.connCache.returnQueues[channelID] = od
+		od.timer = time.AfterFunc(orphanDataTTL, func() { s.expireConnectorReturn(channelID) })
 	}
 	select {
 	case od.queue <- m:
 		s.connCache.mu.Unlock()
-		s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Buffered return-path data for connector link")
+		s.log.Trace().Str("channel_id", channelID.String()).Msg("Buffered return-path data for connector link")
 	default:
 		s.connCache.mu.Unlock()
-		s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Return-path data queue full, dropping message")
+		s.log.Warn().Str("channel_id", channelID.String()).Msg("Return-path data queue full, dropping message")
 	}
 }
 
