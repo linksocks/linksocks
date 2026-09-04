@@ -2303,9 +2303,14 @@ func (s *LinkSocksServer) startConnectorPump(m ConnectMessage, ws *WSConn, rever
 
 			// Store channel_id mapping for connector. The mapping is published
 			// only after the bind message is written below, so data drained
-			// from the buffer can never overtake it.
+			// from the buffer can never overtake it. A rebind must not
+			// overwrite a channel that a reconnected connector link already
+			// claimed via rebindConnectorChannels; the pump only publishes
+			// the mapping when it owns it (missing or still the same link).
 			s.connCache.mu.Lock()
-			s.connCache.channelIDToConnector[m.ChannelID] = ws
+			if cur := s.connCache.channelIDToConnector[m.ChannelID]; cur == nil || cur == ws {
+				s.connCache.channelIDToConnector[m.ChannelID] = ws
+			}
 			s.connCache.channelIDToClient[m.ChannelID] = reverseWS
 			if !containsChannelID(s.connCache.tokenCache[reverseToken], m.ChannelID) {
 				s.connCache.tokenCache[reverseToken] = append(s.connCache.tokenCache[reverseToken], m.ChannelID)
@@ -2324,6 +2329,10 @@ func (s *LinkSocksServer) startConnectorPump(m ConnectMessage, ws *WSConn, rever
 				s.connCache.orphanQueues[m.ChannelID] = od
 				queue = od.queue
 			}
+			// Drain towards whoever currently owns the channel: after a
+			// connector reconnect the live link is the rebound one, not the
+			// link this pump started on.
+			drainTarget := s.connCache.channelIDToConnector[m.ChannelID]
 			s.connCache.mu.Unlock()
 
 			// First bind sends the original Connect; every rebind after a link
@@ -2348,7 +2357,9 @@ func (s *LinkSocksServer) startConnectorPump(m ConnectMessage, ws *WSConn, rever
 			// The connector side of the mapping is live again: replay any
 			// return-path data that arrived while the connector was away so
 			// those messages are not lost.
-			s.drainConnectorReturn(m.ChannelID, ws)
+			if drainTarget != nil {
+				s.drainConnectorReturn(m.ChannelID, drainTarget)
+			}
 
 			// Forward buffered (and subsequent) data in order. The queue
 			// outlives the buffer phase so data is never sent directly while
