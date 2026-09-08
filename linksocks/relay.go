@@ -36,6 +36,11 @@ const (
 	DefaultLowSpeedThreshold = 128 * 1024
 	// Default threshold in bytes for enabling compression
 	DefaultCompressionThreshold = 512 * 1024
+
+	// cleanupQueueSize is the capacity of the delayed cleanup queue; a
+	// saturated queue applies backpressure instead of spawning extra
+	// goroutines.
+	cleanupQueueSize = 1000
 )
 
 // ProxyType represents the type of upstream proxy
@@ -480,7 +485,7 @@ func NewRelay(logger zerolog.Logger, option *RelayOption) *Relay {
 		log:          logger,
 		option:       option,
 		done:         make(chan struct{}),
-		cleanupQueue: make(chan uuid.UUID, 1000),
+		cleanupQueue: make(chan uuid.UUID, cleanupQueueSize),
 		orphanData:   make(map[uuid.UUID]*orphanData),
 		bufferPool: sync.Pool{
 			New: func() interface{} {
@@ -568,6 +573,10 @@ func (r *Relay) HandleNetworkConnection(ctx context.Context, ws MessageWriter, r
 		if err := channel.Switch(ws, channelPathRelay); err != nil {
 			return err
 		}
+		// The channel is bound to a live link again: reset the suspend
+		// window so repeated short drops cannot starve the grace period
+		// accumulated from the first failure.
+		channel.resume()
 		return nil
 	}
 	channel, ok := r.logicalChannel(request.ChannelID)
@@ -2017,14 +2026,10 @@ func (r *Relay) determineCompression(dataSize int) byte {
 
 // disconnectChannel handles cleanup of channel resources
 func (r *Relay) disconnectChannel(channelID uuid.UUID) {
-	// Queue the channel for delayed cleanup
-	select {
-	case r.cleanupQueue <- channelID:
-		r.log.Trace().Str("channel_id", channelID.String()).Msg("Queued channel for cleanup")
-	default:
-		// Queue full, cleanup synchronously in a goroutine as fallback
-		go r.doCleanup(channelID)
-	}
+	// Queue the channel for delayed cleanup; a saturated queue applies
+	// backpressure instead of spawning one goroutine per channel.
+	r.cleanupQueue <- channelID
+	r.log.Trace().Str("channel_id", channelID.String()).Msg("Queued channel for cleanup")
 }
 
 // cleanupWorker processes cleanup tasks from the queue

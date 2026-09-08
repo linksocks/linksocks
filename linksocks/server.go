@@ -81,6 +81,9 @@ type LinkSocksServer struct {
 	// Error channel
 	errors chan error // Channel for errors
 
+	// Keepalive: how often the server pings each connected client.
+	pingInterval time.Duration
+
 	// Direct signaling (experimental; WS-only, no UDP dependencies)
 	directEnable bool
 	clientMeta   map[uuid.UUID]*directClientMeta
@@ -173,8 +176,8 @@ type ServerOption struct {
 	APIKeys []string
 	// TransportGrace is how long established channels survive a broken
 	// WebSocket link before being torn down. Zero disables survival.
-	TransportGrace time.Duration
-	ChannelTimeout time.Duration
+	TransportGrace    time.Duration
+	ChannelTimeout    time.Duration
 	ConnectTimeout    time.Duration
 	FastOpen          bool
 	UpstreamProxy     string
@@ -184,6 +187,10 @@ type ServerOption struct {
 
 	// Direct connection options (experimental; default disabled).
 	DirectEnable bool
+
+	// PingInterval is how often the server pings each connected client to
+	// detect half-open links. Zero uses the default.
+	PingInterval time.Duration
 
 	// Optional server-side UDP rendezvous (minimal STUN subset).
 	DirectRendezvousEnable bool
@@ -221,6 +228,7 @@ func DefaultServerOption() *ServerOption {
 		UpstreamUsername:       "",
 		UpstreamPassword:       "",
 		DirectEnable:           false,
+		PingInterval:           defaultPingInterval,
 		DirectRendezvousEnable: false,
 		DirectRendezvousHost:   "",
 		DirectRendezvousPort:   0,
@@ -427,6 +435,7 @@ func NewLinkSocksServer(opt *ServerOption) *LinkSocksServer {
 		errors:                 make(chan error, 16),
 		directEnable:           opt.DirectEnable,
 		clientMeta:             make(map[uuid.UUID]*directClientMeta),
+		pingInterval:           opt.PingInterval,
 		directRendezvousEnable: opt.DirectRendezvousEnable,
 		directRendezvousHost:   opt.DirectRendezvousHost,
 		directRendezvousPort:   opt.DirectRendezvousPort,
@@ -1255,80 +1264,154 @@ func (s *LinkSocksServer) WaitReady(ctx context.Context, timeout time.Duration) 
 }
 
 // handleWebSocket handles WebSocket connection
+// wsClientAuth carries the outcome of authenticating a WebSocket client.
+type wsClientAuth struct {
+	clientID         uuid.UUID
+	token            string
+	internalToken    string
+	reverseToken     string
+	isUrlAuth        bool
+	isValidReverse   bool
+	isValidForward   bool
+	isValidConnector bool
+	authMsg          AuthMessage
+}
+
+// handleWebSocket authenticates the client, registers it, and runs the
+// message dispatcher for the lifetime of the connection.
 func (s *LinkSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn, r *http.Request) {
 	// Wrap the websocket connection
 	wsConn := NewWSConn(ws, "", s.log)
 	wsConn.SetClientIPFromRequest(r) // Extract and set client IP
 
-	var clientID uuid.UUID
-	var token string
-	var internalToken string
-	var isValidReverse, isValidForward, isValidConnector bool
-	var reverseToken string
-	var isUrlAuth bool
-	var authMsg AuthMessage
+	auth, ok := s.authenticateWebSocketClient(wsConn, r)
+	if !ok {
+		wsConn.Close()
+		return
+	}
+	wsConn.setLabel(auth.clientID.String())
 
 	defer func() {
 		wsConn.Close()
-		if clientID != uuid.Nil {
-			s.cleanupConnection(clientID, internalToken)
+		if auth.clientID != uuid.Nil {
+			s.cleanupConnection(auth.clientID, auth.internalToken)
 		}
 	}()
+
+	// Start the SOCKS server before the auth response is sent so the local
+	// proxy port accepts connections by the time the provider is told it is
+	// authenticated.
+	if auth.isValidReverse {
+		s.startReverseSocksServer(ctx, auth.token, wsConn)
+	}
+
+	if !s.registerWebSocketClient(auth, wsConn) {
+		return
+	}
+
+	// Start message handling goroutines
+	errChan := make(chan error, 2)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Probe the link so a half-open TCP connection is detected and cleaned up
+	// instead of lingering forever; closing the socket unblocks the
+	// dispatcher's read and triggers the normal cleanup path.
+	go func() {
+		if err := wsConn.KeepAlive(ctx, s.pingInterval); err != nil {
+			wsConn.Close()
+		}
+	}()
+
+	// A reconnected connector link takes over the channels that were bound to
+	// its dead predecessor, so provider replies keep flowing without waiting
+	// for the connector to re-send a Resume.
+	if auth.isValidConnector {
+		s.rebindConnectorChannels(auth.reverseToken, wsConn)
+	}
+
+	// Start message dispatcher
+	if auth.isValidConnector {
+		go func() {
+			errChan <- s.connectorMessageDispatcher(ctx, wsConn, auth.reverseToken, auth.clientID)
+		}()
+	} else {
+		go func() {
+			errChan <- s.messageDispatcher(ctx, wsConn, auth.clientID)
+		}()
+	}
+
+	// Wait for either routine to finish
+	<-errChan
+
+	// Forward-mode channels carried by this link survive within the transport
+	// grace window: once the link is gone, idle channels are torn down here
+	// when the window expires (busy ones are torn down by the relay's
+	// write-retry path). Connector/provider channels are covered by
+	// scheduleChannelGraceCleanup in cleanupConnection.
+	if !auth.isValidConnector {
+		s.relay.scheduleChannelExpiry(wsConn, s.transportGrace)
+	}
+}
+
+// authenticateWebSocketClient resolves the client's token and role from
+// either the URL query token or the first AuthMessage on the wire, and
+// assigns the client ID and internal token. On failure an error auth
+// response is written and ok is false.
+func (s *LinkSocksServer) authenticateWebSocketClient(wsConn *WSConn, r *http.Request) (*wsClientAuth, bool) {
+	auth := &wsClientAuth{}
+
+	reject := func(reason string) (*wsClientAuth, bool) {
+		authResponse := AuthResponseMessage{Success: false, Error: reason}
+		s.relay.logMessage(authResponse, "send", wsConn.Label())
+		wsConn.WriteMessage(authResponse)
+		return nil, false
+	}
 
 	// Check if using URL query parameters for authentication
 	query := r.URL.Query()
 	if tokenParam := query.Get("token"); tokenParam != "" {
 		s.log.Debug().Str("token_hash", tokenParam).Msg("Client is using token from URL query")
-		if len(tokenParam) == 64 { // SHA256 hash is 64 characters
-			s.mu.RLock()
-			originalToken, exists := s.sha256TokenMap[tokenParam]
-			if exists {
-				token = originalToken
-				isValidReverse = s.tokens[token] != 0
-				_, hasForwardToken := s.forwardTokens[token]
-				isValidForward = hasForwardToken
-				tmpToken, isConnectorToken := s.connectorTokens[token]
-				reverseToken = tmpToken
-				isValidConnector = isConnectorToken && s.tokens[reverseToken] != 0
+		if len(tokenParam) != 64 { // SHA256 hash is 64 characters
+			return reject("invalid token format")
+		}
+		s.mu.RLock()
+		originalToken, exists := s.sha256TokenMap[tokenParam]
+		if exists {
+			auth.token = originalToken
+			auth.isValidReverse = s.tokens[auth.token] != 0
+			_, hasForwardToken := s.forwardTokens[auth.token]
+			auth.isValidForward = hasForwardToken
+			tmpToken, isConnectorToken := s.connectorTokens[auth.token]
+			auth.reverseToken = tmpToken
+			auth.isValidConnector = isConnectorToken && s.tokens[tmpToken] != 0
 
-				// Check reverse parameter
-				if reverseStr := query.Get("reverse"); reverseStr != "" {
-					isReverse := reverseStr == "true" || reverseStr == "1"
-					if isReverse && !isValidReverse {
-						isValidReverse = false
-						isValidForward = false
-						isValidConnector = false
-					} else if !isReverse && !isValidForward && !isValidConnector {
-						isValidReverse = false
-						isValidForward = false
-						isValidConnector = false
-					}
+			// Check reverse parameter
+			if reverseStr := query.Get("reverse"); reverseStr != "" {
+				isReverse := reverseStr == "true" || reverseStr == "1"
+				if isReverse && !auth.isValidReverse {
+					auth.isValidReverse = false
+					auth.isValidForward = false
+					auth.isValidConnector = false
+				} else if !isReverse && !auth.isValidForward && !auth.isValidConnector {
+					auth.isValidReverse = false
+					auth.isValidForward = false
+					auth.isValidConnector = false
 				}
+			}
 
-				isUrlAuth = true
-			}
-			s.mu.RUnlock()
-			if !exists || (!isValidReverse && !isValidForward && !isValidConnector) {
-				authResponse := AuthResponseMessage{Success: false, Error: "invalid token"}
-				s.relay.logMessage(authResponse, "send", wsConn.Label())
-				wsConn.WriteMessage(authResponse)
-				return
-			}
-		} else {
-			authResponse := AuthResponseMessage{Success: false, Error: "invalid token format"}
-			s.relay.logMessage(authResponse, "send", wsConn.Label())
-			wsConn.WriteMessage(authResponse)
-			return
+			auth.isUrlAuth = true
+		}
+		s.mu.RUnlock()
+		if !exists || (!auth.isValidReverse && !auth.isValidForward && !auth.isValidConnector) {
+			return reject("invalid token")
 		}
 	} else {
 		// Traditional authentication for requests without query parameters
 		msg, peerVersion, err := wsConn.ReadMessageWithVersion()
 		if err != nil {
 			s.log.Debug().Err(err).Msg("Failed to read auth message")
-			authResponse := AuthResponseMessage{Success: false, Error: "invalid auth message: " + err.Error()}
-			s.relay.logMessage(authResponse, "send", wsConn.Label())
-			wsConn.WriteMessage(authResponse)
-			return
+			return reject("invalid auth message: " + err.Error())
 		}
 
 		if (peerVersion & 0x0f) != (ProtocolVersion & 0x0f) {
@@ -1341,104 +1424,103 @@ func (s *LinkSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Con
 		s.relay.logMessage(msg, "recv", wsConn.Label())
 		authMsg, ok := msg.(AuthMessage)
 		if !ok {
-			authResponse := AuthResponseMessage{Success: false, Error: "invalid auth message"}
-			s.relay.logMessage(authResponse, "send", wsConn.Label())
-			wsConn.WriteMessage(authResponse)
-			return
+			return reject("invalid auth message")
 		}
-
-		token = authMsg.Token
+		auth.authMsg = authMsg
+		auth.token = authMsg.Token
 		s.mu.RLock()
-		isValidReverse = authMsg.Reverse && s.tokens[token] != 0
-		_, hasForwardToken := s.forwardTokens[token]
-		isValidForward = !authMsg.Reverse && hasForwardToken
-		tmpToken, isConnectorToken := s.connectorTokens[token]
-		reverseToken = tmpToken
-		isValidConnector = isConnectorToken && !authMsg.Reverse && s.tokens[reverseToken] != 0
+		auth.isValidReverse = authMsg.Reverse && s.tokens[auth.token] != 0
+		_, hasForwardToken := s.forwardTokens[auth.token]
+		auth.isValidForward = !authMsg.Reverse && hasForwardToken
+		tmpToken, isConnectorToken := s.connectorTokens[auth.token]
+		auth.reverseToken = tmpToken
+		auth.isValidConnector = isConnectorToken && !authMsg.Reverse && s.tokens[tmpToken] != 0
 		s.mu.RUnlock()
 
-		if !isValidReverse && !isValidForward && !isValidConnector {
-			authResponse := AuthResponseMessage{Success: false, Error: "invalid token"}
-			s.relay.logMessage(authResponse, "send", wsConn.Label())
-			wsConn.WriteMessage(authResponse)
-			return
+		if !auth.isValidReverse && !auth.isValidForward && !auth.isValidConnector {
+			return reject("invalid token")
 		}
 	}
 
-	clientID = uuid.New()
-	wsConn.setLabel(clientID.String())
+	auth.clientID = uuid.New()
 
 	s.mu.Lock()
 	// For reverse tokens with AllowManageConnector, generate a unique internal token
-	if isValidReverse {
-		opts, exists := s.tokenOptions[token]
+	if auth.isValidReverse {
+		opts, exists := s.tokenOptions[auth.token]
 		if exists && opts.AllowManageConnector {
-			if isUrlAuth {
-				internalToken = uuid.New().String()
+			if auth.isUrlAuth {
+				auth.internalToken = uuid.New().String()
 			} else {
-				internalToken = authMsg.Instance.String()
+				auth.internalToken = auth.authMsg.Instance.String()
 			}
-			s.tokenIndexes[internalToken] = 0
-			s.tokenOptions[internalToken] = opts
-			s.tokens[internalToken] = -1
-			s.internalTokens[token] = append(s.internalTokens[token], internalToken)
+			s.tokenIndexes[auth.internalToken] = 0
+			s.tokenOptions[auth.internalToken] = opts
+			s.tokens[auth.internalToken] = -1
+			s.internalTokens[auth.token] = append(s.internalTokens[auth.token], auth.internalToken)
 		} else {
-			internalToken = token
+			auth.internalToken = auth.token
 		}
 	} else {
-		internalToken = token
+		auth.internalToken = auth.token
 	}
 	s.mu.Unlock()
 
-	if isValidReverse {
-		// Start the SOCKS server before the auth response is sent so the
-		// local proxy port accepts connections by the time the provider is
-		// told it is authenticated. GetListener synchronously ensures the
-		// port is bound; runSocksServer reuses the same listener.
-		s.mu.Lock()
-		socksPort := s.tokens[token]
-		_, exists := s.socksTasks[socksPort]
-		if socksPort > 0 && !exists {
-			if _, err := s.socketManager.GetListener(socksPort); err != nil {
-				s.log.Warn().Err(err).Int("port", socksPort).Msg("Failed to pre-bind SOCKS listener")
-			}
-			ctx, cancel := context.WithCancel(ctx)
-			s.socksTasks[socksPort] = cancel
-			go func() {
-				if err := s.runSocksServer(ctx, token, socksPort); err != nil {
-					s.log.Debug().Err(err).Int("port", socksPort).Msg("SOCKS server error")
-				}
-			}()
-		}
-		s.mu.Unlock()
-	}
+	return auth, true
+}
 
+// startReverseSocksServer pre-starts the SOCKS server for a reverse
+// (provider) client. GetListener synchronously ensures the port is bound;
+// runSocksServer reuses the same listener.
+func (s *LinkSocksServer) startReverseSocksServer(ctx context.Context, token string, wsConn *WSConn) {
+	s.mu.Lock()
+	socksPort := s.tokens[token]
+	_, exists := s.socksTasks[socksPort]
+	if socksPort > 0 && !exists {
+		if _, err := s.socketManager.GetListener(socksPort); err != nil {
+			s.log.Warn().Err(err).Int("port", socksPort).Msg("Failed to pre-bind SOCKS listener")
+		}
+		ctx, cancel := context.WithCancel(ctx)
+		s.socksTasks[socksPort] = cancel
+		go func() {
+			if err := s.runSocksServer(ctx, token, socksPort); err != nil {
+				s.log.Debug().Err(err).Int("port", socksPort).Msg("SOCKS server error")
+			}
+		}()
+	}
+	s.mu.Unlock()
+}
+
+// registerWebSocketClient sends the success auth response, publishes the
+// connection in the registries and sends the welcome messages. It reports
+// false when the auth response could not be written.
+func (s *LinkSocksServer) registerWebSocketClient(auth *wsClientAuth, wsConn *WSConn) bool {
 	authResponse := AuthResponseMessage{Success: true}
 	s.relay.logMessage(authResponse, "send", wsConn.Label())
 	if err := wsConn.WriteMessage(authResponse); err != nil {
 		s.log.Debug().Err(err).Msg("Failed to send auth response")
-		return
+		return false
 	}
 
 	// Publish the connection as available only after the auth response is
 	// written, so pending connects can never overtake it on the wire.
 	s.mu.Lock()
-	if _, exists := s.tokenClients[internalToken]; !exists {
-		s.tokenClients[internalToken] = make([]clientInfo, 0)
+	if _, exists := s.tokenClients[auth.internalToken]; !exists {
+		s.tokenClients[auth.internalToken] = make([]clientInfo, 0)
 	}
-	s.tokenClients[internalToken] = append(s.tokenClients[internalToken], clientInfo{ID: clientID, Conn: wsConn})
-	s.clients[clientID] = wsConn
+	s.tokenClients[auth.internalToken] = append(s.tokenClients[auth.internalToken], clientInfo{ID: auth.clientID, Conn: wsConn})
+	s.clients[auth.clientID] = wsConn
 	role := directClientRoleForward
 	metaReverseToken := ""
-	if isValidReverse {
+	if auth.isValidReverse {
 		role = directClientRoleReverse
-		s.notifyTokenAvailabilityLocked(internalToken)
-	} else if isValidConnector {
+		s.notifyTokenAvailabilityLocked(auth.internalToken)
+	} else if auth.isValidConnector {
 		role = directClientRoleConnector
-		metaReverseToken = reverseToken
+		metaReverseToken = auth.reverseToken
 	}
-	s.clientMeta[clientID] = &directClientMeta{
-		InternalToken:    internalToken,
+	s.clientMeta[auth.clientID] = &directClientMeta{
+		InternalToken:    auth.internalToken,
 		ReverseToken:     metaReverseToken,
 		Role:             role,
 		SupportsDirect:   false,
@@ -1449,19 +1531,20 @@ func (s *LinkSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Con
 	}
 	s.mu.Unlock()
 
-	if isValidReverse {
+	switch {
+	case auth.isValidReverse:
 		// Handle reverse proxy client
-		s.log.Info().Str("client_id", clientID.String()).Str("client_ip", wsConn.GetClientIP()).Msg("Reverse client authenticated")
+		s.log.Info().Str("client_id", auth.clientID.String()).Str("client_ip", wsConn.GetClientIP()).Msg("Reverse client authenticated")
 		// Notify connectors about new reverse client
 		s.broadcastPartnersToConnectors()
-	} else if isValidConnector {
+	case auth.isValidConnector:
 		// Handle connector proxy client
-		s.log.Info().Str("client_id", clientID.String()).Str("client_ip", wsConn.GetClientIP()).Msg("Connector client authenticated")
+		s.log.Info().Str("client_id", auth.clientID.String()).Str("client_ip", wsConn.GetClientIP()).Msg("Connector client authenticated")
 		// Notify reverse clients about new connector
-		s.broadcastPartnersToReverseClients(reverseToken)
-	} else {
+		s.broadcastPartnersToReverseClients(auth.reverseToken)
+	default:
 		// Handle forward proxy client
-		s.log.Info().Str("client_id", clientID.String()).Str("client_ip", wsConn.GetClientIP()).Msg("Forward client authenticated")
+		s.log.Info().Str("client_id", auth.clientID.String()).Str("client_ip", wsConn.GetClientIP()).Msg("Forward client authenticated")
 	}
 
 	if s.directEnable {
@@ -1473,7 +1556,7 @@ func (s *LinkSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Con
 	}
 
 	// Send initial partner status for connector clients
-	if isValidConnector {
+	if auth.isValidConnector {
 		// Count total reverse clients for this token
 		reverseCount := 0
 		s.mu.RLock()
@@ -1494,44 +1577,13 @@ func (s *LinkSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Con
 		}
 	}
 
-	// Start message handling goroutines
-	errChan := make(chan error, 2)
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	// A reconnected connector link takes over the channels that were bound to
-	// its dead predecessor, so provider replies keep flowing without waiting
-	// for the connector to re-send a Resume.
-	if isValidConnector {
-		s.rebindConnectorChannels(reverseToken, wsConn)
-	}
-
-	// Start message dispatcher
-	if isValidConnector {
-		go func() {
-			errChan <- s.connectorMessageDispatcher(ctx, wsConn, reverseToken, clientID)
-		}()
-	} else {
-		go func() {
-			errChan <- s.messageDispatcher(ctx, wsConn, clientID)
-		}()
-	}
-
-	// Wait for either routine to finish
-	<-errChan
-
-	// Forward-mode channels carried by this link survive within the transport
-	// grace window: once the link is gone, idle channels are torn down here
-	// when the window expires (busy ones are torn down by the relay's
-	// write-retry path). Connector/provider channels are covered by
-	// scheduleChannelGraceCleanup in cleanupConnection.
-	if !isValidConnector {
-		s.relay.scheduleChannelExpiry(wsConn, s.transportGrace)
-	}
+	return true
 }
 
-// messageDispatcher handles WebSocket message distribution
-func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clientID uuid.UUID) error {
+// dispatchMessages runs the shared per-connection read loop and hands every
+// decoded message to the role-specific handler. The loop ends only when the
+// context is cancelled or the link fails.
+func (s *LinkSocksServer) dispatchMessages(ctx context.Context, ws *WSConn, handle func(BaseMessage)) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -1545,220 +1597,244 @@ func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, cli
 				return err
 			}
 
+			// Any frame keeps the link alive; silence makes it expire.
+			ws.TouchReadDeadline()
+
 			s.relay.logMessage(msg, "recv", ws.Label())
 
-			// Handle message sequentially (not in a goroutine)
-			switch m := msg.(type) {
-			case LogMessage:
-				if s.directEnable && s.clientHelloIndicatesDirectSupport(m) {
-					s.markClientSupportsDirect(clientID)
-					s.sendKnownPeerDirectCapabilities(clientID, ws)
-				}
-
-			case DirectCapabilitiesMessage:
-				if s.directEnable {
-					s.mu.Lock()
-					if meta := s.clientMeta[clientID]; meta != nil {
-						meta.SupportsDirect = true
-						tmp := m
-						meta.LastCapabilities = &tmp
-						meta.UpdatedAt = time.Now()
-					}
-					s.mu.Unlock()
-					s.forwardDirectMessageFromClient(clientID, m)
-				}
-
-			case DirectRendezvousMessage:
-				if s.directEnable {
-					s.mu.Lock()
-					if meta := s.clientMeta[clientID]; meta != nil {
-						meta.SupportsDirect = true
-						tmp := m
-						meta.LastRendezvous = &tmp
-						meta.UpdatedAt = time.Now()
-					}
-					s.mu.Unlock()
-					s.forwardDirectMessageFromClient(clientID, m)
-				}
-
-			case DirectStatusMessage:
-				if s.directEnable {
-					s.mu.Lock()
-					if meta := s.clientMeta[clientID]; meta != nil {
-						meta.SupportsDirect = true
-						tmp := m
-						meta.LastStatus = &tmp
-						meta.UpdatedAt = time.Now()
-					}
-					s.mu.Unlock()
-					s.forwardDirectMessageFromClient(clientID, m)
-				}
-
-			case ChannelBindMessage:
-				s.mu.RLock()
-				meta := s.clientMeta[clientID]
-				role := directClientRoleForward
-				if meta != nil {
-					role = meta.Role
-				}
-				internalToken := ""
-				if meta != nil {
-					internalToken = meta.InternalToken
-				}
-				s.mu.RUnlock()
-				s.bindDirectChannel(m.ChannelID, m.PeerSessionID, ws, role, internalToken)
-				s.bindChannelPeer(m.ChannelID, ws, role, internalToken)
-				s.forwardChannelControl(m.ChannelID, ws, m)
-
-			case ChannelMigrateMessage:
-				s.forwardChannelControl(m.ChannelID, ws, m)
-
-			case ChannelMigrateAckMessage:
-				s.forwardChannelControl(m.ChannelID, ws, m)
-
-			case ChannelDataAckMessage:
-				s.forwardChannelControl(m.ChannelID, ws, m)
-
-			case UnknownMessage:
-				// Forward compatibility: ignore.
-
-			case DataMessage:
-				// Use non-blocking send for data messages
-				if queue, ok := s.relay.messageQueues.Load(m.ChannelID); ok {
-					select {
-					case queue.(chan BaseMessage) <- m:
-						s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Message forwarded to channel")
-					default:
-						s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Message queue full, dropping message")
-					}
-					continue
-				}
-
-				// Forward to connector if exists
-				s.connCache.mu.RLock()
-				targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]
-				s.connCache.mu.RUnlock()
-
-				if exists {
-					s.relay.logMessage(m, "send", ws.Label())
-					if err := targetWS.WriteMessage(m); err != nil {
-						s.log.Debug().Err(err).Msg("Failed to forward data message to connector client")
-						// The connector link is down but may come back within
-						// the transport grace window; retain the return-path
-						// data so it is replayed on the reconnected link
-						// instead of being silently dropped.
-						s.bufferConnectorReturn(m.ChannelID, m)
-					}
-				} else {
-					s.bufferConnectorReturn(m.ChannelID, m)
-				}
-
-			case ConnectMessage:
-				var isForwardClient bool
-				s.mu.RLock()
-				_, isForwardClient = s.clients[clientID]
-				s.mu.RUnlock()
-
-				if isForwardClient {
-					// Enforce per-token forward access control before dialing
-					s.mu.RLock()
-					var fwdAC *AccessControl
-					if meta := s.clientMeta[clientID]; meta != nil {
-						fwdAC = s.forwardTokenAC[meta.InternalToken]
-					}
-					s.mu.RUnlock()
-					if fwdAC != nil && !fwdAC.Empty() && !fwdAC.Allow(m.Address, m.Port) {
-						s.log.Warn().Str("address", m.Address).Int("port", m.Port).Msg("Forward connect blocked by token access control")
-						s.rejectConnectRequest(ws, m, "destination blocked by access control")
-						continue
-					}
-
-					// Create buffered channel with larger capacity SYNCHRONOUSLY
-					// This prevents race condition where DataMessage arrives before queue creation.
-					// On resume the existing queue is reused so the channel's
-					// forwarding loop keeps draining the same buffer.
-					if _, exists := s.relay.messageQueues.Load(m.ChannelID); !exists {
-						msgChan := make(chan BaseMessage, 1000)
-						s.relay.messageQueues.Store(m.ChannelID, msgChan)
-					}
-				}
-
-				go func(m ConnectMessage) {
-					if isForwardClient {
-						// The handler must outlive this link so an established
-						// channel can resume after a reconnect; the relay cancels
-						// it on teardown or shutdown.
-						hctx := ctx
-						if s.transportGrace > 0 {
-							hctx = context.Background()
-						}
-						go func() {
-							if err := s.relay.HandleNetworkConnection(hctx, ws, m); err != nil {
-								if m.Resume && !errors.Is(err, context.Canceled) {
-									// The channel already expired or was never
-									// known; tell the caller to close it.
-									disc := DisconnectMessage{ChannelID: m.ChannelID, Error: "channel expired"}
-									s.relay.logMessage(disc, "send", ws.Label())
-									if werr := ws.WriteMessage(disc); werr != nil {
-										s.log.Debug().Err(werr).Msg("Failed to send channel-expired disconnect")
-									}
-								}
-								if !errors.Is(err, context.Canceled) {
-									s.log.Debug().Err(err).Msg("Error handling network connection")
-								}
-							}
-						}()
-					}
-				}(m)
-
-			case ConnectResponseMessage:
-				go func(m ConnectResponseMessage) {
-					if queue, ok := s.relay.messageQueues.Load(m.ChannelID); ok {
-						if s.relay.option.FastOpen {
-							if m.Success {
-								s.relay.SetConnectionSuccess(m.ChannelID)
-							} else {
-								s.disconnectChannel(m.ChannelID, ws, m)
-							}
-							return
-						}
-
-						select {
-						case queue.(chan BaseMessage) <- m:
-							s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Delivered connect response to queue")
-						case <-time.After(2 * time.Second):
-							s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Timeout delivering connect response")
-						}
-					} else {
-						// Forward to connector
-						s.connCache.mu.RLock()
-						connectorWS, exists := s.connCache.channelIDToConnector[m.ChannelID]
-						s.connCache.mu.RUnlock()
-						if exists {
-							s.relay.logMessage(m, "send", ws.Label())
-							if err := connectorWS.WriteMessage(m); err != nil {
-								s.log.Debug().Err(err).Msg("Failed to forward connect response")
-								// The connector link may be down; replay the
-								// response on the reconnected link so a
-								// connect started right before the drop is not
-								// left hanging on the caller's socket.
-								s.bufferConnectorReturn(m.ChannelID, m)
-							}
-							s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Forwarded connect response to connector")
-						} else {
-							s.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("No queue and no connector for connect response")
-						}
-					}
-				}(m)
-
-			case DisconnectMessage:
-				go s.disconnectChannel(m.ChannelID, ws, m)
-
-			case ConnectorMessage:
-				go s.handleConnectorMessage(m, ws, clientID)
-			}
+			handle(msg)
 		}
 	}
+}
+
+// handleCommonDispatcherMessage handles the message types shared by forward
+// and connector links; it reports whether the message was consumed.
+func (s *LinkSocksServer) handleCommonDispatcherMessage(msg BaseMessage, ws *WSConn, clientID uuid.UUID) bool {
+	switch m := msg.(type) {
+	case LogMessage:
+		if s.directEnable && s.clientHelloIndicatesDirectSupport(m) {
+			s.markClientSupportsDirect(clientID)
+			s.sendKnownPeerDirectCapabilities(clientID, ws)
+		}
+
+	case DirectCapabilitiesMessage:
+		if s.directEnable {
+			s.mu.Lock()
+			if meta := s.clientMeta[clientID]; meta != nil {
+				meta.SupportsDirect = true
+				tmp := m
+				meta.LastCapabilities = &tmp
+				meta.UpdatedAt = time.Now()
+			}
+			s.mu.Unlock()
+			s.forwardDirectMessageFromClient(clientID, m)
+		}
+
+	case DirectRendezvousMessage:
+		if s.directEnable {
+			s.mu.Lock()
+			if meta := s.clientMeta[clientID]; meta != nil {
+				meta.SupportsDirect = true
+				tmp := m
+				meta.LastRendezvous = &tmp
+				meta.UpdatedAt = time.Now()
+			}
+			s.mu.Unlock()
+			s.forwardDirectMessageFromClient(clientID, m)
+		}
+
+	case DirectStatusMessage:
+		if s.directEnable {
+			s.mu.Lock()
+			if meta := s.clientMeta[clientID]; meta != nil {
+				meta.SupportsDirect = true
+				tmp := m
+				meta.LastStatus = &tmp
+				meta.UpdatedAt = time.Now()
+			}
+			s.mu.Unlock()
+			s.forwardDirectMessageFromClient(clientID, m)
+		}
+
+	case ChannelMigrateMessage:
+		s.forwardChannelControl(m.ChannelID, ws, m)
+
+	case ChannelMigrateAckMessage:
+		s.forwardChannelControl(m.ChannelID, ws, m)
+
+	case ChannelDataAckMessage:
+		s.forwardChannelControl(m.ChannelID, ws, m)
+
+	case UnknownMessage:
+		// Forward compatibility: ignore.
+
+	default:
+		return false
+	}
+	return true
+}
+
+// messageDispatcher handles WebSocket message distribution
+func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, clientID uuid.UUID) error {
+	return s.dispatchMessages(ctx, ws, func(msg BaseMessage) {
+		if s.handleCommonDispatcherMessage(msg, ws, clientID) {
+			return
+		}
+
+		// Handle message sequentially (not in a goroutine)
+		switch m := msg.(type) {
+		case ChannelBindMessage:
+			s.mu.RLock()
+			meta := s.clientMeta[clientID]
+			role := directClientRoleForward
+			if meta != nil {
+				role = meta.Role
+			}
+			internalToken := ""
+			if meta != nil {
+				internalToken = meta.InternalToken
+			}
+			s.mu.RUnlock()
+			s.bindDirectChannel(m.ChannelID, m.PeerSessionID, ws, role, internalToken)
+			s.bindChannelPeer(m.ChannelID, ws, role, internalToken)
+			s.forwardChannelControl(m.ChannelID, ws, m)
+
+		case DataMessage:
+			// Use non-blocking send for data messages
+			if queue, ok := s.relay.messageQueues.Load(m.ChannelID); ok {
+				select {
+				case queue.(chan BaseMessage) <- m:
+					s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Message forwarded to channel")
+				default:
+					s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Message queue full, dropping message")
+				}
+				return
+			}
+
+			// Forward to connector if exists
+			s.connCache.mu.RLock()
+			targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]
+			s.connCache.mu.RUnlock()
+
+			if exists {
+				s.relay.logMessage(m, "send", ws.Label())
+				if err := targetWS.WriteMessage(m); err != nil {
+					s.log.Debug().Err(err).Msg("Failed to forward data message to connector client")
+					// The connector link is down but may come back within
+					// the transport grace window; retain the return-path
+					// data so it is replayed on the reconnected link
+					// instead of being silently dropped.
+					s.bufferConnectorReturn(m.ChannelID, m)
+				}
+			} else {
+				s.bufferConnectorReturn(m.ChannelID, m)
+			}
+
+		case ConnectMessage:
+			var isForwardClient bool
+			s.mu.RLock()
+			_, isForwardClient = s.clients[clientID]
+			s.mu.RUnlock()
+
+			if isForwardClient {
+				// Enforce per-token forward access control before dialing
+				s.mu.RLock()
+				var fwdAC *AccessControl
+				if meta := s.clientMeta[clientID]; meta != nil {
+					fwdAC = s.forwardTokenAC[meta.InternalToken]
+				}
+				s.mu.RUnlock()
+				if fwdAC != nil && !fwdAC.Empty() && !fwdAC.Allow(m.Address, m.Port) {
+					s.log.Warn().Str("address", m.Address).Int("port", m.Port).Msg("Forward connect blocked by token access control")
+					s.rejectConnectRequest(ws, m, "destination blocked by access control")
+					return
+				}
+
+				// Create buffered channel with larger capacity SYNCHRONOUSLY
+				// This prevents race condition where DataMessage arrives before queue creation.
+				// On resume the existing queue is reused so the channel's
+				// forwarding loop keeps draining the same buffer.
+				if _, exists := s.relay.messageQueues.Load(m.ChannelID); !exists {
+					msgChan := make(chan BaseMessage, 1000)
+					s.relay.messageQueues.Store(m.ChannelID, msgChan)
+				}
+			}
+
+			go func(m ConnectMessage) {
+				if isForwardClient {
+					// The handler must outlive this link so an established
+					// channel can resume after a reconnect; the relay cancels
+					// it on teardown or shutdown.
+					hctx := ctx
+					if s.transportGrace > 0 {
+						hctx = context.Background()
+					}
+					go func() {
+						if err := s.relay.HandleNetworkConnection(hctx, ws, m); err != nil {
+							if m.Resume && !errors.Is(err, context.Canceled) {
+								// The channel already expired or was never
+								// known; tell the caller to close it.
+								disc := DisconnectMessage{ChannelID: m.ChannelID, Error: "channel expired"}
+								s.relay.logMessage(disc, "send", ws.Label())
+								if werr := ws.WriteMessage(disc); werr != nil {
+									s.log.Debug().Err(werr).Msg("Failed to send channel-expired disconnect")
+								}
+							}
+							if !errors.Is(err, context.Canceled) {
+								s.log.Debug().Err(err).Msg("Error handling network connection")
+							}
+						}
+					}()
+				}
+			}(m)
+
+		case ConnectResponseMessage:
+			go func(m ConnectResponseMessage) {
+				if queue, ok := s.relay.messageQueues.Load(m.ChannelID); ok {
+					if s.relay.option.FastOpen {
+						if m.Success {
+							s.relay.SetConnectionSuccess(m.ChannelID)
+						} else {
+							s.disconnectChannel(m.ChannelID, ws, m)
+						}
+						return
+					}
+
+					select {
+					case queue.(chan BaseMessage) <- m:
+						s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Delivered connect response to queue")
+					case <-time.After(2 * time.Second):
+						s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Timeout delivering connect response")
+					}
+				} else {
+					// Forward to connector
+					s.connCache.mu.RLock()
+					connectorWS, exists := s.connCache.channelIDToConnector[m.ChannelID]
+					s.connCache.mu.RUnlock()
+					if exists {
+						s.relay.logMessage(m, "send", ws.Label())
+						if err := connectorWS.WriteMessage(m); err != nil {
+							s.log.Debug().Err(err).Msg("Failed to forward connect response")
+							// The connector link may be down; replay the
+							// response on the reconnected link so a
+							// connect started right before the drop is not
+							// left hanging on the caller's socket.
+							s.bufferConnectorReturn(m.ChannelID, m)
+						}
+						s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Forwarded connect response to connector")
+					} else {
+						s.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("No queue and no connector for connect response")
+					}
+				}
+			}(m)
+
+		case DisconnectMessage:
+			go s.disconnectChannel(m.ChannelID, ws, m)
+
+		case ConnectorMessage:
+			go s.handleConnectorMessage(m, ws, clientID)
+		}
+	})
 }
 
 // New helper method to handle connector messages
@@ -1825,113 +1901,45 @@ func (s *LinkSocksServer) handleConnectorMessage(m ConnectorMessage, ws *WSConn,
 
 // connectorMessageDispatcher handles WebSocket message distribution for connector tokens
 func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WSConn, reverseToken string, clientID uuid.UUID) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			msg, err := ws.ReadMessage()
-			if err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					s.log.Debug().Err(err).Msg("WebSocket read error")
-				}
-				return err
-			}
-
-			s.relay.logMessage(msg, "recv", ws.Label())
-
-			switch m := msg.(type) {
-			case LogMessage:
-				if s.directEnable && s.clientHelloIndicatesDirectSupport(m) {
-					s.markClientSupportsDirect(clientID)
-					s.sendKnownPeerDirectCapabilities(clientID, ws)
-				}
-
-			case DirectCapabilitiesMessage:
-				if s.directEnable {
-					s.mu.Lock()
-					if meta := s.clientMeta[clientID]; meta != nil {
-						meta.SupportsDirect = true
-						tmp := m
-						meta.LastCapabilities = &tmp
-						meta.UpdatedAt = time.Now()
-					}
-					s.mu.Unlock()
-					s.forwardDirectMessageFromClient(clientID, m)
-				}
-
-			case DirectRendezvousMessage:
-				if s.directEnable {
-					s.mu.Lock()
-					if meta := s.clientMeta[clientID]; meta != nil {
-						meta.SupportsDirect = true
-						tmp := m
-						meta.LastRendezvous = &tmp
-						meta.UpdatedAt = time.Now()
-					}
-					s.mu.Unlock()
-					s.forwardDirectMessageFromClient(clientID, m)
-				}
-
-			case DirectStatusMessage:
-				if s.directEnable {
-					s.mu.Lock()
-					if meta := s.clientMeta[clientID]; meta != nil {
-						meta.SupportsDirect = true
-						tmp := m
-						meta.LastStatus = &tmp
-						meta.UpdatedAt = time.Now()
-					}
-					s.mu.Unlock()
-					s.forwardDirectMessageFromClient(clientID, m)
-				}
-
-			case UnknownMessage:
-				// Forward compatibility: ignore.
-
-			case ChannelBindMessage:
-				s.bindDirectChannel(m.ChannelID, m.PeerSessionID, ws, directClientRoleConnector, reverseToken)
-				s.bindChannelPeer(m.ChannelID, ws, directClientRoleConnector, reverseToken)
-				s.forwardChannelControl(m.ChannelID, ws, m)
-
-			case ChannelMigrateMessage:
-				s.forwardChannelControl(m.ChannelID, ws, m)
-
-			case ChannelMigrateAckMessage:
-				s.forwardChannelControl(m.ChannelID, ws, m)
-
-			case ChannelDataAckMessage:
-				s.forwardChannelControl(m.ChannelID, ws, m)
-
-			case ConnectMessage:
-				// Ensure the channel has a buffer. Data may already have been
-				// arriving for it (fast-open pipelining does not depend on the
-				// message order), and the provider binding below runs in a
-				// goroutine. Reserve the buffer synchronously so no data is
-				// dropped while the mapping is unpublished.
-				s.reserveOrphanQueue(m.ChannelID)
-				s.startConnectorPump(m, ws, reverseToken, clientID, ctx)
-
-			case DataMessage:
-				s.routeConnectorData(m, ws)
-
-			case DisconnectMessage:
-				go func(m DisconnectMessage) {
-					// Forward message and clean up channel mappings
-					s.connCache.mu.RLock()
-					targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]
-					s.connCache.mu.RUnlock()
-					if exists {
-						s.relay.logMessage(m, "send", ws.Label())
-						if err := targetWS.WriteMessage(m); err != nil {
-							s.log.Debug().Err(err).Msg("Failed to forward disconnect message")
-						}
-					}
-					s.cleanupConnectorChannel(m.ChannelID)
-				}(m)
-			}
+	return s.dispatchMessages(ctx, ws, func(msg BaseMessage) {
+		if s.handleCommonDispatcherMessage(msg, ws, clientID) {
+			return
 		}
-	}
+
+		switch m := msg.(type) {
+		case ChannelBindMessage:
+			s.bindDirectChannel(m.ChannelID, m.PeerSessionID, ws, directClientRoleConnector, reverseToken)
+			s.bindChannelPeer(m.ChannelID, ws, directClientRoleConnector, reverseToken)
+			s.forwardChannelControl(m.ChannelID, ws, m)
+
+		case ConnectMessage:
+			// Ensure the channel has a buffer. Data may already have been
+			// arriving for it (fast-open pipelining does not depend on the
+			// message order), and the provider binding below runs in a
+			// goroutine. Reserve the buffer synchronously so no data is
+			// dropped while the mapping is unpublished.
+			s.reserveOrphanQueue(m.ChannelID)
+			s.startConnectorPump(m, ws, reverseToken, clientID, ctx)
+
+		case DataMessage:
+			s.routeConnectorData(m, ws)
+
+		case DisconnectMessage:
+			go func(m DisconnectMessage) {
+				// Forward message and clean up channel mappings
+				s.connCache.mu.RLock()
+				targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]
+				s.connCache.mu.RUnlock()
+				if exists {
+					s.relay.logMessage(m, "send", ws.Label())
+					if err := targetWS.WriteMessage(m); err != nil {
+						s.log.Debug().Err(err).Msg("Failed to forward disconnect message")
+					}
+				}
+				s.cleanupConnectorChannel(m.ChannelID)
+			}(m)
+		}
+	})
 }
 
 // disconnectChannel handles forwarding disconnect message and cleanup of channel resources
@@ -2058,13 +2066,17 @@ func (s *LinkSocksServer) rebindConnectorChannels(reverseToken string, ws *WSCon
 	for _, id := range ids {
 		s.connCache.mu.Lock()
 		cur := s.connCache.channelIDToConnector[id]
-		if cur != nil && !online[cur] {
+		// A connector link may be gone without the server noticing yet (no
+		// pong within the staleness window): only a genuinely live link keeps
+		// its channel mappings.
+		stale := cur != nil && (!online[cur] || cur.isStale(time.Now()))
+		if stale {
 			s.connCache.channelIDToConnector[id] = ws
 			s.log.Info().Str("channel_id", id.String()).Msg("Rebound connector channel onto reconnected link")
 		}
 		s.connCache.mu.Unlock()
 
-		if cur != nil && !online[cur] {
+		if stale {
 			// The previous link was dead: replay any return-path data that
 			// arrived while the connector was away onto the fresh link.
 			s.drainConnectorReturn(id, ws)
@@ -2490,41 +2502,50 @@ func (s *LinkSocksServer) expireConnectorReturn(channelID uuid.UUID) {
 	s.log.Warn().Str("channel_id", channelID.String()).Msg("Dropped buffered return-path data for channel that never reconnected")
 }
 
+// drainQueue non-blockingly empties a buffered message queue.
+func drainQueue(q chan BaseMessage) []BaseMessage {
+	var out []BaseMessage
+	for {
+		select {
+		case m := <-q:
+			out = append(out, m)
+		default:
+			return out
+		}
+	}
+}
+
 // drainConnectorReturn forwards buffered return-path data onto a (re)bound
 // connector link. It is called after the channel mapping is published, so
 // replayed data can never overtake a fresh ReturnPathMessage stream.
 func (s *LinkSocksServer) drainConnectorReturn(channelID uuid.UUID, target *WSConn) {
-	for {
-		s.connCache.mu.Lock()
-		od, ok := s.connCache.returnQueues[channelID]
-		if !ok {
-			s.connCache.mu.Unlock()
-			return
-		}
-		select {
-		case msg, ok := <-od.queue:
-			if !ok {
-				s.connCache.mu.Unlock()
-				return
-			}
-			s.connCache.mu.Unlock()
-			s.relay.logMessage(msg, "send", target.Label())
-			if err := target.WriteMessage(msg); err != nil {
-				s.log.Debug().Err(err).Msg("Failed to deliver buffered return-path data")
-				s.connCache.mu.Lock()
-				if od, ok := s.connCache.returnQueues[channelID]; ok {
+	s.connCache.mu.Lock()
+	od, ok := s.connCache.returnQueues[channelID]
+	if !ok {
+		s.connCache.mu.Unlock()
+		return
+	}
+	pending := drainQueue(od.queue)
+	s.connCache.mu.Unlock()
+
+	for i, msg := range pending {
+		s.relay.logMessage(msg, "send", target.Label())
+		if err := target.WriteMessage(msg); err != nil {
+			s.log.Debug().Err(err).Msg("Failed to deliver buffered return-path data")
+			// The fresh link died mid-drain. Requeue the failed message and
+			// everything after it ahead of any data that arrived meanwhile,
+			// so the original order is preserved.
+			s.connCache.mu.Lock()
+			if od, ok := s.connCache.returnQueues[channelID]; ok {
+				merged := append(append([]BaseMessage(nil), pending[i:]...), drainQueue(od.queue)...)
+				for _, m := range merged {
 					select {
-					case od.queue <- msg:
+					case od.queue <- m:
 					default:
-						s.connCache.mu.Unlock()
-						s.log.Warn().Str("channel_id", channelID.String()).Msg("Return-path data dropped after redelivery failure")
-						return
+						s.log.Warn().Str("channel_id", channelID.String()).Msg("Return-path data queue full, dropping message")
 					}
 				}
-				s.connCache.mu.Unlock()
-				return
 			}
-		default:
 			s.connCache.mu.Unlock()
 			return
 		}

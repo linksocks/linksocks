@@ -60,9 +60,11 @@ func TestResumeWriteFailureDataIntegrity(t *testing.T) {
 	}
 }
 
-// TestContextCancelDuringGraceRetry verifies that when the local TCP connection
-// closes during transport grace retry, the channel cleans up immediately without
-// leaking or producing misleading grace-expiry warnings.
+// TestContextCancelDuringGraceRetry verifies that when the client context is
+// cancelled during transport grace retry (the channel is retrying writes while
+// its WebSocket link is down), the blocked local-proxy write aborts promptly
+// instead of waiting out the grace window, and the channel is cleaned up
+// without leaking or producing misleading grace-expiry warnings.
 func TestContextCancelDuringGraceRetry(t *testing.T) {
 	echoAddr, stopEcho := startEchoServer(t)
 	defer stopEcho()
@@ -91,29 +93,38 @@ func TestContextCancelDuringGraceRetry(t *testing.T) {
 	client.Client.DisconnectWebSockets()
 	waitForChan(t, client.Client.DisconnectedChan(), 3*time.Second, "disconnection")
 
-	// Write blocks in retry loop: a large payload fills the socket and local
-	// proxy buffers, so the write stalls until the channel retry loop gives
-	// up (either grace expiry or ctx cancellation).
+	// Write in chunks until the kernel buffers fill and the write stalls in
+	// the channel's grace retry loop. Chunked writes keep the test
+	// independent of platform socket buffer sizes (a single large payload
+	// may be absorbed entirely by the OS on some platforms, returning
+	// success before the retry path ever blocks).
 	writeErr := make(chan error, 1)
 	go func() {
-		_, err := tunnel.Write(bytes.Repeat([]byte("x"), 16<<20))
-		writeErr <- err
+		chunk := bytes.Repeat([]byte("x"), 1<<20)
+		for {
+			if _, err := tunnel.Write(chunk); err != nil {
+				writeErr <- err
+				return
+			}
+		}
 	}()
 
 	time.Sleep(500 * time.Millisecond)
 
-	// Close TCP (triggers ctx cancel)
-	tunnel.Close()
+	// Cancelling the client context must abort the grace retry, tearing down
+	// the local proxy connection so the blocked write fails promptly instead
+	// of stalling until the grace window expires.
+	client.Client.Close()
 
 	// Write should return promptly
 	select {
 	case err := <-writeErr:
 		require.Error(t, err)
 	case <-time.After(2 * time.Second):
-		t.Fatal("Write did not return after TCP close")
+		t.Fatal("Write did not return after client context cancellation")
 	}
 
-	time.Sleep(1 * time.Second)
+	time.Sleep(500 * time.Millisecond)
 }
 
 // TestSwitchDuringWriteConcurrency verifies concurrent Switch and WriteMessage

@@ -409,10 +409,17 @@ func (m *DirectQUICManager) Connect(ctx context.Context, candidates []DirectCand
 	// direction is preferred by both sides.
 
 	selectConnection := func(c *quic.Conn, isAccepted bool) *quic.Conn {
+		// Closing the selected connection unblocks this waiter so it can
+		// retire; in-flight dials are cancelled by the caller's deferred
+		// cancel and fail on their own.
+		done := make(chan struct{})
 		go func() {
-			// Wait for the non-selected direction to arrive and close it.
 			if isAccepted {
-				<-dialedDone
+				select {
+				case <-dialedDone:
+				case <-done:
+					return
+				}
 				connMu.Lock()
 				dc := dialedConn
 				connMu.Unlock()
@@ -420,7 +427,11 @@ func (m *DirectQUICManager) Connect(ctx context.Context, candidates []DirectCand
 					_ = dc.CloseWithError(0, "superseded")
 				}
 			} else {
-				<-acceptedDone
+				select {
+				case <-acceptedDone:
+				case <-done:
+					return
+				}
 				connMu.Lock()
 				ac := acceptedConn
 				connMu.Unlock()
@@ -434,6 +445,7 @@ func (m *DirectQUICManager) Connect(ctx context.Context, candidates []DirectCand
 		m.active = c
 		m.mu.Unlock()
 		_ = ln.Close()
+		close(done)
 		return c
 	}
 

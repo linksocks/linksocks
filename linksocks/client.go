@@ -403,25 +403,25 @@ func (c *LinkSocksClient) GetDirectRTT() time.Duration {
 
 // ClientOption represents configuration options for LinkSocksClient
 type ClientOption struct {
-	WSURL             string
-	Reverse           bool
-	SocksHost         string
-	SocksPort         int
-	SocksUsername     string
-	SocksPassword     string
-	SocksWaitServer   bool
-	Reconnect         bool
-	ReconnectDelay    time.Duration
-	RetryAuthFailure  bool
-	Logger            zerolog.Logger
-	BufferSize        int
-	ChannelTimeout    time.Duration
-	ConnectTimeout    time.Duration
+	WSURL            string
+	Reverse          bool
+	SocksHost        string
+	SocksPort        int
+	SocksUsername    string
+	SocksPassword    string
+	SocksWaitServer  bool
+	Reconnect        bool
+	ReconnectDelay   time.Duration
+	RetryAuthFailure bool
+	Logger           zerolog.Logger
+	BufferSize       int
+	ChannelTimeout   time.Duration
+	ConnectTimeout   time.Duration
 	// TransportGrace is how long established channels survive a broken
 	// WebSocket link before being torn down. Zero disables survival.
-	TransportGrace time.Duration
-	Threads        int
-	FastOpen       bool
+	TransportGrace    time.Duration
+	Threads           int
+	FastOpen          bool
 	UpstreamProxy     string
 	UpstreamUsername  string
 	UpstreamPassword  string
@@ -2982,25 +2982,17 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 
 // heartbeatHandler maintains WebSocket connection with periodic pings
 func (c *LinkSocksClient) heartbeatHandler(ctx context.Context, ws *WSConn) error {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			// Just send the ping - RTT will be measured when pong is received
-			if err := ws.Ping(); err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
-					c.log.Trace().Msg("WebSocket connection closed, stopping heartbeat")
-				} else {
-					c.log.Debug().Err(err).Msg("Heartbeat error")
-				}
-				return err
-			}
-		}
+	// Just send the ping - RTT will be measured when pong is received.
+	err := ws.KeepAlive(ctx, defaultPingInterval)
+	if errors.Is(err, context.Canceled) {
+		return err
 	}
+	if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
+		c.log.Trace().Msg("WebSocket connection closed, stopping heartbeat")
+	} else {
+		c.log.Debug().Err(err).Msg("Heartbeat error")
+	}
+	return err
 }
 
 // runSocksServer runs local SOCKS5 server

@@ -1,6 +1,7 @@
 package linksocks
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -18,6 +19,15 @@ const (
 	// defaultWriteTimeout bounds a single WebSocket write so a half-open
 	// link cannot block a dispatcher or forwarding loop forever.
 	defaultWriteTimeout = 60 * time.Second
+	// defaultPingInterval is how often a keepalive pings the peer so a
+	// half-open link is detected and cleaned up.
+	defaultPingInterval = 30 * time.Second
+	// readTimeout is how long a link may be silent (no frame at all) before
+	// the dispatcher treats it as dead. Two missed ping rounds are fatal.
+	readTimeout = 2 * defaultPingInterval
+	// connStaleAfter is how long a link may go without a pong before its
+	// channels are considered owned by a dead link.
+	connStaleAfter = 3 * defaultPingInterval
 )
 
 // WSConn wraps a websocket.Conn with mutex protection
@@ -25,12 +35,22 @@ type WSConn struct {
 	conn *websocket.Conn
 	mu   sync.Mutex
 
-	pingTime time.Time  // Track when ping was sent
-	pingMu   sync.Mutex // Mutex for ping timing
-	rttNS    int64      // last measured RTT in nanoseconds (atomic)
+	// All timestamps are unix-millis stored atomically.
+	pingSentMillis int64 // when the last ping was sent
+	lastPongMillis int64 // when the last pong arrived; zero means never
+	rttNS          int64 // last measured RTT in nanoseconds
 
 	label    string
 	clientIP string
+}
+
+// isStale reports whether the link has been silent long enough to be treated
+// as dead, even though it may still be registered as online.
+func (c *WSConn) isStale(now time.Time) bool {
+	last := time.UnixMilli(atomic.LoadInt64(&c.lastPongMillis))
+	// A link that never answered a ping is stale; one that never got a pong
+	// chance yet (fresh link) is not.
+	return !last.IsZero() && now.Sub(last) > connStaleAfter
 }
 
 func (c *WSConn) Label() string {
@@ -84,37 +104,65 @@ func NewWSConn(conn *websocket.Conn, label string, logger zerolog.Logger) *WSCon
 
 	// Set read limit
 	conn.SetReadLimit(MaxWebSocketMessageSize)
+	wsConn.armReadDeadline()
 
 	// Set pong handler to measure RTT
 	conn.SetPongHandler(func(string) error {
-		wsConn.pingMu.Lock()
-		sent := wsConn.pingTime
-		wsConn.pingMu.Unlock()
-
-		if !sent.IsZero() {
-			rtt := time.Since(sent)
-			atomic.StoreInt64(&wsConn.rttNS, int64(rtt))
+		now := time.Now()
+		atomic.StoreInt64(&wsConn.lastPongMillis, now.UnixMilli())
+		if sent := time.UnixMilli(atomic.LoadInt64(&wsConn.pingSentMillis)); !sent.IsZero() {
+			atomic.StoreInt64(&wsConn.rttNS, int64(now.Sub(sent)))
 
 			// Log the actual RTT when pong is received
 			logger.
 				Trace().
-				Int64("rtt_ms", rtt.Milliseconds()).
+				Int64("rtt_ms", now.Sub(sent).Milliseconds()).
 				Msg("WebSocket pong received, RTT measured")
 		}
 
-		return conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		wsConn.armReadDeadline()
+		return nil
 	})
 
 	return wsConn
 }
 
+// armReadDeadline re-arms the read deadline; any incoming frame (data or
+// control) keeps the connection alive while a silent one expires.
+func (c *WSConn) armReadDeadline() {
+	c.conn.SetReadDeadline(time.Now().Add(readTimeout))
+}
+
+// TouchReadDeadline re-arms the read deadline after a received frame.
+func (c *WSConn) TouchReadDeadline() {
+	c.armReadDeadline()
+}
+
 // Ping sends a WebSocket ping and records the send time so the pong handler
 // can measure the round-trip time.
 func (c *WSConn) Ping() error {
-	c.pingMu.Lock()
-	c.pingTime = time.Now()
-	c.pingMu.Unlock()
+	atomic.StoreInt64(&c.pingSentMillis, time.Now().UnixMilli())
 	return c.SyncWriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
+}
+
+// KeepAlive pings the peer at a fixed interval until ctx is done or a ping
+// fails, so a half-open link is detected and cleaned up.
+func (c *WSConn) KeepAlive(ctx context.Context, interval time.Duration) error {
+	if interval <= 0 {
+		interval = defaultPingInterval
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+			if err := c.Ping(); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 // RTT returns the most recently measured round-trip time, or zero if no pong
@@ -162,52 +210,40 @@ func (c *WSConn) WriteMessage(msg BaseMessage) error {
 	return c.SyncWriteBinary(data)
 }
 
-// SyncWriteControl performs thread-safe control message writes and tracks ping time
+// SyncWriteControl performs thread-safe control message writes.
 func (c *WSConn) SyncWriteControl(messageType int, data []byte, deadline time.Time) error {
-	if messageType == websocket.PingMessage {
-		c.pingMu.Lock()
-		c.pingTime = time.Now()
-		c.pingMu.Unlock()
-	}
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.conn.WriteControl(messageType, data, deadline)
 }
 
-// MeasureLatency sends a ping and waits for pong to measure latency
-// Returns the one-way latency (RTT/2) or error if timeout
+// MeasureLatency sends a ping and waits for the pong to measure the
+// round-trip time. Returns the one-way latency (RTT/2) or an error on
+// timeout or write failure.
 func (c *WSConn) MeasureLatency(timeout time.Duration) (time.Duration, error) {
-	pongReceived := make(chan time.Duration, 1)
+	pongReceived := make(chan struct{}, 1)
 	originalHandler := c.conn.PongHandler()
 
 	c.conn.SetPongHandler(func(appData string) error {
-		c.pingMu.Lock()
-		rtt := time.Since(c.pingTime)
-		c.pingMu.Unlock()
-
 		select {
-		case pongReceived <- rtt / 2:
+		case pongReceived <- struct{}{}:
 		default:
 		}
-
 		if originalHandler != nil {
 			return originalHandler(appData)
 		}
-		return c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
 	})
+	defer c.conn.SetPongHandler(originalHandler)
 
-	if err := c.SyncWriteControl(websocket.PingMessage, nil, time.Now().Add(timeout)); err != nil {
-		c.conn.SetPongHandler(originalHandler)
+	if err := c.Ping(); err != nil {
 		return 0, err
 	}
 
 	select {
-	case latency := <-pongReceived:
-		c.conn.SetPongHandler(originalHandler)
-		return latency, nil
+	case <-pongReceived:
+		return time.Duration(atomic.LoadInt64(&c.rttNS)) / 2, nil
 	case <-time.After(timeout):
-		c.conn.SetPongHandler(originalHandler)
 		return 0, errors.New("timeout waiting for pong")
 	}
 }

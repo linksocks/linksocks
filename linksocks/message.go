@@ -889,13 +889,18 @@ func parseMessageBody(msgType byte, payload []byte) (BaseMessage, error) {
 			if err != nil {
 				return nil, fmt.Errorf("gzip reader creation failed: %w", err)
 			}
-			decompressedData, err = io.ReadAll(r)
+			// Bound decompressed output: a small compressed payload must not
+			// balloon past the message read limit.
+			decompressedData, err = io.ReadAll(io.LimitReader(r, int64(MaxWebSocketMessageSize)+1))
 			if err != nil {
 				_ = r.Close()
 				return nil, fmt.Errorf("gzip decompression failed: %w", err)
 			}
 			if err := r.Close(); err != nil {
 				return nil, fmt.Errorf("gzip close failed: %w", err)
+			}
+			if len(decompressedData) > int(MaxWebSocketMessageSize) {
+				return nil, fmt.Errorf("gzip decompression exceeded size limit of %d bytes", MaxWebSocketMessageSize)
 			}
 		} else {
 			decompressedData = rawData
