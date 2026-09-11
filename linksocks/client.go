@@ -48,6 +48,12 @@ func init() {
 
 const (
 	MaxRedirects = 5 // Maximum number of WebSocket redirects to follow
+
+	// directProbeBackoffBase is the default starting delay for direct
+	// probe retries; doubles per consecutive failure (see directProbeBackoff).
+	directProbeBackoffBase = 2 * time.Second
+	// stunDiscoverTimeout is the default per-round STUN discovery timeout.
+	stunDiscoverTimeout = 2 * time.Second
 )
 
 // nonRetriableError represents an error that should not be retried
@@ -108,9 +114,14 @@ type LinkSocksClient struct {
 	directUPnPKeep    bool
 	directUPnPExtPort int
 
+	directProbeBackoffBase time.Duration
+	stunTimeout            time.Duration
+	directHandshakeTimeout time.Duration
+
 	directStartOnce sync.Once
 	directMu        sync.Mutex
 	directNotifyCh  chan struct{}
+	quicNotifyCh    chan struct{}
 
 	directLocalSessionID     uuid.UUID
 	directLocalCandidates    []DirectCandidate
@@ -232,6 +243,7 @@ func (c *LinkSocksClient) ForceCloseDirectQUIC() {
 	if mgr != nil {
 		_ = mgr.Close()
 	}
+	c.quicNotify()
 }
 
 func (c *LinkSocksClient) directQUICPlaneIfReadyAndUsable(now time.Time) *DirectQUICDataPlane {
@@ -440,6 +452,19 @@ type ClientOption struct {
 	DirectUPnPKeep    bool
 	DirectUPnPExtPort int
 
+	// DirectProbeBackoffBase is the starting delay for direct-connection
+	// probe retries after a failed probe; doubles per consecutive failure.
+	DirectProbeBackoffBase time.Duration
+	// StunTimeout bounds a single STUN discovery round.
+	StunTimeout time.Duration
+	// DirectQUICHandshakeTimeout bounds a quic-go handshake attempt.
+	// Zero uses the default (2s).
+	DirectQUICHandshakeTimeout time.Duration
+	// ChannelCleanupDelay is how long a channel teardown waits before it
+	// cancels the local TCP/UDP forward after the channel is disconnected.
+	// Zero uses the relay default (5s).
+	ChannelCleanupDelay time.Duration
+
 	// EntryAccessControl restricts which destinations this client's local
 	// SOCKS5/HTTP proxy may request. Nil means no restriction.
 	EntryAccessControl *AccessControl
@@ -483,6 +508,9 @@ func DefaultClientOption() *ClientOption {
 		DirectUPnPLease:   30 * time.Minute,
 		DirectUPnPKeep:    false,
 		DirectUPnPExtPort: 0,
+
+		DirectProbeBackoffBase: directProbeBackoffBase,
+		StunTimeout:            stunDiscoverTimeout,
 	}
 }
 
@@ -736,6 +764,33 @@ func (o *ClientOption) WithDirectUPnPExtPort(port int) *ClientOption {
 	return o
 }
 
+// WithDirectProbeBackoffBase sets the starting delay for direct-connection
+// probe retries after a failed probe.
+func (o *ClientOption) WithDirectProbeBackoffBase(base time.Duration) *ClientOption {
+	o.DirectProbeBackoffBase = base
+	return o
+}
+
+// WithStunTimeout sets the per-round STUN discovery timeout.
+func (o *ClientOption) WithStunTimeout(timeout time.Duration) *ClientOption {
+	o.StunTimeout = timeout
+	return o
+}
+
+// WithChannelCleanupDelay sets how long a channel teardown waits before it
+// cancels the local TCP/UDP forward.
+func (o *ClientOption) WithChannelCleanupDelay(delay time.Duration) *ClientOption {
+	o.ChannelCleanupDelay = delay
+	return o
+}
+
+// WithDirectQUICHandshakeTimeout sets the quic-go handshake idle timeout for
+// the direct dataplane.
+func (o *ClientOption) WithDirectQUICHandshakeTimeout(timeout time.Duration) *ClientOption {
+	o.DirectQUICHandshakeTimeout = timeout
+	return o
+}
+
 // NewLinkSocksClient creates a new LinkSocksClient instance
 func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 	if opt == nil {
@@ -782,6 +837,9 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 		WithUpstreamProxyType(opt.UpstreamProxyType).
 		WithEntryAccessControl(opt.EntryAccessControl).
 		WithDialAccessControl(opt.DialAccessControl)
+	if opt.ChannelCleanupDelay > 0 {
+		relayOpt.WithChannelCleanupDelay(opt.ChannelCleanupDelay)
+	}
 
 	client := &LinkSocksClient{
 		instanceID:              uuid.New(),
@@ -816,7 +874,11 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 		directUPnPLease:         opt.DirectUPnPLease,
 		directUPnPKeep:          opt.DirectUPnPKeep,
 		directUPnPExtPort:       opt.DirectUPnPExtPort,
+		directProbeBackoffBase:  opt.DirectProbeBackoffBase,
+		stunTimeout:             opt.StunTimeout,
+		directHandshakeTimeout:  opt.DirectQUICHandshakeTimeout,
 		directNotifyCh:          make(chan struct{}, 1),
+		quicNotifyCh:            make(chan struct{}, 1),
 		directLocalSessionID:    uuid.New(),
 		directPendingRendezvous: make(map[uuid.UUID]struct{}),
 		directQUICReadyCh:       make(chan struct{}),
@@ -840,6 +902,15 @@ func minUUID(a, b uuid.UUID) uuid.UUID {
 func (c *LinkSocksClient) directNotify() {
 	select {
 	case c.directNotifyCh <- struct{}{}:
+	default:
+	}
+}
+
+// quicNotify wakes the direct QUIC agent up from its idle tick, e.g. right
+// after a forced close so the next connection attempt starts immediately.
+func (c *LinkSocksClient) quicNotify() {
+	select {
+	case c.quicNotifyCh <- struct{}{}:
 	default:
 	}
 }
@@ -899,8 +970,23 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 		}
 		if plane != nil && mgr != nil && mgr.Active() != nil {
 			// Keep using an established direct path even if a peer temporarily reports degraded.
+			// A ForceClose (or auto-cleanup) that already replaced the manager must
+			// not idle on the stale connection: fall through and reconnect now.
+			c.directQUICMu.Lock()
+			current := c.directQUICManager
+			c.directQUICMu.Unlock()
+			if current != mgr {
+				mgr = nil
+				plane = nil
+				continue
+			}
 			c.directMarkRecovered(time.Now())
-			time.Sleep(2 * time.Second)
+			select {
+			case <-ctx.Done():
+				return
+			case <-c.quicNotifyCh:
+			case <-time.After(2 * time.Second):
+			}
 			continue
 		}
 
@@ -937,7 +1023,7 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 			continue
 		}
 
-		mgr, err := NewDirectQUICManager(udpConn, pairSession, pairKey, c.log)
+		mgr, err := NewDirectQUICManagerWithHandshakeTimeout(udpConn, pairSession, pairKey, c.log, c.directHandshakeTimeout)
 		if err != nil {
 			c.directMarkDegraded(time.Now(), quicBackoff, fmt.Sprintf("quic manager init: %v", err))
 			c.log.Debug().Err(err).Dur("backoff", quicBackoff).Msg("Direct QUIC manager init failed")
@@ -1243,7 +1329,7 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 
 	var localCandidates []DirectCandidate
 	if discovery == DirectDiscoverySTUN {
-		stunRes, err := StunDiscoverFromConn(ctx, conn, &StunDiscoverOption{Servers: stunServers, Timeout: 2 * time.Second, Logger: c.log})
+		stunRes, err := StunDiscoverFromConn(ctx, conn, &StunDiscoverOption{Servers: stunServers, Timeout: c.stunTimeoutOrDefault(), Logger: c.log})
 		if err != nil {
 			c.log.Warn().Err(err).Msg("Direct STUN discovery failed")
 			if c.directMode == DirectModeDirectOnly {
@@ -1427,7 +1513,7 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 					nextAllowed = now.Add(1 * time.Minute)
 
 					rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-					stunRes, err := StunDiscoverFromConn(rctx, conn, &StunDiscoverOption{Servers: stunServers, Timeout: 2 * time.Second, Logger: c.log})
+					stunRes, err := StunDiscoverFromConn(rctx, conn, &StunDiscoverOption{Servers: stunServers, Timeout: c.stunTimeoutOrDefault(), Logger: c.log})
 					cancel()
 					if err != nil {
 						c.log.Debug().Err(err).Msg("Direct STUN rediscovery failed")
@@ -1711,7 +1797,7 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 			c.directProbeBackoffSess = pairSession
 			c.directProbeFailCount++
 			failCount := c.directProbeFailCount
-			backoff = directProbeBackoff(failCount)
+			backoff = c.directProbeBackoff(failCount)
 			c.directProbeNext = time.Now().Add(backoff)
 			armRetry := !c.directProbeRetryArmed
 			if armRetry {
@@ -1814,11 +1900,15 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 	}
 }
 
-func directProbeBackoff(fails int) time.Duration {
+func (c *LinkSocksClient) directProbeBackoff(fails int) time.Duration {
 	if fails <= 0 {
 		return 0
 	}
-	backoff := 2 * time.Second
+	base := c.directProbeBackoffBase
+	if base <= 0 {
+		base = directProbeBackoffBase
+	}
+	backoff := base
 	shift := fails - 1
 	if shift < 0 {
 		shift = 0
@@ -1832,6 +1922,14 @@ func directProbeBackoff(fails int) time.Duration {
 		return max
 	}
 	return backoff
+}
+
+// stunTimeoutOrDefault returns the per-round STUN discovery timeout.
+func (c *LinkSocksClient) stunTimeoutOrDefault() time.Duration {
+	if c.stunTimeout <= 0 {
+		return stunDiscoverTimeout
+	}
+	return c.stunTimeout
 }
 
 func directCandidateAddrByKind(cands []DirectCandidate, kind string) string {
@@ -3069,41 +3167,57 @@ func (c *LinkSocksClient) handleSocksRequest(ctx context.Context, socksConn net.
 
 		waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		select {
-		case <-readyCh:
-			now := time.Now()
-			if plane == nil || !c.directIsUsable(now) || !c.directQUICIsActive() {
+		refuseTicker := time.NewTicker(100 * time.Millisecond)
+		defer refuseTicker.Stop()
+		for {
+			select {
+			case <-readyCh:
+				now := time.Now()
+				if plane == nil || !c.directIsUsable(now) || !c.directQUICIsActive() {
+					c.directMu.Lock()
+					c.directRefuseSocks = true
+					c.directMu.Unlock()
+					if action == DirectOnlyActionExit {
+						c.reportError(fmt.Errorf("direct-only: direct dataplane not usable"))
+						c.Close()
+						return
+					}
+					_ = c.relay.RefuseLocalProxyRequest(socksConn, 0x03)
+					return
+				}
+				w := newDirectQUICDialWriter(ctx, c, plane, "direct-quic")
+				if err := c.relay.HandleLocalProxyRequest(ctx, w, socksConn, c.socksUsername, c.socksPassword); err != nil && !errors.Is(err, context.Canceled) {
+					if errors.Is(err, io.EOF) {
+						c.log.Debug().Err(err).Msg("Error handling local proxy request")
+					} else {
+						c.log.Warn().Err(err).Msg("Error handling local proxy request")
+					}
+				}
+				return
+			case <-refuseTicker.C:
+				// A discovery failure that lands while we are waiting must not
+				// leave the request hanging until the 10s wait expires.
+				c.directMu.Lock()
+				refuseNow := c.directRefuseSocks
+				c.directMu.Unlock()
+				if !refuseNow {
+					continue
+				}
+				c.log.Warn().Msg("Direct-only failed, refusing local proxy request")
+				_ = c.relay.RefuseLocalProxyRequest(socksConn, 0x03)
+				return
+			case <-waitCtx.Done():
 				c.directMu.Lock()
 				c.directRefuseSocks = true
 				c.directMu.Unlock()
 				if action == DirectOnlyActionExit {
-					c.reportError(fmt.Errorf("direct-only: direct dataplane not usable"))
+					c.reportError(fmt.Errorf("direct-only: timeout waiting for direct dataplane"))
 					c.Close()
 					return
 				}
 				_ = c.relay.RefuseLocalProxyRequest(socksConn, 0x03)
 				return
 			}
-			w := newDirectQUICDialWriter(ctx, c, plane, "direct-quic")
-			if err := c.relay.HandleLocalProxyRequest(ctx, w, socksConn, c.socksUsername, c.socksPassword); err != nil && !errors.Is(err, context.Canceled) {
-				if errors.Is(err, io.EOF) {
-					c.log.Debug().Err(err).Msg("Error handling local proxy request")
-				} else {
-					c.log.Warn().Err(err).Msg("Error handling local proxy request")
-				}
-			}
-			return
-		case <-waitCtx.Done():
-			c.directMu.Lock()
-			c.directRefuseSocks = true
-			c.directMu.Unlock()
-			if action == DirectOnlyActionExit {
-				c.reportError(fmt.Errorf("direct-only: timeout waiting for direct dataplane"))
-				c.Close()
-				return
-			}
-			_ = c.relay.RefuseLocalProxyRequest(socksConn, 0x03)
-			return
 		}
 	}
 

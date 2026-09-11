@@ -34,6 +34,10 @@ const (
 
 const directQUICHandshakeLen = 4 + 1 + 1 + 16 + 8 + directProbeMACLen
 
+// defaultDirectQUICHandshakeTimeout bounds a quic-go handshake attempt; the
+// peer's listener may start slightly later during a simultaneous double-dial.
+const defaultDirectQUICHandshakeTimeout = 2 * time.Second
+
 type directQUICHandshake struct {
 	Version   byte
 	Type      byte
@@ -244,11 +248,22 @@ type DirectQUICManager struct {
 }
 
 func NewDirectQUICManager(conn net.PacketConn, sessionID uuid.UUID, sessionKey []byte, logger zerolog.Logger) (*DirectQUICManager, error) {
+	return NewDirectQUICManagerWithHandshakeTimeout(conn, sessionID, sessionKey, logger, defaultDirectQUICHandshakeTimeout)
+}
+
+// NewDirectQUICManagerWithHandshakeTimeout is NewDirectQUICManager with a
+// configurable quic-go handshake idle timeout. Tests shorten it so recovery
+// from a simultaneous double-dial is not dominated by the 2s idempotent
+// handshake wait.
+func NewDirectQUICManagerWithHandshakeTimeout(conn net.PacketConn, sessionID uuid.UUID, sessionKey []byte, logger zerolog.Logger, handshakeTimeout time.Duration) (*DirectQUICManager, error) {
 	if conn == nil {
 		return nil, errors.New("direct quic: nil packet conn")
 	}
 	if logger.GetLevel() == zerolog.NoLevel {
 		logger = zerolog.Nop()
+	}
+	if handshakeTimeout <= 0 {
+		handshakeTimeout = defaultDirectQUICHandshakeTimeout
 	}
 	serverTLS, err := newEphemeralDirectQUICTLSConfig()
 	if err != nil {
@@ -263,7 +278,7 @@ func NewDirectQUICManager(conn net.PacketConn, sessionID uuid.UUID, sessionKey [
 		serverTLS:  serverTLS,
 		clientTLS:  newDirectQUICClientTLSConfig(),
 		quicConf: &quic.Config{
-			HandshakeIdleTimeout: 2 * time.Second,
+			HandshakeIdleTimeout: handshakeTimeout,
 			MaxIdleTimeout:       30 * time.Second,
 			KeepAlivePeriod:      5 * time.Second,
 		},

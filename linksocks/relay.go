@@ -62,6 +62,12 @@ type RelayOption struct {
 	// TransportGrace is how long an established channel survives a broken
 	// WebSocket link before being torn down. Zero disables survival.
 	TransportGrace time.Duration
+	// OrphanDataTTL is how long data for an unbound channel is retained
+	// before it is dropped.
+	OrphanDataTTL time.Duration
+	// ChannelCleanupDelay is how long a channel teardown waits before it
+	// cancels the local TCP/UDP forward after the channel is disconnected.
+	ChannelCleanupDelay time.Duration
 	// FastOpen controls whether to wait for connect success response
 	// When false, assumes connection success immediately
 	FastOpen bool
@@ -100,6 +106,8 @@ func NewDefaultRelayOption() *RelayOption {
 		ChannelTimeout:        DefaultChannelTimeout,
 		ConnectTimeout:        DefaultConnectTimeout,
 		TransportGrace:        DefaultTransportGrace,
+		OrphanDataTTL:         orphanDataTTL,
+		ChannelCleanupDelay:   channelCleanupDelay,
 		FastOpen:              false,
 		EnableDynamicBatching: true,
 		MinBatchWaitTime:      DefaultMinBatchWaitTime,
@@ -126,6 +134,20 @@ func (o *RelayOption) WithChannelTimeout(timeout time.Duration) *RelayOption {
 // WebSocket link before being torn down. Zero disables survival.
 func (o *RelayOption) WithTransportGrace(grace time.Duration) *RelayOption {
 	o.TransportGrace = grace
+	return o
+}
+
+// WithOrphanDataTTL sets how long data for an unbound channel is retained
+// before it is dropped.
+func (o *RelayOption) WithOrphanDataTTL(ttl time.Duration) *RelayOption {
+	o.OrphanDataTTL = ttl
+	return o
+}
+
+// WithChannelCleanupDelay sets how long a channel teardown waits before it
+// cancels the local TCP/UDP forward.
+func (o *RelayOption) WithChannelCleanupDelay(delay time.Duration) *RelayOption {
+	o.ChannelCleanupDelay = delay
 	return o
 }
 
@@ -290,14 +312,18 @@ func (r *Relay) checkRule(ac *AccessControl, host string, port int) error {
 // before the channel is bound.
 const orphanDataQueueSize = 1000
 
-// orphanDataTTL bounds how long data for an unbound channel is retained
+// channelCleanupDelay is the default time a channel teardown waits before it
+// cancels the local TCP/UDP forward after the channel is disconnected.
+const channelCleanupDelay = 5 * time.Second
+
+// orphanDataTTL is the default time data for an unbound channel is retained
 // before it is dropped.
 const orphanDataTTL = 30 * time.Second
 
 // orphanData is data that arrived for a channel that is not bound yet.
 // Binding is asynchronous, so data may legitimately arrive first; once the
 // channel's message queue exists the buffer is drained in order. Data for a
-// channel that never binds expires after orphanDataTTL.
+// channel that never binds expires after the relay's OrphanDataTTL.
 type orphanData struct {
 	queue chan BaseMessage
 	timer *time.Timer
@@ -395,14 +421,18 @@ func (r *Relay) logicalChannel(channelID uuid.UUID) (*logicalChannel, bool) {
 // bufferOrphanData retains data for a channel that is not bound yet. There
 // are no preconditions: data for any unbound channel is held until its
 // ConnectMessage binds the channel (then drained in order via
-// flushOrphanData) or until orphanDataTTL expires.
+// flushOrphanData) or until the relay's OrphanDataTTL expires.
 func (r *Relay) bufferOrphanData(m DataMessage) {
+	ttl := r.option.OrphanDataTTL
+	if ttl <= 0 {
+		ttl = orphanDataTTL
+	}
 	r.orphanMu.Lock()
 	od, ok := r.orphanData[m.ChannelID]
 	if !ok {
 		od = &orphanData{queue: make(chan BaseMessage, orphanDataQueueSize)}
 		r.orphanData[m.ChannelID] = od
-		od.timer = time.AfterFunc(orphanDataTTL, func() { r.expireOrphanData(m.ChannelID) })
+		od.timer = time.AfterFunc(ttl, func() { r.expireOrphanData(m.ChannelID) })
 	}
 	select {
 	case od.queue <- m:
@@ -445,7 +475,7 @@ func (r *Relay) flushOrphanData(channelID uuid.UUID, msgChan chan BaseMessage) {
 }
 
 // expireOrphanData drops buffered data whose channel never became bound
-// within orphanDataTTL.
+// within the relay's OrphanDataTTL.
 func (r *Relay) expireOrphanData(channelID uuid.UUID) {
 	r.orphanMu.Lock()
 	od, ok := r.orphanData[channelID]
@@ -2047,7 +2077,11 @@ func (r *Relay) cleanupWorker() {
 // doCleanup performs the actual cleanup with delay
 func (r *Relay) doCleanup(channelID uuid.UUID) {
 	r.log.Trace().Str("channel_id", channelID.String()).Msg("Disconnecting channel")
-	time.Sleep(5 * time.Second)
+	delay := r.option.ChannelCleanupDelay
+	if delay <= 0 {
+		delay = channelCleanupDelay
+	}
+	time.Sleep(delay)
 	if cancelVal, ok := r.tcpChannels.LoadAndDelete(channelID); ok {
 		if cancel, ok := cancelVal.(context.CancelFunc); ok {
 			cancel()

@@ -11,10 +11,12 @@ import (
 func TestDirectOnly_RefuseOnTimeoutWithoutRelay(t *testing.T) {
 	// No direct-enable on server => direct signaling not supported, so direct-only must refuse.
 	env := forwardProxyWithOptions(t, &ProxyTestServerOption{}, &ProxyTestClientOption{
-		DirectMode:       linksocks.DirectModeDirectOnly,
-		DirectDiscovery:  linksocks.DirectDiscoverySTUN,
-		StunServers:      []string{"127.0.0.1:0"},
-		DirectOnlyAction: linksocks.DirectOnlyActionRefuse,
+		DirectMode:            linksocks.DirectModeDirectOnly,
+		DirectDiscovery:       linksocks.DirectDiscoverySTUN,
+		StunServers:           []string{"127.0.0.1:0"},
+		StunTimeout:           300 * time.Millisecond,
+		DirectProbeBackoffBase: 200 * time.Millisecond,
+		DirectOnlyAction:      linksocks.DirectOnlyActionRefuse,
 	})
 	defer env.Close()
 

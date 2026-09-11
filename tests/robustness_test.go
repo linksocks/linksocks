@@ -144,6 +144,7 @@ func TestSwitchDuringWriteConcurrency(t *testing.T) {
 		Token:          server.Token,
 		LoggerPrefix:   "CLT-Switch",
 		Reconnect:      true,
+		ReconnectDelay: 200 * time.Millisecond,
 		TransportGrace: 3 * time.Second,
 	})
 	defer client.Close()

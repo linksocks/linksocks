@@ -150,6 +150,7 @@ func TestAuto_DirectDisconnectReconnect(t *testing.T) {
 		DirectDiscovery: linksocks.DirectDiscoverySTUN,
 		StunServers:     []string{stunAddr},
 		Reconnect:       true,
+		ReconnectDelay:  200 * time.Millisecond,
 	})
 	defer reverseClient.Close()
 
@@ -161,6 +162,7 @@ func TestAuto_DirectDisconnectReconnect(t *testing.T) {
 		DirectDiscovery: linksocks.DirectDiscoverySTUN,
 		StunServers:     []string{stunAddr},
 		Reconnect:       true,
+		ReconnectDelay:  200 * time.Millisecond,
 	})
 	defer connectorClient.Close()
 
@@ -181,7 +183,6 @@ func TestAuto_DirectDisconnectReconnect(t *testing.T) {
 
 	// Verify QUIC is actually down — must check immediately, not with Eventually,
 	// because the QUIC agent may reconnect quickly.
-	time.Sleep(100 * time.Millisecond)
 	require.False(t, reverseClient.Client.IsDirectQUICActive(), "reverse QUIC still active immediately after close")
 	require.False(t, connectorClient.Client.IsDirectQUICActive(), "connector QUIC still active immediately after close")
 
@@ -231,24 +232,30 @@ func TestAuto_DirectRepeatedDisconnect(t *testing.T) {
 	require.NoError(t, err)
 
 	reverseClient := reverseClient(t, &ProxyTestClientOption{
-		WSPort:          wsPort,
-		Token:           reverseToken,
-		LoggerPrefix:    "CLT1",
-		DirectMode:      linksocks.DirectModeAuto,
-		DirectDiscovery: linksocks.DirectDiscoverySTUN,
-		StunServers:     []string{stunAddr},
-		Reconnect:       true,
+		WSPort:                     wsPort,
+		Token:                      reverseToken,
+		LoggerPrefix:               "CLT1",
+		DirectMode:                 linksocks.DirectModeAuto,
+		DirectDiscovery:            linksocks.DirectDiscoverySTUN,
+		StunServers:                []string{stunAddr},
+		Reconnect:                  true,
+		ReconnectDelay:             200 * time.Millisecond,
+		DirectProbeBackoffBase:     200 * time.Millisecond,
+		DirectQUICHandshakeTimeout: 300 * time.Millisecond,
 	})
 	defer reverseClient.Close()
 
 	connectorClient := forwardClient(t, &ProxyTestClientOption{
-		WSPort:          wsPort,
-		Token:           "CONNECTOR",
-		LoggerPrefix:    "CLT2",
-		DirectMode:      linksocks.DirectModeAuto,
-		DirectDiscovery: linksocks.DirectDiscoverySTUN,
-		StunServers:     []string{stunAddr},
-		Reconnect:       true,
+		WSPort:                     wsPort,
+		Token:                      "CONNECTOR",
+		LoggerPrefix:               "CLT2",
+		DirectMode:                 linksocks.DirectModeAuto,
+		DirectDiscovery:            linksocks.DirectDiscoverySTUN,
+		StunServers:                []string{stunAddr},
+		Reconnect:                  true,
+		ReconnectDelay:             200 * time.Millisecond,
+		DirectProbeBackoffBase:     200 * time.Millisecond,
+		DirectQUICHandshakeTimeout: 300 * time.Millisecond,
 	})
 	defer connectorClient.Close()
 
@@ -264,7 +271,9 @@ func TestAuto_DirectRepeatedDisconnect(t *testing.T) {
 		reverseClient.Client.ForceCloseDirectQUIC()
 		connectorClient.Client.ForceCloseDirectQUIC()
 
-		time.Sleep(100 * time.Millisecond)
+		// ForceClose clears the active manager synchronously; the agent may
+		// already be reconnecting, so check the cleared state immediately
+		// instead of after a fixed sleep.
 		require.False(t, reverseClient.Client.IsDirectQUICActive(), "cycle %d: reverse QUIC still active after close", cycle)
 		require.False(t, connectorClient.Client.IsDirectQUICActive(), "cycle %d: connector QUIC still active after close", cycle)
 
@@ -343,8 +352,8 @@ func TestAuto_DirectDisconnectRelayKeepsWorking(t *testing.T) {
 	reverseClient.Client.ForceCloseDirectQUIC()
 	connectorClient.Client.ForceCloseDirectQUIC()
 
-	// Verify QUIC is actually down.
-	time.Sleep(100 * time.Millisecond)
+	// Verify QUIC is actually down — check immediately, not with Eventually,
+	// because the QUIC agent may reconnect quickly.
 	require.False(t, reverseClient.Client.IsDirectQUICActive(), "reverse QUIC still active after close")
 	require.False(t, connectorClient.Client.IsDirectQUICActive(), "connector QUIC still active after close")
 
@@ -391,6 +400,7 @@ func TestAuto_DirectDegradedStatusReportedToServer(t *testing.T) {
 		DirectDiscovery: linksocks.DirectDiscoverySTUN,
 		StunServers:     []string{stunAddr},
 		Reconnect:       true,
+		ReconnectDelay:  200 * time.Millisecond,
 	})
 	defer reverseClient.Close()
 
@@ -402,6 +412,7 @@ func TestAuto_DirectDegradedStatusReportedToServer(t *testing.T) {
 		DirectDiscovery: linksocks.DirectDiscoverySTUN,
 		StunServers:     []string{stunAddr},
 		Reconnect:       true,
+		ReconnectDelay:  200 * time.Millisecond,
 	})
 	defer connectorClient.Close()
 

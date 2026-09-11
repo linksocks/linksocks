@@ -40,13 +40,13 @@ func TestOrphanFlush(t *testing.T) {
 }
 
 // TestOrphanExpiry verifies data buffered for a channel that never binds
-// is dropped after orphanDataTTL.
+// is dropped after the relay's OrphanDataTTL.
 func TestOrphanExpiry(t *testing.T) {
-	r := NewRelay(zerolog.Nop(), NewDefaultRelayOption())
+	r := NewRelay(zerolog.Nop(), NewDefaultRelayOption().WithOrphanDataTTL(200*time.Millisecond))
 	id := uuid.New()
 	r.bufferOrphanData(DataMessage{ChannelID: id, Data: []byte("x")})
 
-	deadline := time.Now().Add(orphanDataTTL + 5*time.Second)
+	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		r.orphanMu.Lock()
 		_, ok := r.orphanData[id]

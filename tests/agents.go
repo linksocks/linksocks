@@ -69,15 +69,20 @@ type ProxyTestClientOption struct {
 	Reverse        bool          // Whether to use reverse mode
 	FastOpen       bool          // Whether to enable fast-open mode
 	Reconnect      bool          // Whether to enable auto-reconnection
+	ReconnectDelay time.Duration // Delay before each reconnection attempt (default 1s)
 	TransportGrace time.Duration // How long established channels survive a WebSocket drop
 	SocksUsername  string        // Local proxy username (SOCKS5 + HTTP Basic)
 	SocksPassword  string        // Local proxy password (SOCKS5 + HTTP Basic)
 
 	// Direct signaling options (optional; defaults keep relay-only behavior).
-	DirectMode       linksocks.DirectMode
-	DirectDiscovery  linksocks.DirectDiscovery
-	StunServers      []string
-	DirectOnlyAction linksocks.DirectOnlyAction
+	DirectMode                 linksocks.DirectMode
+	DirectDiscovery            linksocks.DirectDiscovery
+	StunServers                []string
+	StunTimeout                time.Duration // Per-round STUN discovery timeout
+	DirectOnlyAction           linksocks.DirectOnlyAction
+	DirectProbeBackoffBase     time.Duration // Starting direct probe retry delay
+	ChannelCleanupDelay        time.Duration // Channel teardown delay before canceling local forward
+	DirectQUICHandshakeTimeout time.Duration // quic-go handshake idle timeout
 }
 
 // ProxyTestEnv encapsulates both server and client test environments
@@ -162,6 +167,15 @@ func forwardServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 	return nil
 }
 
+// clientReconnectDelay returns the reconnect delay for a client option,
+// defaulting to 1s when unset.
+func clientReconnectDelay(opt *ProxyTestClientOption) time.Duration {
+	if opt.ReconnectDelay > 0 {
+		return opt.ReconnectDelay
+	}
+	return time.Second
+}
+
 // forwardClient creates a WSS client in forward mode
 func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 	if opt == nil {
@@ -194,7 +208,7 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		clientOpt := linksocks.DefaultClientOption().
 			WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", opt.WSPort)).
 			WithSocksPort(socksPort).
-			WithReconnectDelay(1 * time.Second).
+			WithReconnectDelay(clientReconnectDelay(opt)).
 			WithFastOpen(opt.FastOpen).
 			WithLogger(logger).
 			WithNoEnvProxy(true)
@@ -211,8 +225,20 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		if len(opt.StunServers) > 0 {
 			clientOpt.WithStunServers(opt.StunServers)
 		}
+		if opt.StunTimeout > 0 {
+			clientOpt.WithStunTimeout(opt.StunTimeout)
+		}
 		if opt.DirectOnlyAction != "" {
 			clientOpt.WithDirectOnlyAction(opt.DirectOnlyAction)
+		}
+		if opt.DirectProbeBackoffBase > 0 {
+			clientOpt.WithDirectProbeBackoffBase(opt.DirectProbeBackoffBase)
+		}
+		if opt.ChannelCleanupDelay > 0 {
+			clientOpt.WithChannelCleanupDelay(opt.ChannelCleanupDelay)
+		}
+		if opt.DirectQUICHandshakeTimeout > 0 {
+			clientOpt.WithDirectQUICHandshakeTimeout(opt.DirectQUICHandshakeTimeout)
 		}
 
 		if opt.Reconnect {
@@ -379,7 +405,7 @@ func reverseClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 	}
 	clientOpt := linksocks.DefaultClientOption().
 		WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", opt.WSPort)).
-		WithReconnectDelay(1 * time.Second).
+		WithReconnectDelay(clientReconnectDelay(opt)).
 		WithReverse(true).
 		WithFastOpen(opt.FastOpen).
 		WithLogger(logger).
@@ -397,8 +423,20 @@ func reverseClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 	if len(opt.StunServers) > 0 {
 		clientOpt.WithStunServers(opt.StunServers)
 	}
+	if opt.StunTimeout > 0 {
+		clientOpt.WithStunTimeout(opt.StunTimeout)
+	}
 	if opt.DirectOnlyAction != "" {
 		clientOpt.WithDirectOnlyAction(opt.DirectOnlyAction)
+	}
+	if opt.DirectProbeBackoffBase > 0 {
+		clientOpt.WithDirectProbeBackoffBase(opt.DirectProbeBackoffBase)
+	}
+	if opt.ChannelCleanupDelay > 0 {
+		clientOpt.WithChannelCleanupDelay(opt.ChannelCleanupDelay)
+	}
+	if opt.DirectQUICHandshakeTimeout > 0 {
+		clientOpt.WithDirectQUICHandshakeTimeout(opt.DirectQUICHandshakeTimeout)
 	}
 
 	if opt.Reconnect {

@@ -107,19 +107,21 @@ func TestConnectorChannelExpiresAfterProviderGrace(t *testing.T) {
 	})
 	defer server.Close()
 	connector := forwardClient(t, &ProxyTestClientOption{
-		WSPort:         server.WSPort,
-		Token:          "CONNECTOR",
-		LoggerPrefix:   "CLT2",
-		Reconnect:      true,
-		TransportGrace: grace,
+		WSPort:              server.WSPort,
+		Token:               "CONNECTOR",
+		LoggerPrefix:        "CLT2",
+		Reconnect:           true,
+		TransportGrace:      grace,
+		ChannelCleanupDelay: 200 * time.Millisecond,
 	})
 	defer connector.Close()
 	// The provider must NOT reconnect: it stays down so the grace expires.
 	provider := reverseClient(t, &ProxyTestClientOption{
-		WSPort:         server.WSPort,
-		Token:          server.Token,
-		LoggerPrefix:   "CLT1",
-		TransportGrace: grace,
+		WSPort:              server.WSPort,
+		Token:               server.Token,
+		LoggerPrefix:        "CLT1",
+		TransportGrace:      grace,
+		ChannelCleanupDelay: 200 * time.Millisecond,
 	})
 	defer provider.Close()
 

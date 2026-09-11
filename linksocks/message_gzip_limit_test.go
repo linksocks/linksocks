@@ -14,7 +14,7 @@ import (
 // must therefore cap decompressed output at the same limit; otherwise a tiny
 // compressed payload (a gzip bomb) balloons into unbounded memory.
 func TestGzipDecompressionBoundedByReadLimit(t *testing.T) {
-	const huge = 64 << 20 // 64 MiB of zeros compresses to ~64 KiB on the wire
+	const huge = 33 << 20 // just over the 32 MiB read limit; compresses to ~33 KiB on the wire
 	cid := uuid.New()
 
 	var compressed bytes.Buffer
