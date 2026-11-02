@@ -96,6 +96,64 @@ linksocks provider -t provider_token -c my_connector_token -u ws://localhost:876
 linksocks connector -t my_connector_token -u ws://localhost:8765 -p 1180
 ```
 
+### 网站反向代理
+
+`linksocks web` 可以把本地 HTTP(S) 网站发布到
+[linksocks.js](https://github.com/linksocks/linksocks.js) Worker。HTTP 请求复用同一条
+WebSocket 隧道，源站始终位于 NAT 之后，无需公网 IP 或入站端口。
+
+```bash
+# 匿名临时域名（服务端 WEB_ZONE=example.com）
+linksocks web -u wss://linksocks.example.com -l http://127.0.0.1:8080
+
+# 使用账号令牌发布固定域名，并配置两个本地源站
+linksocks web -u wss://linksocks.example.com -t ls_xxx \
+  --domain blog.example.com \
+  -l http://127.0.0.1:8080 -l http://127.0.0.1:8081
+```
+
+参数概览：`-t/--token`、`-u/--url`、`-l/--local`（可重复）、`--domain`、
+`--insecure`（跳过 https 源站证书校验）、`-R/--no-reconnect`、`-d/--debug`。
+
+`--domain` 使用的是账号的**永久域名授权**，需要在 linksocks.js 管理后台为对应账号
+开启。授权后该域名不轮换也不过期，Provider 在场就一直有效；没有授权的账号请求
+`--domain` 会被服务端拒绝。服务端开启强制临时域名（`forceTemporaryHost`）时，
+未获授权的账号即使指定 `--domain` 也会被改写成随机域名，日志里会给出新 URL。
+
+#### 实测示例
+
+先在本地起一个网页服务，再通过公共中继发布，最后从公网访问：
+
+```bash
+$ python3 -m http.server 8080 --bind 127.0.0.1
+
+$ linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
+2026-11-02T16:41:25+08:00 INF Starting LinkSocks web provider backends=["http://127.0.0.1:8080"] domain= insecure=false server=wss://l.zetx.tech
+2026-11-02T16:41:28+08:00 INF Welcome to LinkSocks.js relay server. This server is running in edge: AMS (Amsterdam, Netherlands), relay: KIX (Osaka, Japan). Your connection comes from CN (<client-ip>). After you connected, this relay group has 1 provider and 0 connectors.
+2026-11-02T16:41:29+08:00 INF Web site published backends=1 expires=2026-11-02T22:41:28+08:00 host=ugxzfihx.team1.cc.cd temporary=true url=https://ugxzfihx.team1.cc.cd
+2026-11-02T16:41:29+08:00 INF Temporary URL https://ugxzfihx.team1.cc.cd expires at 2026-11-02T22:41:28+08:00; it will rotate automatically
+```
+
+中继分配了 `https://ugxzfihx.team1.cc.cd`，访问该地址的请求会转发到本地源站：
+
+```bash
+$ curl -sS https://ugxzfihx.team1.cc.cd/
+<!doctype html>
+<html><head><title>LinkSocks demo site</title></head>
+<body><h1>Hello from a local origin</h1><p id="marker">linksocks-web-demo-20261102</p><script src="/assets/app.js"></script></body></html>
+
+$ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/assets/app.js
+200
+
+$ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/not-found
+404
+```
+
+终端保持运行时隧道一直有效，`Ctrl+C` 结束。临时域名按服务端配置的临时网址有效期
+过期（默认 6 小时），Provider 在线期间域名会自动轮换。
+
+服务端（Cloudflare Worker、D1 数据库、管理后台与配额）说明见 linksocks.js 仓库。
+
 ## 安装
 
 ### Golang 版本

@@ -92,7 +92,96 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+### Web Site Example
+
+The `Web` class publishes a local HTTP(S) site through a
+[linksocks.js](https://github.com/linksocks/linksocks.js) relay. Requests reuse
+the WebSocket tunnel, so the origin does not need a public IP or an inbound
+port.
+
+```python
+from linksocks import Web
+
+with Web(
+    ["http://127.0.0.1:8080"],
+    url="wss://l.zetx.tech",
+) as site:
+    host = site.wait_ready(timeout=30)
+    print(f"Published at https://{host}")
+```
+
+Use `token="..."` for a dashboard token, `domain="blog.example.com"` for a
+fixed hostname, and pass several backend URLs to balance across local origins.
+`insecure=True` skips TLS verification for HTTPS backends.
+
+The same provider is available from the installed CLI:
+
+```bash
+$ linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
+[11/02 16:42] INFO     Welcome to LinkSocks.js relay server. This server is running in edge: AMS
+                       (Amsterdam, Netherlands), relay: HKG (Hong Kong). Your connection comes from CN
+                       (<client-ip>). After you connected, this relay group has 1 provider and 0
+                       connectors.
+Web site published: https://gden3eme.team1.cc.cd
+              INFO     Web site published backends=1 expires=2026-11-02T22:42:28+08:00
+                       host=gden3eme.team1.cc.cd temporary=True url=https://gden3eme.team1.cc.cd
+              INFO     Temporary URL https://gden3eme.team1.cc.cd expires at 2026-11-02T22:42:28+08:00; it
+                       will rotate automatically
+```
+
+The relay forwards requests to the local origin:
+
+```bash
+$ curl -sS https://gden3eme.team1.cc.cd/
+<!doctype html>
+<html><head><title>LinkSocks demo site</title></head>
+<body><h1>Hello from a local origin</h1><p id="marker">linksocks-web-demo-20261102</p><script src="/assets/app.js"></script></body></html>
+
+$ curl -sS -o /dev/null -w '%{http_code}\n' https://gden3eme.team1.cc.cd/assets/app.js
+200
+```
+
 ## API Reference
+
+### Web Class
+
+The `Web` class publishes local HTTP(S) backends through a linksocks.js relay.
+
+```python
+from linksocks import Web
+
+site = Web(
+    ["http://127.0.0.1:8080"],
+    url="wss://l.zetx.tech",
+    token="",
+    domain=None,
+    insecure=False,
+    no_reconnect=False,
+    reconnect_delay=None,
+    logger=None,
+)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `backends` | `list[str]` | Required | Local HTTP(S) origin URLs |
+| `url` | `str` | `"ws://localhost:8765"` | linksocks.js server URL |
+| `token` | `str` | `""` | Dashboard provider token |
+| `domain` | `str \| None` | `None` | Fixed hostname under the relay's `WEB_ZONE` |
+| `insecure` | `bool` | `False` | Skip TLS verification for HTTPS backends |
+| `no_reconnect` | `bool` | `False` | Stop when the relay disconnects |
+| `reconnect_delay` | `DurationLike` | `None` | Delay between reconnect attempts |
+| `logger` | `logging.Logger` | `None` | Python logger for relay messages |
+
+Methods:
+
+- `wait_ready(timeout=None)` / `async_wait_ready(timeout=None)` — block until
+  registration and return the assigned hostname.
+- `host` — current hostname, updated when a temporary URL rotates.
+- `close()` / `async_close()` — stop the provider and release the relay
+  registration.
+- `Web` supports both `with` and `async with`; the async context manager waits
+  for registration before entering the block.
 
 ### Server Class
 

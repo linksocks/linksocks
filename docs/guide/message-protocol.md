@@ -4,7 +4,19 @@ LinkSocks uses a custom binary message protocol over WebSocket. This page detail
 
 ### Protocol Version
 
-Current protocol version: `0x01`
+Current Go and linksocks.js protocol version: `0x04` (major 0, minor 4).
+The high four bits encode the major version; the low four bits encode the minor version.
+Messages with a different major version are rejected, while minor mismatches are allowed with a warning.
+The connection does not negotiate a shared version.
+
+Feature minimums are distinct from the current protocol version:
+
+- Direct signaling: `0x01`; legacy direct peers that omit a capability version are still accepted.
+- Channel migration: `0x02`, checked against the direct peer's advertised version.
+- Web proxy: `0x03`, checked against the Worker response; registration must also succeed.
+- WebSocket proxying over the web tunnel: `0x04`, required for `websocket_frame` and for WebSocket upgrade requests.
+
+Adding a message type requires a minor version bump. Before bumping the major version for an existing message format change that breaks old parsers, ask the project owner for approval.
 
 ## Message Types
 

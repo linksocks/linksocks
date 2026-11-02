@@ -156,6 +156,54 @@ curl --socks5 127.0.0.1:1080 http://httpbin.org/ip
 openssl rand -hex 16
 ```
 
+## 网页反向代理
+
+`linksocks web` 把本地 HTTP(S) 网站发布到
+[linksocks.js](https://github.com/linksocks/linksocks.js) 中继。HTTP 请求复用同一条
+WebSocket 隧道，源站无需公网 IP 或入站端口。
+
+```bash
+# 中继 WEB_ZONE 下的临时域名
+linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
+
+# 使用控制台 token 发布固定域名，并配置两个本地源站
+linksocks web -u wss://l.zetx.tech -t ls_xxx \
+  --domain blog.example.com \
+  -l http://127.0.0.1:8080 -l http://127.0.0.1:8081
+```
+
+参数：`-t/--token`、`-u/--url`、`-l/--local`（可重复）、`--domain`、
+`--insecure`、`-R/--no-reconnect`、`-d/--debug`。
+
+固定域名 `--domain` 需要中继方授权：没有授权时中继会拒绝该域名；开启强制临时域名后
+会改写成随机生成的域名。
+
+通过公共中继实测：
+
+```bash
+$ python3 -m http.server 8080 --bind 127.0.0.1
+
+$ linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
+2026-11-02T16:41:25+08:00 INF Starting LinkSocks web provider backends=["http://127.0.0.1:8080"] domain= insecure=false server=wss://l.zetx.tech
+2026-11-02T16:41:28+08:00 INF Welcome to LinkSocks.js relay server. This server is running in edge: AMS (Amsterdam, Netherlands), relay: KIX (Osaka, Japan). Your connection comes from CN (<client-ip>). After you connected, this relay group has 1 provider and 0 connectors.
+2026-11-02T16:41:29+08:00 INF Web site published backends=1 expires=2026-11-02T22:41:28+08:00 host=ugxzfihx.team1.cc.cd temporary=true url=https://ugxzfihx.team1.cc.cd
+2026-11-02T16:41:29+08:00 INF Temporary URL https://ugxzfihx.team1.cc.cd expires at 2026-11-02T22:41:28+08:00; it will rotate automatically
+
+$ curl -sS https://ugxzfihx.team1.cc.cd/
+<!doctype html>
+<html><head><title>LinkSocks demo site</title></head>
+<body><h1>Hello from a local origin</h1><p id="marker">linksocks-web-demo-20261102</p><script src="/assets/app.js"></script></body></html>
+
+$ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/assets/app.js
+200
+
+$ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/not-found
+404
+```
+
+终端保持运行时隧道一直有效，`Ctrl+C` 结束。临时域名按配置的有效期过期（默认 6 小时），
+Provider 在线期间会自动轮换。
+
 ## 在 Cloudflare Workers 上部署服务器
 
 无服务器中继可部署到 Cloudflare Workers：

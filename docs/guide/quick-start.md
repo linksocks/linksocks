@@ -155,6 +155,55 @@ Generate a strong token:
 openssl rand -hex 16
 ```
 
+## Web Site Reverse Proxy
+
+`linksocks web` publishes a local HTTP(S) site through a
+[linksocks.js](https://github.com/linksocks/linksocks.js) relay. Requests travel
+over the WebSocket tunnel, so the origin needs no public IP or inbound port.
+
+```bash
+# Temporary hostname under the relay's WEB_ZONE
+linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
+
+# Dashboard token, fixed hostname and two local origins
+linksocks web -u wss://l.zetx.tech -t ls_xxx \
+  --domain blog.example.com \
+  -l http://127.0.0.1:8080 -l http://127.0.0.1:8081
+```
+
+Flags: `-t/--token`, `-u/--url`, `-l/--local` (repeatable), `--domain`,
+`--insecure`, `-R/--no-reconnect`, `-d/--debug`.
+
+A fixed `--domain` needs the relay operator's hostname grant: without it the
+relay refuses the requested hostname, and with forced temporary hostnames
+enabled it rewrites the site to a generated one.
+
+A real run against the public relay:
+
+```bash
+$ python3 -m http.server 8080 --bind 127.0.0.1
+
+$ linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
+2026-11-02T16:41:25+08:00 INF Starting LinkSocks web provider backends=["http://127.0.0.1:8080"] domain= insecure=false server=wss://l.zetx.tech
+2026-11-02T16:41:28+08:00 INF Welcome to LinkSocks.js relay server. This server is running in edge: AMS (Amsterdam, Netherlands), relay: KIX (Osaka, Japan). Your connection comes from CN (<client-ip>). After you connected, this relay group has 1 provider and 0 connectors.
+2026-11-02T16:41:29+08:00 INF Web site published backends=1 expires=2026-11-02T22:41:28+08:00 host=ugxzfihx.team1.cc.cd temporary=true url=https://ugxzfihx.team1.cc.cd
+2026-11-02T16:41:29+08:00 INF Temporary URL https://ugxzfihx.team1.cc.cd expires at 2026-11-02T22:41:28+08:00; it will rotate automatically
+
+$ curl -sS https://ugxzfihx.team1.cc.cd/
+<!doctype html>
+<html><head><title>LinkSocks demo site</title></head>
+<body><h1>Hello from a local origin</h1><p id="marker">linksocks-web-demo-20261102</p><script src="/assets/app.js"></script></body></html>
+
+$ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/assets/app.js
+200
+
+$ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/not-found
+404
+```
+
+Stop with `Ctrl+C`. Temporary URLs expire after the configured lifetime (6 hours
+by default) and rotate automatically while the provider stays connected.
+
 ## Server on Cloudflare Workers
 
 Deploy a serverless relay on Cloudflare Workers:

@@ -4,10 +4,11 @@ LinkSocks 提供了包装 Go 实现的 Python 绑定，提供同步和异步 API
 
 ## 概述
 
-Python 绑定提供两个主要类：
+Python 绑定提供三个主要类：
 
 - `Server` - 处理 SOCKS5 代理请求的 WebSocket 服务器
 - `Client` - 连接到服务器并提供 SOCKS5 功能的 WebSocket 客户端
+- `Web` - 面向 linksocks.js 中继的 HTTP(S) 网站 Provider
 
 ## 快速开始
 
@@ -73,7 +74,21 @@ async def reverse_proxy_example():
 asyncio.run(reverse_proxy_example())
 ```
 
+### 发布网站
+
+把本地 HTTP 网站发布到 linksocks.js 中继：
+
+```python
+from linksocks import Web
+
+with Web(["http://127.0.0.1:8080"], url="wss://l.zetx.tech") as site:
+    host = site.wait_ready(timeout=30)
+    print(f"已发布：https://{host}")
+    input("按回车停止\n")
+```
+
 ## 下一步
 
 - [Server API](./server.md) - 完整的 Server 类参考
 - [Client API](./client.md) - 完整的 Client 类参考
+- [Web API](./web.md) - 通过中继发布 HTTP(S) 网站

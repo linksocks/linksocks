@@ -119,6 +119,73 @@ Use the following linux command to generate a complex token:
 openssl rand -hex 16
 ```
 
+### Web Reverse Proxy
+
+`linksocks web` publishes a local HTTP(S) website through a
+[linksocks.js](https://github.com/linksocks/linksocks.js) Worker. Incoming HTTP
+requests travel over the same WebSocket tunnel, so the origin stays behind NAT
+with no inbound ports.
+
+```bash
+# Anonymous temporary host on a linksocks.js deployment with WEB_ZONE=example.com
+linksocks web -u wss://linksocks.example.com -l http://127.0.0.1:8080
+
+# Account token, custom host and two origins for local load balancing
+linksocks web -u wss://linksocks.example.com -t ls_xxx \
+  --domain blog.example.com \
+  -l http://127.0.0.1:8080 -l http://127.0.0.1:8081
+```
+
+Flag summary: `-t/--token`, `-u/--url`, `-l/--local` (repeatable),
+`--domain`, `--insecure` (skip TLS verification for https origins),
+`-R/--no-reconnect`, `-d/--debug`.
+
+`--domain` spends the account's **permanent hostname grant**, which an
+administrator enables per account in the linksocks.js console. A granted host
+never rotates and never expires, so it stays up as long as its provider does;
+the relay refuses `--domain` from an account without the grant. When the
+deployment turns on forced temporary hostnames (`forceTemporaryHost`), an
+ungranted account is rewritten to a generated host and the log line reports the
+new URL.
+
+#### A real run
+
+Serve a local site, publish it through the public relay, and fetch it from the
+internet:
+
+```bash
+$ python3 -m http.server 8080 --bind 127.0.0.1
+
+$ linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
+2026-11-02T16:41:25+08:00 INF Starting LinkSocks web provider backends=["http://127.0.0.1:8080"] domain= insecure=false server=wss://l.zetx.tech
+2026-11-02T16:41:28+08:00 INF Welcome to LinkSocks.js relay server. This server is running in edge: AMS (Amsterdam, Netherlands), relay: KIX (Osaka, Japan). Your connection comes from CN (<client-ip>). After you connected, this relay group has 1 provider and 0 connectors.
+2026-11-02T16:41:29+08:00 INF Web site published backends=1 expires=2026-11-02T22:41:28+08:00 host=ugxzfihx.team1.cc.cd temporary=true url=https://ugxzfihx.team1.cc.cd
+2026-11-02T16:41:29+08:00 INF Temporary URL https://ugxzfihx.team1.cc.cd expires at 2026-11-02T22:41:28+08:00; it will rotate automatically
+```
+
+The relay assigned `https://ugxzfihx.team1.cc.cd`, and requests to it reach the
+local origin:
+
+```bash
+$ curl -sS https://ugxzfihx.team1.cc.cd/
+<!doctype html>
+<html><head><title>LinkSocks demo site</title></head>
+<body><h1>Hello from a local origin</h1><p id="marker">linksocks-web-demo-20261102</p><script src="/assets/app.js"></script></body></html>
+
+$ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/assets/app.js
+200
+
+$ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/not-found
+404
+```
+
+The tunnel stays open until `Ctrl+C`. The temporary hostname expires after the
+deployment's temporary URL lifetime (6 hours by default) and rotates
+automatically while the provider stays connected.
+
+The server side (Cloudflare Worker, D1 database, admin console and quotas) is
+documented in the linksocks.js repository.
+
 ## Installation
 
 ### Golang Version

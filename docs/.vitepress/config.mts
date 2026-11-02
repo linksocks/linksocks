@@ -80,6 +80,7 @@ export default defineConfig({
               { text: 'Overview', link: '/python/' },
               { text: 'Server Class', link: '/python/server' },
               { text: 'Client Class', link: '/python/client' },
+              { text: 'Web Class', link: '/python/web' },
               { text: 'Utilities', link: '/python/utilities' },
             ]
           },
@@ -150,6 +151,7 @@ export default defineConfig({
               { text: '概述', link: '/zh/python/' },
               { text: 'Server 类', link: '/zh/python/server' },
               { text: 'Client 类', link: '/zh/python/client' },
+              { text: 'Web 类', link: '/zh/python/web' },
               { text: '工具函数', link: '/zh/python/utilities' },
             ]
           },

@@ -4,10 +4,11 @@ LinkSocks provides Python bindings that wrap the Go implementation, offering bot
 
 ## Overview
 
-The Python bindings provide two main classes:
+The Python bindings provide three main classes:
 
 - `Server` - WebSocket server that handles SOCKS5 proxy requests
 - `Client` - WebSocket client that connects to servers and provides SOCKS5 functionality
+- `Web` - HTTP(S) site provider for a linksocks.js relay
 
 ## Quick Start
 
@@ -73,7 +74,21 @@ async def reverse_proxy_example():
 asyncio.run(reverse_proxy_example())
 ```
 
+### Publish a Web Site
+
+Publish a local HTTP site through a linksocks.js relay:
+
+```python
+from linksocks import Web
+
+with Web(["http://127.0.0.1:8080"], url="wss://l.zetx.tech") as site:
+    host = site.wait_ready(timeout=30)
+    print(f"Published at https://{host}")
+    input("Press Enter to stop\n")
+```
+
 ## Next Steps
 
 - [Server API](./server.md) - Complete Server class reference
 - [Client API](./client.md) - Complete Client class reference
+- [Web API](./web.md) - Publish HTTP(S) sites through a relay
