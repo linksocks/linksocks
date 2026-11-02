@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,5 +103,75 @@ func TestServerProactivelyPingsIdleClient(t *testing.T) {
 
 	if !pingSeen {
 		t.Fatalf("server never pinged idle connection within 2s: idle half-open links are never detected")
+	}
+}
+
+func TestServerURLAuthChecksProtocolVersion(t *testing.T) {
+	tests := []struct {
+		name       string
+		version    byte
+		wantClosed bool
+	}{
+		{name: "older minor warns", version: 0x01},
+		{name: "newer minor warns", version: 0x05},
+		{name: "different major closes", version: 0x10, wantClosed: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			port := testFreePort(t)
+			server := NewLinkSocksServer(DefaultServerOption().WithWSPort(port).WithLogger(zerolog.Nop()))
+			token, err := server.AddForwardToken("")
+			if err != nil {
+				t.Fatalf("add token: %v", err)
+			}
+			if err := server.WaitReady(context.Background(), 5*time.Second); err != nil {
+				t.Fatalf("server not ready: %v", err)
+			}
+			defer server.Close()
+
+			hash := sha256.Sum256([]byte(token))
+			wsURL := fmt.Sprintf("ws://127.0.0.1:%d/socket?token=%s&reverse=false", port, hex.EncodeToString(hash[:]))
+			ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			defer ws.Close()
+			_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+			if _, _, err := ws.ReadMessage(); err != nil {
+				t.Fatalf("read auth response: %v", err)
+			}
+
+			frame, err := PackMessage(LogMessage{Level: LogLevelInfo, Msg: "version probe"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			frame[0] = test.version
+			if err := ws.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+				t.Fatalf("write message: %v", err)
+			}
+
+			for {
+				_, data, err := ws.ReadMessage()
+				if err != nil {
+					if test.wantClosed {
+						if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+							t.Fatalf("server did not close incompatible connection: %v", err)
+						}
+						return
+					}
+					t.Fatalf("read version warning: %v", err)
+				}
+				message, err := ParseMessage(data)
+				if err != nil {
+					t.Fatalf("parse server message: %v", err)
+				}
+				if warning, ok := message.(LogMessage); ok && warning.Level == LogLevelWarn && strings.Contains(warning.Msg, "Protocol minor version mismatch") {
+					if test.wantClosed {
+						t.Fatal("major mismatch was treated as a minor mismatch")
+					}
+					return
+				}
+			}
+		})
 	}
 }

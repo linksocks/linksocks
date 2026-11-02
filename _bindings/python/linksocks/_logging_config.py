@@ -6,6 +6,8 @@ for the linksocks command-line interface, including Rich-based formatting
 and loguru integration.
 """
 
+from __future__ import annotations
+
 import inspect
 import logging
 import asyncio

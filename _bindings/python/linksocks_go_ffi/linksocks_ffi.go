@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 	"unsafe"
@@ -51,7 +52,51 @@ var (
 
 	serverHandles = map[handle]*linksocks.LinkSocksServer{}
 	clientHandles = map[handle]*linksocks.LinkSocksClient{}
+	webHandles    = map[handle]*webHandle{}
 )
+
+type webHandle struct {
+	cancel     context.CancelFunc
+	done       chan struct{}
+	registered chan struct{}
+	register   sync.Once
+
+	mu   sync.Mutex
+	host string
+	err  error
+}
+
+func newWebHandle(v *webHandle) handle {
+	mu.Lock()
+	h := nextHandle
+	nextHandle++
+	webHandles[h] = v
+	mu.Unlock()
+	return h
+}
+
+func getWeb(h handle) (*webHandle, error) {
+	mu.RLock()
+	v := webHandles[h]
+	mu.RUnlock()
+	if v == nil {
+		return nil, errors.New("invalid web handle")
+	}
+	return v, nil
+}
+
+func delWeb(h handle) {
+	mu.Lock()
+	delete(webHandles, h)
+	mu.Unlock()
+}
+
+func (w *webHandle) setHost(host string) {
+	w.mu.Lock()
+	w.host = host
+	w.mu.Unlock()
+	w.register.Do(func() { close(w.registered) })
+}
 
 func newServerHandle(v *linksocks.LinkSocksServer) handle {
 	mu.Lock()
@@ -792,6 +837,119 @@ func linksocks_client_remote_protocol_version(h C.uint64_t, out *C.uint8_t) *C.c
 		return errStr(err)
 	}
 	*out = C.uint8_t(cli.GetRemoteProtocolVersion())
+	return nil
+}
+
+//export linksocks_web_new
+func linksocks_web_new(cfgJSON *C.char, out *C.uint64_t) *C.char {
+	if out == nil {
+		return errStr(errors.New("out is nil"))
+	}
+	if cfgJSON == nil {
+		return errStr(errors.New("config is nil"))
+	}
+	var cfg struct {
+		URL              string   `json:"url"`
+		Token            string   `json:"token"`
+		Host             string   `json:"host"`
+		Backends         []string `json:"backends"`
+		Insecure         bool     `json:"insecure"`
+		NoReconnect      bool     `json:"no_reconnect"`
+		ReconnectDelayNs int64    `json:"reconnect_delay_ns"`
+		LoggerID         string   `json:"logger_id"`
+	}
+	if err := json.Unmarshal([]byte(C.GoString(cfgJSON)), &cfg); err != nil {
+		return errStr(err)
+	}
+	if len(cfg.Backends) == 0 {
+		return errStr(errors.New("at least one backend is required"))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	w := &webHandle{
+		cancel:     cancel,
+		done:       make(chan struct{}),
+		registered: make(chan struct{}),
+	}
+	h := newWebHandle(w)
+
+	go func() {
+		err := linksocks.RunWeb(ctx, linksocks.WebOption{
+			URL:            cfg.URL,
+			Token:          cfg.Token,
+			Host:           cfg.Host,
+			Backends:       cfg.Backends,
+			Insecure:       cfg.Insecure,
+			NoReconnect:    cfg.NoReconnect,
+			ReconnectDelay: time.Duration(cfg.ReconnectDelayNs),
+			Logger:         linksocks.NewLoggerWithID(cfg.LoggerID),
+			OnRegistered:   w.setHost,
+		})
+		if ctx.Err() != nil {
+			err = nil
+		}
+		w.mu.Lock()
+		w.err = err
+		w.mu.Unlock()
+		close(w.done)
+	}()
+
+	*out = C.uint64_t(h)
+	return nil
+}
+
+//export linksocks_web_wait_registered
+func linksocks_web_wait_registered(h C.uint64_t, timeoutMs C.int64_t) *C.char {
+	w, err := getWeb(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	var timeout <-chan time.Time
+	if timeoutMs > 0 {
+		timer := time.NewTimer(time.Duration(timeoutMs) * time.Millisecond)
+		defer timer.Stop()
+		timeout = timer.C
+	}
+	select {
+	case <-w.registered:
+		w.mu.Lock()
+		host := w.host
+		w.mu.Unlock()
+		return cstr(host)
+	case <-w.done:
+		w.mu.Lock()
+		err := w.err
+		w.mu.Unlock()
+		if err == nil {
+			err = errors.New("web provider stopped before registration")
+		}
+		return errStr(err)
+	case <-timeout:
+		return errStr(fmt.Errorf("timed out waiting for web registration after %dms", int64(timeoutMs)))
+	}
+}
+
+//export linksocks_web_host
+func linksocks_web_host(h C.uint64_t) *C.char {
+	w, err := getWeb(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	w.mu.Lock()
+	host := w.host
+	w.mu.Unlock()
+	return cstr(host)
+}
+
+//export linksocks_web_close
+func linksocks_web_close(h C.uint64_t) *C.char {
+	w, err := getWeb(handle(h))
+	if err != nil {
+		return errStr(err)
+	}
+	w.cancel()
+	<-w.done
+	delWeb(handle(h))
 	return nil
 }
 

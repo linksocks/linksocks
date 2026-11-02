@@ -121,7 +121,7 @@ func TestProtocolSupportsMigration(t *testing.T) {
 	}{
 		{name: "missing version", v: 0x00, want: false},
 		{name: "legacy minor", v: 0x01, want: false},
-		{name: "migration version", v: MigrationProtocolVersion, want: true},
+		{name: "migration version", v: MinVersionMigration, want: true},
 		{name: "newer minor", v: 0x03, want: true},
 		{name: "different major", v: 0x10, want: false},
 	}
@@ -131,6 +131,37 @@ func TestProtocolSupportsMigration(t *testing.T) {
 				t.Fatalf("protocolSupportsMigration(0x%02x) = %v, want %v", tt.v, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestProtocolFeatureMinimums(t *testing.T) {
+	tests := []struct {
+		name    string
+		version byte
+		minimum byte
+		want    bool
+	}{
+		{name: "direct below minimum", version: 0x00, minimum: MinVersionDirect},
+		{name: "direct minimum", version: 0x01, minimum: MinVersionDirect, want: true},
+		{name: "migration below minimum", version: 0x01, minimum: MinVersionMigration},
+		{name: "migration minimum", version: 0x02, minimum: MinVersionMigration, want: true},
+		{name: "web below minimum", version: 0x02, minimum: MinVersionWeb},
+		{name: "web minimum", version: 0x03, minimum: MinVersionWeb, want: true},
+		{name: "newer minor", version: 0x04, minimum: MinVersionWeb, want: true},
+		{name: "different major", version: 0x10, minimum: MinVersionDirect},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := protocolSupportsFeature(test.version, test.minimum); got != test.want {
+				t.Fatalf("protocolSupportsFeature(0x%02x, 0x%02x) = %v, want %v", test.version, test.minimum, got, test.want)
+			}
+		})
+	}
+	if !protocolAllowsDirectPeer(0) {
+		t.Fatal("legacy direct peers without an advertised version must remain compatible")
+	}
+	if protocolAllowsDirectPeer(0x10) {
+		t.Fatal("direct peers advertising a different major version must be rejected")
 	}
 }
 

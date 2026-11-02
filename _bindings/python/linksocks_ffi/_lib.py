@@ -55,6 +55,11 @@ _ffi.cdef(
     char* linksocks_client_direct_rtt(uint64_t h, int64_t* out);
     char* linksocks_client_partners_count(uint64_t h, int* out);
     char* linksocks_client_remote_protocol_version(uint64_t h, uint8_t* out);
+
+    char* linksocks_web_new(const char* cfgJSON, uint64_t* out);
+    char* linksocks_web_wait_registered(uint64_t h, int64_t timeoutMs);
+    char* linksocks_web_host(uint64_t h);
+    char* linksocks_web_close(uint64_t h);
     """
 )
 
@@ -309,3 +314,30 @@ class Client:
         err = _lib.linksocks_client_remote_protocol_version(self._h, out)
         _raise_if_err(err)
         return int(out[0])
+
+
+class Web:
+    def __init__(self, cfg: dict[str, Any]):
+        out = _ffi.new("uint64_t*")
+        payload = json.dumps(cfg, separators=(",", ":")).encode("utf-8")
+        err = _lib.linksocks_web_new(payload, out)
+        _raise_if_err(err)
+        self._h = int(out[0])
+
+    def wait_registered(self, timeout_ms: int) -> str:
+        ptr = _lib.linksocks_web_wait_registered(self._h, int(timeout_ms))
+        if ptr == _ffi.NULL:
+            raise LinkSocksError("web registration returned no hostname")
+        try:
+            return _ffi.string(ptr).decode("utf-8", errors="replace")
+        finally:
+            _lib.linksocks_free(ptr)
+
+    def host(self) -> str:
+        return _take_string(_lib.linksocks_web_host(self._h))
+
+    def close(self) -> None:
+        if getattr(self, "_h", 0):
+            err = _lib.linksocks_web_close(self._h)
+            self._h = 0
+            _raise_if_err(err)

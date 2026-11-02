@@ -1,11 +1,17 @@
 package linksocks
 
 import (
+	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
+	"github.com/rs/zerolog"
 )
 
 func TestDirectResetPeerStateLockedClearsPairing(t *testing.T) {
@@ -48,6 +54,62 @@ func TestGetRemoteProtocolVersion(t *testing.T) {
 	c := &LinkSocksClient{remoteProtocolVersion: ProtocolVersion}
 	if got := c.GetRemoteProtocolVersion(); got != ProtocolVersion {
 		t.Fatalf("remote protocol version = 0x%02x, want 0x%02x", got, ProtocolVersion)
+	}
+}
+
+func TestDirectPeerAdvertisedVersion(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		version  byte
+		accepted bool
+	}{
+		{name: "legacy omitted version", version: 0, accepted: true},
+		{name: "direct minimum", version: MinVersionDirect, accepted: true},
+		{name: "different major", version: 0x10},
+	} {
+		for _, rendezvous := range []bool{false, true} {
+			name := test.name
+			if rendezvous {
+				name += "/rendezvous"
+			} else {
+				name += "/capabilities"
+			}
+			t.Run(name, func(t *testing.T) {
+				client := NewLinkSocksClient("test", DefaultClientOption().WithLogger(zerolog.Nop()))
+				peerID := uuid.New()
+				var message BaseMessage = DirectCapabilitiesMessage{SessionID: peerID, ProtocolVersion: test.version}
+				if rendezvous {
+					message = DirectRendezvousMessage{SessionID: client.directLocalSessionID, RemoteSessionID: peerID, ProtocolVersion: test.version}
+				}
+				frame, err := PackMessage(message)
+				if err != nil {
+					t.Fatal(err)
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+					ws, err := (&websocket.Upgrader{}).Upgrade(response, request, nil)
+					if err != nil {
+						return
+					}
+					defer ws.Close()
+					_ = ws.WriteMessage(websocket.BinaryMessage, frame)
+				}))
+				defer server.Close()
+				ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				conn := NewWSConn(ws, "test", zerolog.Nop())
+				defer conn.Close()
+				_ = client.messageDispatcher(context.Background(), conn)
+				got := client.directRemoteSessionID
+				if test.accepted && got != peerID {
+					t.Fatalf("peer session = %s, want %s", got, peerID)
+				}
+				if !test.accepted && got != uuid.Nil {
+					t.Fatalf("unsupported peer session = %s, want none", got)
+				}
+			})
+		}
 	}
 }
 

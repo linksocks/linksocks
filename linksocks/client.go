@@ -2802,6 +2802,10 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 
 			switch m := msg.(type) {
 			case DirectCapabilitiesMessage:
+				if !protocolAllowsDirectPeer(m.ProtocolVersion) {
+					c.log.Warn().Str("peer_version", protocolVersionDebugString(m.ProtocolVersion)).Msg("Direct peer protocol version is unsupported")
+					continue
+				}
 				peerChanged := false
 				c.directMu.Lock()
 				if c.directRemoteSessionID != uuid.Nil && c.directRemoteSessionID != m.SessionID {
@@ -2840,6 +2844,10 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 				c.directNotify()
 
 			case DirectRendezvousMessage:
+				if !protocolAllowsDirectPeer(m.ProtocolVersion) {
+					c.log.Warn().Str("peer_version", protocolVersionDebugString(m.ProtocolVersion)).Msg("Direct peer protocol version is unsupported")
+					continue
+				}
 				peerChanged := false
 				c.directMu.Lock()
 				if m.SessionID == c.directLocalSessionID {

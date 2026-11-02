@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -97,66 +98,77 @@ const (
 	// Example: 0x01 => major=0, minor=1.
 	//
 	// Versioning rules:
-	//   - Bump MINOR when changing/adding semantics in a way that remains wire-compatible
-	//     in both directions: a newer peer talking to an older peer MUST NOT trigger parse
-	//     errors, and an older peer talking to a newer peer MUST remain compatible (features
-	//     may differ).
-	//   - Bump MAJOR for breaking wire-incompatible changes.
+	//   - Adding a message type requires a MINOR version bump.
+	//   - Wire-compatible changes to existing message semantics require a MINOR bump.
+	//   - If a change to an existing message format would make the old parser fail,
+	//     ask the project owner before bumping MAJOR.
 	//
 	// Connection policy:
 	//   - Different MAJOR versions MUST NOT connect.
 	//   - Different MINOR versions MAY connect, but SHOULD be clearly reported during the
 	//     connection/auth phase.
-	ProtocolVersion          = byte(0x02)
-	MigrationProtocolVersion = byte(0x02)
+	ProtocolVersion = byte(0x04)
 
 	// Binary message types
-	BinaryTypeAuth               = byte(0x01)
-	BinaryTypeAuthResponse       = byte(0x02)
-	BinaryTypeConnect            = byte(0x03)
-	BinaryTypeData               = byte(0x04)
-	BinaryTypeConnectResponse    = byte(0x05)
-	BinaryTypeDisconnect         = byte(0x06)
-	BinaryTypeConnector          = byte(0x07)
-	BinaryTypeConnectorResponse  = byte(0x08)
-	BinaryTypeLog                = byte(0x09)
-	BinaryTypePartners           = byte(0x0A)
-	BinaryTypeDirectCapabilities = byte(0x0B)
-	BinaryTypeDirectRendezvous   = byte(0x0C)
-	BinaryTypeDirectStatus       = byte(0x0D)
-	BinaryTypeChannelBind        = byte(0x0E)
-	BinaryTypeChannelMigrate     = byte(0x0F)
-	BinaryTypeChannelMigrateAck  = byte(0x10)
-	BinaryTypeChannelDataAck     = byte(0x11)
-
-	// Protocol types
-	BinaryProtocolTCP = byte(0x01)
-	BinaryProtocolUDP = byte(0x02)
+	BinaryTypeAuth                = byte(0x01)
+	BinaryTypeAuthResponse        = byte(0x02)
+	BinaryTypeConnect             = byte(0x03)
+	BinaryTypeData                = byte(0x04)
+	BinaryTypeConnectResponse     = byte(0x05)
+	BinaryTypeDisconnect          = byte(0x06)
+	BinaryTypeConnector           = byte(0x07)
+	BinaryTypeConnectorResponse   = byte(0x08)
+	BinaryTypeLog                 = byte(0x09)
+	BinaryTypePartners            = byte(0x0A)
+	BinaryTypeDirectCapabilities  = byte(0x0B)
+	BinaryTypeDirectRendezvous    = byte(0x0C)
+	BinaryTypeDirectStatus        = byte(0x0D)
+	BinaryTypeChannelBind         = byte(0x0E)
+	BinaryTypeChannelMigrate      = byte(0x0F)
+	BinaryTypeChannelMigrateAck   = byte(0x10)
+	BinaryTypeChannelDataAck      = byte(0x11)
+	BinaryTypeWebRegister         = byte(0x12)
+	BinaryTypeWebRegisterResponse = byte(0x13)
+	BinaryTypeWebRequest          = byte(0x14)
+	BinaryTypeWebResponse         = byte(0x15)
+	BinaryTypeWebData             = byte(0x16)
+	BinaryTypeWebCancel           = byte(0x17)
+	BinaryTypeWebRotate           = byte(0x18)
+	BinaryTypeWebSocketFrame      = byte(0x19)
+	BinaryProtocolTCP             = byte(0x01)
+	BinaryProtocolUDP             = byte(0x02)
 
 	// Binary connector operations
 	BinaryConnectorOperationAdd    = byte(0x01)
 	BinaryConnectorOperationRemove = byte(0x02)
 
 	// Type strings
-	TypeAuth               = "auth"
-	TypeAuthResponse       = "auth_response"
-	TypeConnect            = "connect"
-	TypeData               = "data"
-	TypeConnectResponse    = "connect_response"
-	TypeDisconnect         = "disconnect"
-	TypeConnector          = "connector"
-	TypeConnectorResponse  = "connector_response"
-	TypeLog                = "log"
-	TypePartners           = "partners"
-	TypeDirectCapabilities = "direct_capabilities"
-	TypeDirectRendezvous   = "direct_rendezvous"
-	TypeDirectStatus       = "direct_status"
-	TypeChannelBind        = "channel_bind"
-	TypeChannelMigrate     = "channel_migrate"
-	TypeChannelMigrateAck  = "channel_migrate_ack"
-	TypeChannelDataAck     = "channel_data_ack"
-	TypeUnknown            = "unknown"
-
+	TypeAuth                = "auth"
+	TypeAuthResponse        = "auth_response"
+	TypeConnect             = "connect"
+	TypeData                = "data"
+	TypeConnectResponse     = "connect_response"
+	TypeDisconnect          = "disconnect"
+	TypeConnector           = "connector"
+	TypeConnectorResponse   = "connector_response"
+	TypeLog                 = "log"
+	TypePartners            = "partners"
+	TypeDirectCapabilities  = "direct_capabilities"
+	TypeDirectRendezvous    = "direct_rendezvous"
+	TypeDirectStatus        = "direct_status"
+	TypeChannelBind         = "channel_bind"
+	TypeChannelMigrate      = "channel_migrate"
+	TypeChannelMigrateAck   = "channel_migrate_ack"
+	TypeChannelDataAck      = "channel_data_ack"
+	TypeWebRegister         = "web_register"
+	TypeWebRegisterResponse = "web_register_response"
+	TypeWebRequest          = "web_request"
+	TypeWebResponse         = "web_response"
+	TypeWebData             = "web_data"
+	TypeWebCancel           = "web_cancel"
+	TypeWebRotate           = "web_rotate"
+	TypeWebSocketFrame      = "websocket_frame"
+	TypeUnknown             = "unknown"
 	// Compression flags
 	DataCompressionNone = byte(0x00)
 	DataCompressionGzip = byte(0x01)
@@ -170,9 +182,7 @@ func protocolMinor(v byte) byte {
 	return v & 0x0F
 }
 
-func protocolSupportsMigration(v byte) bool {
-	return protocolMajor(v) == protocolMajor(MigrationProtocolVersion) && protocolMinor(v) >= protocolMinor(MigrationProtocolVersion)
-}
+var errUnsupportedProtocolMajor = errors.New("unsupported protocol major version")
 
 func protocolVersionDebugString(v byte) string {
 	return fmt.Sprintf("0x%02X (major=%d minor=%d)", v, protocolMajor(v), protocolMinor(v))
@@ -389,6 +399,108 @@ type ChannelDataAckMessage struct {
 
 func (m ChannelDataAckMessage) GetType() string {
 	return TypeChannelDataAck
+}
+
+type WebBackend struct {
+	URL    string `json:"url"`
+	Weight int    `json:"weight,omitempty"`
+}
+
+type WebRegisterMessage struct {
+	Host     string       `json:"host,omitempty"`
+	Backends []WebBackend `json:"backends"`
+	Insecure bool         `json:"insecure,omitempty"`
+	Rotate   bool         `json:"rotate,omitempty"`
+	Label    string       `json:"label,omitempty"`
+}
+
+func (m WebRegisterMessage) GetType() string {
+	return TypeWebRegister
+}
+
+type WebRegisterResponseMessage struct {
+	Success       bool   `json:"success"`
+	Error         string `json:"error,omitempty"`
+	Host          string `json:"host,omitempty"`
+	URL           string `json:"url,omitempty"`
+	Temporary     bool   `json:"temporary,omitempty"`
+	ExpiresAt     int64  `json:"expires_at,omitempty"`
+	RotateSeconds int    `json:"rotate_seconds,omitempty"`
+	BackendCount  int    `json:"backend_count,omitempty"`
+	Owner         string `json:"owner,omitempty"`
+}
+
+func (m WebRegisterResponseMessage) GetType() string {
+	return TypeWebRegisterResponse
+}
+
+type WebRequestMessage struct {
+	ChannelID  uuid.UUID   `json:"channel_id"`
+	Method     string      `json:"method"`
+	Path       string      `json:"path"`
+	Headers    [][2]string `json:"headers"`
+	HasBody    bool        `json:"has_body,omitempty"`
+	BodyLength int64       `json:"body_length,omitempty"`
+	ClientIP   string      `json:"client_ip,omitempty"`
+	Scheme     string      `json:"scheme,omitempty"`
+	Host       string      `json:"host,omitempty"`
+	WebSocket  bool        `json:"websocket,omitempty"`
+}
+
+func (m WebRequestMessage) GetType() string {
+	return TypeWebRequest
+}
+
+type WebResponseMessage struct {
+	ChannelID  uuid.UUID   `json:"channel_id"`
+	Status     int         `json:"status"`
+	Headers    [][2]string `json:"headers"`
+	BodyLength int64       `json:"body_length,omitempty"`
+}
+
+func (m WebResponseMessage) GetType() string {
+	return TypeWebResponse
+}
+
+type WebDataMessage struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	Data      []byte    `json:"data"`
+	End       bool      `json:"end,omitempty"`
+}
+
+func (m WebDataMessage) GetType() string {
+	return TypeWebData
+}
+
+type WebCancelMessage struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	Reason    string    `json:"reason,omitempty"`
+	Code      int       `json:"code,omitempty"`
+}
+
+func (m WebCancelMessage) GetType() string {
+	return TypeWebCancel
+}
+
+type WebSocketFrameMessage struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	Opcode    byte      `json:"opcode"`
+	Data      []byte    `json:"data"`
+}
+
+func (m WebSocketFrameMessage) GetType() string {
+	return TypeWebSocketFrame
+}
+
+type WebRotateMessage struct {
+	Host          string `json:"host"`
+	URL           string `json:"url"`
+	ExpiresAt     int64  `json:"expires_at,omitempty"`
+	RotateSeconds int    `json:"rotate_seconds,omitempty"`
+}
+
+func (m WebRotateMessage) GetType() string {
+	return TypeWebRotate
 }
 
 type UnknownMessage struct {
@@ -701,6 +813,53 @@ func PackMessage(msg BaseMessage) ([]byte, error) {
 	case ChannelDataAckMessage:
 		return packJSONMessage(buf, BinaryTypeChannelDataAck, m, "channel data ack")
 
+	case WebRegisterMessage:
+		return packJSONMessage(buf, BinaryTypeWebRegister, m, "web register")
+
+	case WebRegisterResponseMessage:
+		return packJSONMessage(buf, BinaryTypeWebRegisterResponse, m, "web register response")
+
+	case WebRequestMessage:
+		return packJSONMessage(buf, BinaryTypeWebRequest, m, "web request")
+
+	case WebResponseMessage:
+		return packJSONMessage(buf, BinaryTypeWebResponse, m, "web response")
+
+	case WebDataMessage:
+		buf = append(buf, BinaryTypeWebData)
+		channelID, err := uuidToBytes(m.ChannelID.String())
+		if err != nil {
+			return nil, fmt.Errorf("invalid ChannelID: %w", err)
+		}
+		buf = append(buf, channelID...)
+		if m.End {
+			buf = append(buf, 1)
+		} else {
+			buf = append(buf, 0)
+		}
+		dataLen := uint32(len(m.Data))
+		buf = append(buf, byte(dataLen>>24), byte(dataLen>>16), byte(dataLen>>8), byte(dataLen))
+		buf = append(buf, m.Data...)
+		return buf, nil
+
+	case WebCancelMessage:
+		return packJSONMessage(buf, BinaryTypeWebCancel, m, "web cancel")
+
+	case WebSocketFrameMessage:
+		if m.Opcode != 1 && m.Opcode != 2 {
+			return nil, fmt.Errorf("invalid WebSocket frame opcode")
+		}
+		buf = append(buf, BinaryTypeWebSocketFrame)
+		buf = append(buf, m.ChannelID[:]...)
+		buf = append(buf, m.Opcode)
+		dataLen := uint32(len(m.Data))
+		buf = append(buf, byte(dataLen>>24), byte(dataLen>>16), byte(dataLen>>8), byte(dataLen))
+		buf = append(buf, m.Data...)
+		return buf, nil
+
+	case WebRotateMessage:
+		return packJSONMessage(buf, BinaryTypeWebRotate, m, "web rotate")
+
 	default:
 		return nil, fmt.Errorf("unsupported message type for binary serialization")
 	}
@@ -764,7 +923,8 @@ func ParseMessageWithVersion(data []byte) (BaseMessage, byte, error) {
 	version := data[0]
 	if protocolMajor(version) != protocolMajor(ProtocolVersion) {
 		return nil, version, fmt.Errorf(
-			"unsupported protocol major version: peer=%s local=%s",
+			"%w: peer=%s local=%s",
+			errUnsupportedProtocolMajor,
 			protocolVersionDebugString(version),
 			protocolVersionDebugString(ProtocolVersion),
 		)
@@ -1112,6 +1272,82 @@ func parseMessageBody(msgType byte, payload []byte) (BaseMessage, error) {
 	case BinaryTypeChannelDataAck:
 		var msg ChannelDataAckMessage
 		if err := unmarshalJSONMessage(payload, "channel data ack", &msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+
+	case BinaryTypeWebRegister:
+		var msg WebRegisterMessage
+		if err := unmarshalJSONMessage(payload, "web register", &msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+
+	case BinaryTypeWebRegisterResponse:
+		var msg WebRegisterResponseMessage
+		if err := unmarshalJSONMessage(payload, "web register response", &msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+
+	case BinaryTypeWebRequest:
+		var msg WebRequestMessage
+		if err := unmarshalJSONMessage(payload, "web request", &msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+
+	case BinaryTypeWebResponse:
+		var msg WebResponseMessage
+		if err := unmarshalJSONMessage(payload, "web response", &msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+
+	case BinaryTypeWebData:
+		if len(payload) < 21 {
+			return nil, fmt.Errorf("invalid web data message")
+		}
+		channelID, err := uuid.FromBytes(payload[:16])
+		if err != nil {
+			return nil, fmt.Errorf("invalid web data channel id: %w", err)
+		}
+		end := payload[16]&0x01 != 0
+		dataLen := uint32(payload[17])<<24 | uint32(payload[18])<<16 | uint32(payload[19])<<8 | uint32(payload[20])
+		if len(payload) < 21+int(dataLen) {
+			return nil, fmt.Errorf("invalid web data message length")
+		}
+		data := append([]byte(nil), payload[21:21+dataLen]...)
+		return WebDataMessage{ChannelID: channelID, Data: data, End: end}, nil
+
+	case BinaryTypeWebCancel:
+		var msg WebCancelMessage
+		if err := unmarshalJSONMessage(payload, "web cancel", &msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+
+	case BinaryTypeWebSocketFrame:
+		if len(payload) < 21 {
+			return nil, fmt.Errorf("invalid WebSocket frame message")
+		}
+		channelID, err := uuid.FromBytes(payload[:16])
+		if err != nil {
+			return nil, fmt.Errorf("invalid WebSocket channel id: %w", err)
+		}
+		opcode := payload[16]
+		if opcode != 1 && opcode != 2 {
+			return nil, fmt.Errorf("invalid WebSocket frame opcode")
+		}
+		dataLen := uint32(payload[17])<<24 | uint32(payload[18])<<16 | uint32(payload[19])<<8 | uint32(payload[20])
+		if uint64(dataLen) != uint64(len(payload)-21) {
+			return nil, fmt.Errorf("invalid WebSocket frame message length")
+		}
+		return WebSocketFrameMessage{ChannelID: channelID, Opcode: opcode, Data: append([]byte(nil), payload[21:]...)}, nil
+
+	case BinaryTypeWebRotate:
+		var msg WebRotateMessage
+		if err := unmarshalJSONMessage(payload, "web rotate", &msg); err != nil {
 			return nil, err
 		}
 		return msg, nil

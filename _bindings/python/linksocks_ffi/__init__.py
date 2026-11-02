@@ -1,6 +1,7 @@
 from ._lib import (
     Client,
     Server,
+    Web,
     ReverseTokenResult,
     LinkSocksError,
     cancel_log_waiters,
@@ -13,6 +14,7 @@ from ._lib import (
 __all__ = [
     "Client",
     "Server",
+    "Web",
     "ReverseTokenResult",
     "LinkSocksError",
     "cancel_log_waiters",

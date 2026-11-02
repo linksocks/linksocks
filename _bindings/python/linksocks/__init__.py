@@ -4,6 +4,7 @@ __version__ = "1.10.3"
 
 from ._server import Server
 from ._client import Client
+from ._web import Web
 from ._base import AccessRule, ReverseTokenResult, set_log_level
 
-__all__ = ["Server", "Client", "AccessRule", "ReverseTokenResult", "set_log_level"]
+__all__ = ["Server", "Client", "Web", "AccessRule", "ReverseTokenResult", "set_log_level"]

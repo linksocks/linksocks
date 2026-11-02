@@ -278,6 +278,63 @@ def client(
 
 
 @click.command()
+@click.option("--token", "-t", default=None, help="Provider token from the LinkSocks.js dashboard (env: LINKSOCKS_TOKEN)")
+@click.option("--url", "-u", default="ws://localhost:8765", help="LinkSocks.js server address")
+@click.option("--local", "-l", "locals", multiple=True, required=True, help="Local backend URL, repeatable (e.g. http://127.0.0.1:8080)")
+@click.option("--domain", default=None, help="Custom remote hostname under WEB_ZONE")
+@click.option("--insecure", is_flag=True, default=False, help="Skip TLS certificate verification for https backends")
+@click.option("--no-reconnect", "-R", is_flag=True, default=False, help="Stop when the server disconnects")
+@click.option("--debug", "-d", count=True, help="Debug logging (-d for debug, -dd for trace)")
+def web(
+    token: Optional[str],
+    url: str,
+    locals: tuple,
+    domain: Optional[str],
+    insecure: bool,
+    no_reconnect: bool,
+    debug: int,
+):
+    """Expose a local HTTP(S) website through a LinkSocks.js web relay."""
+    from ._web import Web
+
+    async def main():
+        actual_token = resolve_token(token, "LINKSOCKS_TOKEN")
+
+        if debug == 0:
+            log_level = logging.INFO
+        elif debug == 1:
+            log_level = logging.DEBUG
+        else:
+            log_level = 5
+
+        init_logging(level=log_level)
+
+        provider = Web(
+            list(locals),
+            url=url,
+            token=actual_token or "",
+            domain=domain,
+            insecure=insecure,
+            no_reconnect=no_reconnect,
+        )
+        async with provider:
+            click.echo(f"Web site published: https://{provider.host}")
+            await asyncio.Future()
+
+    restore_sigint = _install_sigint_exit_guard()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        _abort_from_sigint()
+    except click.ClickException:
+        raise
+    except Exception as e:
+        raise click.ClickException(str(e)) from e
+    finally:
+        restore_sigint()
+
+
+@click.command()
 @click.option("--ws-host", "-H", default="0.0.0.0", help="WebSocket server listen address")
 @click.option("--ws-port", "-P", default=8765, help="WebSocket server listen port")
 @click.option("--token", "-t", default=None, help="Auth token, auto-generated if not provided (env: LINKSOCKS_TOKEN)")
@@ -474,6 +531,7 @@ cli.add_command(client)
 cli.add_command(connector_cmd)
 cli.add_command(provider_cmd)
 cli.add_command(server)
+cli.add_command(web)
 cli.add_command(version)
 
 

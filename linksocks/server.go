@@ -1584,18 +1584,32 @@ func (s *LinkSocksServer) registerWebSocketClient(auth *wsClientAuth, wsConn *WS
 // decoded message to the role-specific handler. The loop ends only when the
 // context is cancelled or the link fails.
 func (s *LinkSocksServer) dispatchMessages(ctx context.Context, ws *WSConn, handle func(BaseMessage)) error {
+	var lastPeerVersion byte
+	versionSeen := false
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			msg, err := ws.ReadMessage()
+			msg, peerVersion, err := ws.ReadMessageWithVersion()
 			if err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				if errors.Is(err, errUnsupportedProtocolMajor) {
+					s.log.Warn().Err(err).Msg("Client protocol major version mismatch")
+				} else if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					s.log.Debug().Err(err).Msg("WebSocket read error")
 				}
 				return err
 			}
+
+			if (!versionSeen || lastPeerVersion != peerVersion) && protocolMinor(peerVersion) != protocolMinor(ProtocolVersion) {
+				warning := fmt.Sprintf("Protocol minor version mismatch: peer=%s server=%s; connection allowed but features may differ", protocolVersionDebugString(peerVersion), protocolVersionDebugString(ProtocolVersion))
+				s.log.Warn().Msg(warning)
+				if err := ws.WriteMessage(LogMessage{Level: LogLevelWarn, Msg: warning}); err != nil {
+					return err
+				}
+			}
+			lastPeerVersion = peerVersion
+			versionSeen = true
 
 			// Any frame keeps the link alive; silence makes it expire.
 			ws.TouchReadDeadline()
