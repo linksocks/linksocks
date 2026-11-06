@@ -1,4 +1,4 @@
-package linksocks
+package tests
 
 import (
 	"bytes"
@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/linksocks/linksocks/linksocks"
 )
 
 // The server caps incoming WebSocket messages at MaxWebSocketMessageSize, so a
@@ -27,14 +28,14 @@ func TestGzipDecompressionBoundedByReadLimit(t *testing.T) {
 	}
 
 	// Wire frame: Version + Type + Protocol + ChannelID + Compression + DataLen + Data
-	frame := []byte{ProtocolVersion, BinaryTypeData, protocolToBytes("tcp")}
+	frame := []byte{linksocks.ProtocolVersion, linksocks.BinaryTypeData, 0x01 /* BinaryProtocolTCP */}
 	frame = append(frame, cid[:]...)
-	frame = append(frame, DataCompressionGzip)
+	frame = append(frame, linksocks.DataCompressionGzip)
 	dl := compressed.Len()
 	frame = append(frame, byte(dl>>24), byte(dl>>16), byte(dl>>8), byte(dl))
 	frame = append(frame, compressed.Bytes()...)
 
-	msg, _, err := ParseMessageWithVersion(frame)
+	msg, _, err := linksocks.ParseMessageWithVersion(frame)
 	if err != nil {
 		// A bounded parser rejects the bomb instead of materializing it.
 		if strings.Contains(err.Error(), "exceeded size limit") {
@@ -42,13 +43,13 @@ func TestGzipDecompressionBoundedByReadLimit(t *testing.T) {
 		}
 		t.Fatalf("parse: %v", err)
 	}
-	dm, ok := msg.(DataMessage)
+	dm, ok := msg.(linksocks.DataMessage)
 	if !ok {
 		t.Fatalf("unexpected message type %T", msg)
 	}
 
-	if len(dm.Data) > int(MaxWebSocketMessageSize) {
+	if len(dm.Data) > int(linksocks.MaxWebSocketMessageSize) {
 		t.Fatalf("decompressed %d bytes exceeds read limit %d: gzip output not bounded",
-			len(dm.Data), MaxWebSocketMessageSize)
+			len(dm.Data), linksocks.MaxWebSocketMessageSize)
 	}
 }

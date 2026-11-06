@@ -1,4 +1,4 @@
-package linksocks
+package tests
 
 import (
 	"bytes"
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/linksocks/linksocks/linksocks"
 	"github.com/rs/zerolog"
 )
 
@@ -23,7 +24,7 @@ import (
 //
 //	LINKSOCKS_CLOUD_URL=wss://l.zetx.tech \
 //	LINKSOCKS_CLOUD_TOKEN=<dashboard token, optional> \
-//	go test ./linksocks -run TestCloudWebEndToEnd -v -count=1
+//	go test ./tests -run TestCloudWebEndToEnd -v -count=1
 //
 // The relay must already run the version that supports the web proxy
 // (protocol 0x03+) and the WebSocket tunnel (0x04+).
@@ -84,7 +85,7 @@ func TestCloudWebEndToEnd(t *testing.T) {
 	hosts := make(chan string, 8)
 	runResult := make(chan error, 1)
 	go func() {
-		runResult <- RunWeb(ctx, WebOption{
+		runResult <- linksocks.RunWeb(ctx, linksocks.WebOption{
 			URL:          relayURL,
 			Token:        token,
 			Backends:     []string{origin.URL + "/base"},

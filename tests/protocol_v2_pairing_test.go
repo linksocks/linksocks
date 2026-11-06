@@ -1,4 +1,4 @@
-package linksocks
+package tests
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/linksocks/linksocks/linksocks"
 	"github.com/rs/zerolog"
 )
 
@@ -15,7 +16,7 @@ import (
 // them (and, worse, invite a plaintext downgrade). Once a V2 provider joins,
 // the same request must succeed.
 func TestProtocolV2NeverPairsWithLegacyPeer(t *testing.T) {
-	echoPort := startEchoServer(t)
+	echoPort := startEchoPort(t)
 	wsPort := freeTCPPort(t)
 	connectorSocks := freeTCPPort(t)
 
@@ -23,7 +24,7 @@ func TestProtocolV2NeverPairsWithLegacyPeer(t *testing.T) {
 	defer cancel()
 	// A short connector wait keeps the negative probe quick: with no
 	// same-generation provider the request must fail instead of hanging.
-	srv := NewLinkSocksServer(DefaultServerOption().
+	srv := linksocks.NewLinkSocksServer(linksocks.DefaultServerOption().
 		WithWSHost("127.0.0.1").
 		WithWSPort(wsPort).
 		WithConnectorWait(300 * time.Millisecond).
@@ -34,7 +35,7 @@ func TestProtocolV2NeverPairsWithLegacyPeer(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	const reverseToken = "v2-pairing-reverse-token"
-	if _, err := srv.AddReverseToken(&ReverseTokenOptions{Token: reverseToken, Port: 0}); err != nil {
+	if _, err := srv.AddReverseToken(&linksocks.ReverseTokenOptions{Token: reverseToken, Port: 0}); err != nil {
 		t.Fatalf("add reverse token: %v", err)
 	}
 	const connectorToken = "v2-pairing-connector-token"
@@ -43,10 +44,10 @@ func TestProtocolV2NeverPairsWithLegacyPeer(t *testing.T) {
 	}
 
 	// Legacy provider: same token, generation 1.
-	legacyProvider := NewLinkSocksClient(reverseToken, DefaultClientOption().
+	legacyProvider := linksocks.NewLinkSocksClient(reverseToken, linksocks.DefaultClientOption().
 		WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", wsPort)).
 		WithReverse(true).
-		WithProtocolVersion(ProtocolVersionV1).
+		WithProtocolVersion(linksocks.ProtocolVersionV1).
 		WithSocksHost("127.0.0.1").
 		WithSocksPort(0).
 		WithSocksWaitServer(true).
@@ -56,9 +57,9 @@ func TestProtocolV2NeverPairsWithLegacyPeer(t *testing.T) {
 	}
 	t.Cleanup(legacyProvider.Close)
 
-	connector := NewLinkSocksClient(connectorToken, DefaultClientOption().
+	connector := linksocks.NewLinkSocksClient(connectorToken, linksocks.DefaultClientOption().
 		WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", wsPort)).
-		WithProtocolVersion(ProtocolVersionV2).
+		WithProtocolVersion(linksocks.ProtocolVersionV2).
 		WithSocksHost("127.0.0.1").
 		WithSocksPort(connectorSocks).
 		WithSocksWaitServer(true).
@@ -78,10 +79,10 @@ func TestProtocolV2NeverPairsWithLegacyPeer(t *testing.T) {
 	}
 
 	// A V2 provider joins; now the tunnel must work end to end.
-	v2Provider := NewLinkSocksClient(reverseToken, DefaultClientOption().
+	v2Provider := linksocks.NewLinkSocksClient(reverseToken, linksocks.DefaultClientOption().
 		WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", wsPort)).
 		WithReverse(true).
-		WithProtocolVersion(ProtocolVersionV2).
+		WithProtocolVersion(linksocks.ProtocolVersionV2).
 		WithSocksHost("127.0.0.1").
 		WithSocksPort(0).
 		WithSocksWaitServer(true).

@@ -1,4 +1,4 @@
-package linksocks
+package tests
 
 import (
 	"bytes"
@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"github.com/linksocks/linksocks/linksocks"
 	"github.com/rs/zerolog"
 )
 
@@ -34,7 +35,7 @@ func testFreePort(t *testing.T) int {
 // server proactively probes idle connections so dead links cannot linger.
 func TestServerProactivelyPingsIdleClient(t *testing.T) {
 	port := testFreePort(t)
-	opt := DefaultServerOption().
+	opt := linksocks.DefaultServerOption().
 		WithWSPort(port).
 		WithLogger(zerolog.Nop()).
 		WithAPI("TOKEN")
@@ -42,7 +43,7 @@ func TestServerProactivelyPingsIdleClient(t *testing.T) {
 	// must be shorter than the first blocked read window, because gorilla returns
 	// the first timeout error from cache afterwards.
 	opt.PingInterval = 100 * time.Millisecond
-	srv := NewLinkSocksServer(opt)
+	srv := linksocks.NewLinkSocksServer(opt)
 	if err := srv.WaitReady(context.Background(), 5*time.Second); err != nil {
 		t.Fatalf("server not ready: %v", err)
 	}
@@ -50,7 +51,7 @@ func TestServerProactivelyPingsIdleClient(t *testing.T) {
 
 	// Register a forward token via the API, then connect through /socket with
 	// the URL token hash (the same path real clients use).
-	body, _ := json.Marshal(TokenRequest{Type: "forward"})
+	body, _ := json.Marshal(linksocks.TokenRequest{Type: "forward"})
 	req, err := http.NewRequest("POST", fmt.Sprintf("http://127.0.0.1:%d/api/token", port), bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("build token request: %v", err)
@@ -61,7 +62,7 @@ func TestServerProactivelyPingsIdleClient(t *testing.T) {
 		t.Fatalf("create token: %v", err)
 	}
 	defer resp.Body.Close()
-	var tr TokenResponse
+	var tr linksocks.TokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
 		t.Fatalf("decode token response: %v", err)
 	}
@@ -119,7 +120,7 @@ func TestServerURLAuthChecksProtocolVersion(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			port := testFreePort(t)
-			server := NewLinkSocksServer(DefaultServerOption().WithWSPort(port).WithLogger(zerolog.Nop()))
+			server := linksocks.NewLinkSocksServer(linksocks.DefaultServerOption().WithWSPort(port).WithLogger(zerolog.Nop()))
 			token, err := server.AddForwardToken("")
 			if err != nil {
 				t.Fatalf("add token: %v", err)
@@ -141,7 +142,7 @@ func TestServerURLAuthChecksProtocolVersion(t *testing.T) {
 				t.Fatalf("read auth response: %v", err)
 			}
 
-			frame, err := PackMessage(LogMessage{Level: LogLevelInfo, Msg: "version probe"})
+			frame, err := linksocks.PackMessage(linksocks.LogMessage{Level: linksocks.LogLevelInfo, Msg: "version probe"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -161,11 +162,11 @@ func TestServerURLAuthChecksProtocolVersion(t *testing.T) {
 					}
 					t.Fatalf("read version warning: %v", err)
 				}
-				message, err := ParseMessage(data)
+				message, err := linksocks.ParseMessage(data)
 				if err != nil {
 					t.Fatalf("parse server message: %v", err)
 				}
-				if warning, ok := message.(LogMessage); ok && warning.Level == LogLevelWarn && strings.Contains(warning.Msg, "Protocol minor version mismatch") {
+				if warning, ok := message.(linksocks.LogMessage); ok && warning.Level == linksocks.LogLevelWarn && strings.Contains(warning.Msg, "Protocol minor version mismatch") {
 					if test.wantClosed {
 						t.Fatal("major mismatch was treated as a minor mismatch")
 					}

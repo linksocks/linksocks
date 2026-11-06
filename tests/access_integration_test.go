@@ -1,4 +1,4 @@
-package linksocks
+package tests
 
 import (
 	"bufio"
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/linksocks/linksocks/linksocks"
 	"github.com/rs/zerolog"
 )
 
@@ -191,8 +192,8 @@ func socks5ConnectEcho(t *testing.T, proxyAddr string, host string, port int, pa
 	return header[1]
 }
 
-// startEchoServer starts a TCP echo server and returns its port.
-func startEchoServer(t *testing.T) int {
+// startEchoPort starts a TCP echo server and returns its port.
+func startEchoPort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -229,15 +230,15 @@ func freeTCPPort(t *testing.T) int {
 // TestForwardTokenAccessControl verifies that rules bound to a forward token
 // are enforced on the server before dialing on behalf of that token.
 func TestForwardTokenAccessControl(t *testing.T) {
-	allowedPort := startEchoServer(t)
-	blockedPort := startEchoServer(t)
+	allowedPort := startEchoPort(t)
+	blockedPort := startEchoPort(t)
 
 	wsPort := freeTCPPort(t)
 	clientSocks := freeTCPPort(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	srv := NewLinkSocksServer(DefaultServerOption().
+	srv := linksocks.NewLinkSocksServer(linksocks.DefaultServerOption().
 		WithWSHost("127.0.0.1").
 		WithWSPort(wsPort).
 		WithLogger(zerolog.Nop()))
@@ -247,13 +248,13 @@ func TestForwardTokenAccessControl(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	const token = "forward-access-control-token"
-	if _, err := srv.AddForwardTokenWithRules(token, []AccessRule{
-		{Addrs: []string{"127.0.0.0/8"}, Ports: []PortSpec{SinglePort(allowedPort)}},
+	if _, err := srv.AddForwardTokenWithRules(token, []linksocks.AccessRule{
+		{Addrs: []string{"127.0.0.0/8"}, Ports: []linksocks.PortSpec{linksocks.SinglePort(allowedPort)}},
 	}); err != nil {
 		t.Fatalf("add forward token with rules: %v", err)
 	}
 
-	cli := NewLinkSocksClient(token, DefaultClientOption().
+	cli := linksocks.NewLinkSocksClient(token, linksocks.DefaultClientOption().
 		WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", wsPort)).
 		WithSocksHost("127.0.0.1").
 		WithSocksPort(clientSocks).
@@ -298,15 +299,15 @@ func TestForwardTokenAccessControl(t *testing.T) {
 // token are enforced on the server before a request from that connector is
 // forwarded to a reverse provider.
 func TestConnectorTokenAccessControl(t *testing.T) {
-	allowedPort := startEchoServer(t)
-	blockedPort := startEchoServer(t)
+	allowedPort := startEchoPort(t)
+	blockedPort := startEchoPort(t)
 
 	wsPort := freeTCPPort(t)
 	connectorSocks := freeTCPPort(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	srv := NewLinkSocksServer(DefaultServerOption().
+	srv := linksocks.NewLinkSocksServer(linksocks.DefaultServerOption().
 		WithWSHost("127.0.0.1").
 		WithWSPort(wsPort).
 		WithLogger(zerolog.Nop()))
@@ -316,13 +317,13 @@ func TestConnectorTokenAccessControl(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	const reverseToken = "connector-ac-reverse-token"
-	if _, err := srv.AddReverseToken(&ReverseTokenOptions{Token: reverseToken, Port: 0}); err != nil {
+	if _, err := srv.AddReverseToken(&linksocks.ReverseTokenOptions{Token: reverseToken, Port: 0}); err != nil {
 		t.Fatalf("add reverse token: %v", err)
 	}
 
 	const connectorToken = "connector-access-control-token"
-	if _, err := srv.AddConnectorTokenWithRules(connectorToken, reverseToken, []AccessRule{
-		{Addrs: []string{"127.0.0.0/8"}, Ports: []PortSpec{SinglePort(allowedPort)}},
+	if _, err := srv.AddConnectorTokenWithRules(connectorToken, reverseToken, []linksocks.AccessRule{
+		{Addrs: []string{"127.0.0.0/8"}, Ports: []linksocks.PortSpec{linksocks.SinglePort(allowedPort)}},
 	}); err != nil {
 		t.Fatalf("add connector token with rules: %v", err)
 	}
@@ -330,10 +331,10 @@ func TestConnectorTokenAccessControl(t *testing.T) {
 	// Provider: reverse client that performs the actual dial. This scenario
 	// exercises the legacy server-side enforcement path, so both peers speak
 	// protocol V1: a relay cannot inspect sealed destinations on V2.
-	provider := NewLinkSocksClient(reverseToken, DefaultClientOption().
+	provider := linksocks.NewLinkSocksClient(reverseToken, linksocks.DefaultClientOption().
 		WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", wsPort)).
 		WithReverse(true).
-		WithProtocolVersion(ProtocolVersionV1).
+		WithProtocolVersion(linksocks.ProtocolVersionV1).
 		WithSocksHost("127.0.0.1").
 		WithSocksPort(0).
 		WithSocksWaitServer(true).
@@ -346,7 +347,7 @@ func TestConnectorTokenAccessControl(t *testing.T) {
 	// A V2 client on a connector token with server-side rules is refused at
 	// authentication: the relay could not enforce them on sealed traffic,
 	// and silently dropping enforcement is not an option.
-	v2Connector := NewLinkSocksClient(connectorToken, DefaultClientOption().
+	v2Connector := linksocks.NewLinkSocksClient(connectorToken, linksocks.DefaultClientOption().
 		WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", wsPort)).
 		WithSocksHost("127.0.0.1").
 		WithSocksPort(0).
@@ -361,9 +362,9 @@ func TestConnectorTokenAccessControl(t *testing.T) {
 	}
 
 	// Connector: forward-style client authenticated with the connector token.
-	connector := NewLinkSocksClient(connectorToken, DefaultClientOption().
+	connector := linksocks.NewLinkSocksClient(connectorToken, linksocks.DefaultClientOption().
 		WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", wsPort)).
-		WithProtocolVersion(ProtocolVersionV1).
+		WithProtocolVersion(linksocks.ProtocolVersionV1).
 		WithSocksHost("127.0.0.1").
 		WithSocksPort(connectorSocks).
 		WithSocksWaitServer(true).
@@ -414,8 +415,8 @@ func TestAccessControlEnforcement(t *testing.T) {
 	wsPort := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
 
-	ac, err := NewAccessControl([]AccessRule{
-		{Addrs: []string{"127.0.0.0/8"}, Ports: []PortSpec{PortRange(30000, 30010)}},
+	ac, err := linksocks.NewAccessControl([]linksocks.AccessRule{
+		{Addrs: []string{"127.0.0.0/8"}, Ports: []linksocks.PortSpec{linksocks.PortRange(30000, 30010)}},
 	})
 	if err != nil {
 		t.Fatalf("NewAccessControl() error = %v", err)
@@ -423,7 +424,7 @@ func TestAccessControlEnforcement(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	srv := NewLinkSocksServer(DefaultServerOption().
+	srv := linksocks.NewLinkSocksServer(linksocks.DefaultServerOption().
 		WithWSHost("127.0.0.1").
 		WithWSPort(wsPort).
 		WithLogger(zerolog.Nop()).
@@ -436,7 +437,7 @@ func TestAccessControlEnforcement(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	const token = "access-control-test-token"
-	result, err := srv.AddReverseToken(&ReverseTokenOptions{Token: token, Port: 0})
+	result, err := srv.AddReverseToken(&linksocks.ReverseTokenOptions{Token: token, Port: 0})
 	if err != nil {
 		t.Fatalf("add reverse token: %v", err)
 	}
@@ -501,11 +502,11 @@ func TestAccessControlEnforcement(t *testing.T) {
 // destinations outside the allowed rules, returning SOCKS failure to the local
 // proxy client.
 func TestAccessControlDialSideEnforcement(t *testing.T) {
-	allowedPort := startEchoServer(t)
-	blockedPort := startEchoServer(t)
+	allowedPort := startEchoPort(t)
+	blockedPort := startEchoPort(t)
 
-	ac, err := NewAccessControl([]AccessRule{
-		{Addrs: []string{"127.0.0.0/8"}, Ports: []PortSpec{SinglePort(allowedPort)}},
+	ac, err := linksocks.NewAccessControl([]linksocks.AccessRule{
+		{Addrs: []string{"127.0.0.0/8"}, Ports: []linksocks.PortSpec{linksocks.SinglePort(allowedPort)}},
 	})
 	if err != nil {
 		t.Fatalf("NewAccessControl() error = %v", err)
@@ -520,7 +521,7 @@ func TestAccessControlDialSideEnforcement(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	srv := NewLinkSocksServer(DefaultServerOption().
+	srv := linksocks.NewLinkSocksServer(linksocks.DefaultServerOption().
 		WithWSHost("127.0.0.1").
 		WithWSPort(wsPort).
 		WithLogger(zerolog.Nop()))
@@ -530,14 +531,14 @@ func TestAccessControlDialSideEnforcement(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	const token = "dial-side-access-control-token"
-	result, err := srv.AddReverseToken(&ReverseTokenOptions{Token: token, Port: 0})
+	result, err := srv.AddReverseToken(&linksocks.ReverseTokenOptions{Token: token, Port: 0})
 	if err != nil {
 		t.Fatalf("add reverse token: %v", err)
 	}
 	proxyAddr := fmt.Sprintf("127.0.0.1:%d", result.Port)
 
 	// The provider (dial side) carries its own access control rules.
-	client := NewLinkSocksClient(token, DefaultClientOption().
+	client := linksocks.NewLinkSocksClient(token, linksocks.DefaultClientOption().
 		WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", wsPort)).
 		WithReverse(true).
 		WithSocksHost("127.0.0.1").
