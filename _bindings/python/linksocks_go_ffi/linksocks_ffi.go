@@ -264,6 +264,7 @@ type clientConfig struct {
 	UpstreamUsername  string   `json:"upstream_username"`
 	UpstreamPassword  string   `json:"upstream_password"`
 	NoEnvProxy        *bool    `json:"no_env_proxy"`
+	ProtocolVersion   string   `json:"protocol_version"`
 	DirectMode        string   `json:"direct_mode"`
 	DirectDiscovery   string   `json:"direct_discovery"`
 	DirectHostCands   string   `json:"direct_host_candidates"`
@@ -692,6 +693,13 @@ func linksocks_client_new(token *C.char, cfgJSON *C.char, out *C.uint64_t) *C.ch
 	}
 	if cfg.NoEnvProxy != nil {
 		opt.WithNoEnvProxy(*cfg.NoEnvProxy)
+	}
+	if cfg.ProtocolVersion != "" {
+		v, err := linksocks.ParseProtocolGeneration(cfg.ProtocolVersion)
+		if err != nil {
+			return errStr(err)
+		}
+		opt.WithProtocolVersion(v)
 	}
 	if len(cfg.EntryAccessControl) != 0 {
 		ac, err := toAccessControl(cfg.EntryAccessControl)

@@ -77,6 +77,7 @@ Client(
     upstream_username: Optional[str] = None,
     upstream_password: Optional[str] = None,
     no_env_proxy: Optional[bool] = None,
+    protocol_version: Optional[str] = None,
 )
 ```
 
@@ -104,6 +105,7 @@ Client(
 | `upstream_username` | `str` | `None` | 上游代理用户名 |
 | `upstream_password` | `str` | `None` | 上游代理密码 |
 | `no_env_proxy` | `bool` | `False` | 忽略代理环境变量 |
+| `protocol_version` | `str` | `None` | 协议代：`v2` 为端到端加密（默认），`v1` 为旧版明文协议（用于未升级的转发器） |
 
 ## 客户端生命周期
 

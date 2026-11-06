@@ -35,6 +35,12 @@ type WSConn struct {
 	conn *websocket.Conn
 	mu   sync.Mutex
 
+	// protocolVersion is the version stamped on frames sent over this link.
+	// It defaults to the build's generation and is switched to the peer's
+	// generation once the first frame identifies it, so one relay process can
+	// answer V1 and V2 connections on their own generation.
+	protocolVersion atomic.Int32
+
 	// All timestamps are unix-millis stored atomically.
 	pingSentMillis int64 // when the last ping was sent
 	lastPongMillis int64 // when the last pong arrived; zero means never
@@ -42,6 +48,16 @@ type WSConn struct {
 
 	label    string
 	clientIP string
+}
+
+// SetProtocolVersion switches the generation stamped on outgoing frames.
+func (c *WSConn) SetProtocolVersion(v byte) {
+	c.protocolVersion.Store(int32(v))
+}
+
+// ProtocolVersion returns the generation stamped on outgoing frames.
+func (c *WSConn) ProtocolVersion() byte {
+	return byte(c.protocolVersion.Load())
 }
 
 // isStale reports whether the link has been silent long enough to be treated
@@ -101,6 +117,7 @@ func NewWSConn(conn *websocket.Conn, label string, logger zerolog.Logger) *WSCon
 		conn:  conn,
 		label: label,
 	}
+	wsConn.protocolVersion.Store(int32(ProtocolVersion))
 
 	// Set read limit
 	conn.SetReadLimit(MaxWebSocketMessageSize)
@@ -201,9 +218,10 @@ func (c *WSConn) ReadMessageWithVersion() (BaseMessage, byte, error) {
 	return ParseMessageWithVersion(data)
 }
 
-// WriteMessage writes a BaseMessage to the websocket connection
+// WriteMessage writes a BaseMessage to the websocket connection, stamped with
+// the generation negotiated on this link.
 func (c *WSConn) WriteMessage(msg BaseMessage) error {
-	data, err := PackMessage(msg)
+	data, err := PackMessageWithVersion(msg, c.ProtocolVersion())
 	if err != nil {
 		return err
 	}

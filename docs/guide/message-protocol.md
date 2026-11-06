@@ -4,10 +4,10 @@ LinkSocks uses a custom binary message protocol over WebSocket. This page detail
 
 ### Protocol Version
 
-Current Go and linksocks.js protocol version: `0x04` (major 0, minor 4).
+Current Go and linksocks.js protocol version: `0x04` (major 0, minor 4) for the legacy generation, and `0x20` (major 2, minor 0) for the end-to-end encrypted generation.
 The high four bits encode the major version; the low four bits encode the minor version.
-Messages with a different major version are rejected, while minor mismatches are allowed with a warning.
-The connection does not negotiate a shared version.
+Messages of an unsupported major version are rejected, while minor mismatches are allowed with a warning.
+The connection does not negotiate a shared version: each side declares the generation it speaks and never downgrades silently.
 
 Feature minimums are distinct from the current protocol version:
 
@@ -15,8 +15,31 @@ Feature minimums are distinct from the current protocol version:
 - Channel migration: `0x02`, checked against the direct peer's advertised version.
 - Web proxy: `0x03`, checked against the Worker response; registration must also succeed.
 - WebSocket proxying over the web tunnel: `0x04`, required for `websocket_frame` and for WebSocket upgrade requests.
+- Sealed channels: generation 2 (`0x20`), required for `channel_open` and `sealed`.
 
 Adding a message type requires a minor version bump. Before bumping the major version for an existing message format change that breaks old parsers, ask the project owner for approval.
+
+### Generation 2: End-to-End Encrypted Channels
+
+Generation 2 keeps the relay out of the data path. A connector opens a channel
+with `channel_open` (which carries no destination), the relay binds it to a
+provider, and the two peers run a Noise `XX` handshake inside `sealed` frames.
+From then on the destination address, payloads, peer-issued errors and
+connection decisions travel encrypted; the relay forwards `sealed` frames by
+channel ID without parsing them.
+
+What stays visible to the relay: which two connections are paired, each
+channel ID, frame sizes and timing. Relay-generated messages (welcome log,
+partners count, relay-side errors, web tunnel messages) are plaintext because
+the relay is the sender.
+
+Additional rules of the generation-2 protocol:
+
+- Clients declare the generation in the connection query string (`version=0x20`); the relay stamps its own replies with the generation of the connection.
+- A connection must not change generation mid-stream; the relay closes the connection if it does.
+- Protocol V2 disables direct mode (its own tunnel is already encrypted), web publishing keeps using the legacy generation because the relay terminates HTTP, and encrypted channels do not survive relay-side channel migration.
+- Provider-side dial access control still applies: with `--access-rule` on the provider (or `client -r`), the dial side checks destinations after decryption. Server-side connector-token rules cannot be enforced on encrypted traffic, so a generation-2 connector is refused when its token carries rules.
+- Both peers must support generation 2; a generation-2 peer never pairs with a legacy peer for channel traffic, and `--protocol-version v1` keeps a client on the legacy generation for old relays.
 
 ## Message Types
 
@@ -56,6 +79,30 @@ Version(1) + Type(1) + ChannelID(16) + [ErrorLen(1) + Error(N) if error]
 Version(1) + Type(1) + Protocol(1) + ChannelID(16) + Compression(1) + DataLen(4) + Data(N) +
     [AddrLen(1) + Addr(N) + Port(2) if UDP]
 ```
+
+### Sealed Channels (Generation 2)
+
+**ChannelOpenMessage**: Request the relay to bind an encrypted channel
+```
+Version(1) + Type(1) + ChannelID(16) + [Resume(1) if resuming]
+```
+
+The message deliberately carries no protocol/address/port: the destination is
+inside the sealed channel. The relay binds the channel to a provider and
+forwards the open frame; a resume is forwarded to the provider the channel is
+already bound to.
+
+**SealedMessage**: One opaque frame of a channel's encrypted stream
+```
+Version(1) + Type(1) + ChannelID(16) + DataLen(4) + Data(N)
+```
+
+The relay routes it by channel ID only. `Data` contains the Noise handshake
+messages and, once established, the encrypted stream of the channel: connect
+requests (with destination), connect responses, payload bytes and peer errors.
+Compression happens inside the channel, before encryption. `channel_open` and
+`disconnect` frames are the only channel-related messages a generation-2 peer
+sends in plaintext, and both carry nothing but the channel ID.
 
 ## Channel Management
 

@@ -24,7 +24,23 @@ func (w *clientRelayWriter) WriteMessage(msg BaseMessage) error {
 	if ws == nil {
 		return &transportDownError{cause: errors.New("relay writer: no websocket")}
 	}
-	if dm, ok := msg.(DataMessage); ok {
+	if w.c.relay.secure != nil {
+		// V2 channels rebind with a plaintext ChannelOpen resume that must
+		// precede the first sealed frame on the new link, or the relay would
+		// drop the frame for an unbound channel.
+		if chID, ok := relayChannelID(msg); ok {
+			if ch, ok := w.c.relay.logicalChannel(chID); ok && ch.canResume() && ch.suspended() {
+				if err := ws.WriteMessage(ChannelOpenMessage{ChannelID: chID, Resume: true}); err != nil {
+					return &transportDownError{cause: err}
+				}
+				if err := ws.WriteMessage(msg); err != nil {
+					return &transportDownError{cause: err}
+				}
+				ch.resume()
+				return nil
+			}
+		}
+	} else if dm, ok := msg.(DataMessage); ok {
 		// After a link drop this channel was suspended; rebind it on the new
 		// link before resuming data so the peer keeps routing this channel.
 		if ch, ok := w.c.relay.logicalChannel(dm.ChannelID); ok && ch.canResume() && ch.suspended() {
@@ -48,6 +64,27 @@ func (w *clientRelayWriter) WriteMessage(msg BaseMessage) error {
 		return &transportDownError{cause: err}
 	}
 	return nil
+}
+
+// relayChannelID extracts the channel a message belongs to when the message
+// can trigger a per-channel resume on a fresh link.
+func relayChannelID(msg BaseMessage) (uuid.UUID, bool) {
+	switch m := msg.(type) {
+	case DataMessage:
+		return m.ChannelID, true
+	case SealedMessage:
+		return m.ChannelID, true
+	}
+	return uuid.Nil, false
+}
+
+// ProtocolVersion reports the protocol generation negotiated with the relay,
+// or 0 when no link is available yet.
+func (w *clientRelayWriter) ProtocolVersion() byte {
+	if ws := w.c.getNextWebSocket(); ws != nil {
+		return ws.ProtocolVersion()
+	}
+	return 0
 }
 
 func (w *clientRelayWriter) Label() string {

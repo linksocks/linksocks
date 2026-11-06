@@ -3,6 +3,7 @@ module github.com/linksocks/linksocks
 go 1.25.0
 
 require (
+	github.com/flynn/noise v1.1.0
 	github.com/go-python/gopy v0.5.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3

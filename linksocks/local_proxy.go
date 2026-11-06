@@ -387,13 +387,19 @@ func (r *Relay) handleHTTPConnect(ctx context.Context, ws MessageWriter, conn *b
 	r.flushOrphanData(channelID, channelQueue)
 	defer r.disconnectChannel(channelID)
 
+	transport, err := r.openChannelTransport(channelID, channelQueue, ws)
+	if err != nil {
+		_ = r.writeHTTPProxyError(conn, http.StatusBadGateway, "Failed to reach backend")
+		return fmt.Errorf("open channel transport: %w", err)
+	}
+
 	connectRequest := ConnectMessage{
 		Protocol:  "tcp",
 		Address:   targetHost,
 		Port:      targetPort,
 		ChannelID: channelID,
 	}
-	channel := r.registerLogicalChannel(channelID, "tcp", ws, ws, channelPathRelay)
+	channel := r.registerLogicalChannel(channelID, "tcp", transport, transport, channelPathRelay)
 	channel.setRequest(connectRequest)
 	channel.markResumeOwner()
 	ws = channel
@@ -459,13 +465,19 @@ func (r *Relay) handleHTTPAbsoluteRequest(ctx context.Context, ws MessageWriter,
 	r.flushOrphanData(channelID, channelQueue)
 	defer r.disconnectChannel(channelID)
 
+	transport, err := r.openChannelTransport(channelID, channelQueue, ws)
+	if err != nil {
+		_ = r.writeHTTPProxyError(conn, http.StatusBadGateway, "Failed to reach backend")
+		return fmt.Errorf("open channel transport: %w", err)
+	}
+
 	connectRequest := ConnectMessage{
 		Protocol:  "tcp",
 		Address:   targetHost,
 		Port:      targetPort,
 		ChannelID: channelID,
 	}
-	channel := r.registerLogicalChannel(channelID, "tcp", ws, ws, channelPathRelay)
+	channel := r.registerLogicalChannel(channelID, "tcp", transport, transport, channelPathRelay)
 	channel.setRequest(connectRequest)
 	channel.markResumeOwner()
 	ws = channel

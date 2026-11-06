@@ -256,8 +256,10 @@ func (c *webConn) parseWebMessage(data []byte) (BaseMessage, byte, error) {
 		}
 		return nil, version, err
 	}
-	if (!c.versionSeen || c.peerVersion != version) && protocolMinor(version) != protocolMinor(ProtocolVersion) {
-		c.log.Warn().Str("peer_version", protocolVersionDebugString(version)).Str("local_version", protocolVersionDebugString(ProtocolVersion)).Msg("Protocol minor version mismatch; features may differ")
+	if (!c.versionSeen || c.peerVersion != version) && !protocolMinorIsCurrent(version) {
+		knownMinor, _ := protocolKnownMinorForMajor(protocolMajor(version))
+		baseline := protocolMajor(version)<<4 | knownMinor
+		c.log.Warn().Str("peer_version", protocolVersionDebugString(version)).Str("local_version", protocolVersionDebugString(baseline)).Msg("Protocol minor version mismatch; features may differ")
 	}
 	c.peerVersion = version
 	c.versionSeen = true
@@ -433,7 +435,10 @@ func (c *webConn) backends() []WebBackend {
 }
 
 func (c *webConn) send(msg BaseMessage) error {
-	data, err := PackMessage(msg)
+	// Web publishing is plaintext by design: the relay terminates the HTTP
+	// traffic, so it cannot be end-to-end encrypted. The web provider keeps
+	// speaking the legacy generation regardless of the build's default.
+	data, err := PackMessageWithVersion(msg, ProtocolVersionV1)
 	if err != nil {
 		return err
 	}

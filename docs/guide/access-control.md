@@ -159,6 +159,16 @@ token, err := srv.AddConnectorTokenWithRules("my_connector", "my_reverse_token",
 })
 ```
 
+::: warning Encrypted channels and server-side rules
+Protocol generation 2 encrypts destinations between the two peers. A forward
+token's rules still apply, because the server itself performs that dial and
+decrypts the request. A connector token's rules cannot be applied — the relay
+never learns the destination — so a generation-2 connector is refused at
+authentication when its token carries rules. Move those rules to the provider
+(dial access control) or connect with `--protocol-version v1` when you need
+relay-enforced connector rules.
+:::
+
 **HTTP API** — both token types accept an optional `rules` field:
 
 ```bash

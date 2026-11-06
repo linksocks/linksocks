@@ -77,6 +77,7 @@ Client(
     upstream_username: Optional[str] = None,
     upstream_password: Optional[str] = None,
     no_env_proxy: Optional[bool] = None,
+    protocol_version: Optional[str] = None,
 )
 ```
 
@@ -104,6 +105,7 @@ Client(
 | `upstream_username` | `str` | `None` | Username for upstream proxy |
 | `upstream_password` | `str` | `None` | Password for upstream proxy |
 | `no_env_proxy` | `bool` | `False` | Ignore proxy environment variables |
+| `protocol_version` | `str` | `None` | Protocol generation: `v2` (end-to-end encrypted, default) or `v1` (legacy plaintext, for unupgraded relays) |
 
 ## Client Lifecycle
 

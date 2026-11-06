@@ -86,6 +86,12 @@ ChannelMigrateAckMessage:
 
 ChannelDataAckMessage:
 	Version(1) + Type(1) + DataLen(4) + JSON{...}
+
+ChannelOpenMessage:
+    Version(1) + Type(1) + ChannelID(16) + [Resume(1) if set]
+
+SealedMessage:
+    Version(1) + Type(1) + ChannelID(16) + DataLen(4) + Data(N)
 */
 
 const (
@@ -95,7 +101,7 @@ const (
 	//   - M (high nibble) is the MAJOR version
 	//   - N (low nibble) is the MINOR version
 	//
-	// Example: 0x01 => major=0, minor=1.
+	// Example: 0x04 => major=0, minor=4 (protocol V1).
 	//
 	// Versioning rules:
 	//   - Adding a message type requires a MINOR version bump.
@@ -107,7 +113,17 @@ const (
 	//   - Different MAJOR versions MUST NOT connect.
 	//   - Different MINOR versions MAY connect, but SHOULD be clearly reported during the
 	//     connection/auth phase.
-	ProtocolVersion = byte(0x04)
+	//
+	// Generation V2 (major 2) replaces plaintext relay payloads with end-to-end
+	// Noise-encrypted channels: peers open channels with ChannelOpenMessage, run
+	// a Noise_XX handshake directly between them through the relay, and exchange
+	// every subsequent payload as SealedMessage ciphertext. The relay only routes
+	// frames by channel ID. V2 clients MUST NOT fall back to V1 peers or relays.
+	ProtocolVersionV1 = byte(0x04)
+	ProtocolVersionV2 = byte(0x20)
+
+	// ProtocolVersion is the generation stamped on frames sent by this build.
+	ProtocolVersion = ProtocolVersionV2
 
 	// Binary message types
 	BinaryTypeAuth                = byte(0x01)
@@ -135,6 +151,8 @@ const (
 	BinaryTypeWebCancel           = byte(0x17)
 	BinaryTypeWebRotate           = byte(0x18)
 	BinaryTypeWebSocketFrame      = byte(0x19)
+	BinaryTypeChannelOpen         = byte(0x1A)
+	BinaryTypeSealed              = byte(0x1B)
 	BinaryProtocolTCP             = byte(0x01)
 	BinaryProtocolUDP             = byte(0x02)
 
@@ -168,18 +186,71 @@ const (
 	TypeWebCancel           = "web_cancel"
 	TypeWebRotate           = "web_rotate"
 	TypeWebSocketFrame      = "websocket_frame"
+	TypeChannelOpen         = "channel_open"
+	TypeSealed              = "sealed"
 	TypeUnknown             = "unknown"
 	// Compression flags
 	DataCompressionNone = byte(0x00)
 	DataCompressionGzip = byte(0x01)
 )
 
+// protocolKnownMinorForMajor returns the newest minor version this build
+// knows for a protocol generation, so peers can be compared against the right
+// baseline regardless of which generation they speak.
+func protocolKnownMinorForMajor(major byte) (byte, bool) {
+	switch major {
+	case protocolMajor(ProtocolVersionV2):
+		return protocolMinor(ProtocolVersionV2), true
+	case protocolMajor(ProtocolVersionV1):
+		return protocolMinor(ProtocolVersionV1), true
+	}
+	return 0, false
+}
+
+// protocolMinorIsCurrent reports whether the peer speaks the newest minor
+// version this build knows for the peer's generation.
+func protocolMinorIsCurrent(v byte) bool {
+	minor, ok := protocolKnownMinorForMajor(protocolMajor(v))
+	return ok && protocolMinor(v) == minor
+}
+
 func protocolMajor(v byte) byte {
 	return (v >> 4) & 0x0F
 }
 
+// protocolMajorSupported reports whether this build can parse frames of the
+// given major version. Builds accept both the current generation and the
+// legacy plaintext generation so one updated relay can serve V1 and V2
+// clients simultaneously; peers of different majors are never paired, so a
+// V2 session cannot silently downgrade to plaintext.
+func protocolMajorSupported(v byte) bool {
+	major := protocolMajor(v)
+	return major == protocolMajor(ProtocolVersion) || major == protocolMajor(ProtocolVersionV1)
+}
+
 func protocolMinor(v byte) byte {
 	return v & 0x0F
+}
+
+// ParseProtocolGeneration parses a protocol generation selector for CLI and
+// API use. Accepted values are "v2"/"2" (end-to-end encrypted, the current
+// generation) and "v1"/"1" (legacy plaintext), plus raw 0xMN encodings of
+// either generation. An empty string means the current generation.
+func ParseProtocolGeneration(s string) (byte, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "v2", "2":
+		return ProtocolVersionV2, nil
+	case "v1", "1":
+		return ProtocolVersionV1, nil
+	}
+	parsed, err := ParseProtocolVersionParam(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid protocol version %q: want v2 or v1", s)
+	}
+	if !protocolMajorSupported(parsed) {
+		return 0, fmt.Errorf("invalid protocol version %q: want v2 or v1", s)
+	}
+	return parsed, nil
 }
 
 var errUnsupportedProtocolMajor = errors.New("unsupported protocol major version")
@@ -401,6 +472,30 @@ func (m ChannelDataAckMessage) GetType() string {
 	return TypeChannelDataAck
 }
 
+// ChannelOpenMessage (protocol V2) asks the relay to bind a channel to a peer
+// and to forward subsequent SealedMessage frames for the channel between the
+// pair. It carries no destination information: the connector's real
+// ConnectMessage travels sealed inside the channel.
+type ChannelOpenMessage struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	Resume    bool      `json:"resume,omitempty"`
+}
+
+func (m ChannelOpenMessage) GetType() string {
+	return TypeChannelOpen
+}
+
+// SealedMessage (protocol V2) carries one end-to-end encrypted frame for a
+// channel. The relay forwards it by channel ID without parsing the payload.
+type SealedMessage struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	Data      []byte    `json:"data"`
+}
+
+func (m SealedMessage) GetType() string {
+	return TypeSealed
+}
+
 type WebBackend struct {
 	URL    string `json:"url"`
 	Weight int    `json:"weight,omitempty"`
@@ -601,10 +696,18 @@ func bytesToOperation(b byte) string {
 	}
 }
 
-// PackMessage converts a message to binary format
+// PackMessage converts a message to binary format, stamped with the build's
+// current protocol version.
 func PackMessage(msg BaseMessage) ([]byte, error) {
+	return PackMessageWithVersion(msg, ProtocolVersion)
+}
+
+// PackMessageWithVersion converts a message to binary format stamped with an
+// explicit protocol version byte. Relays use this to answer each connection
+// with the protocol generation that connection negotiated.
+func PackMessageWithVersion(msg BaseMessage, version byte) ([]byte, error) {
 	// Start with version
-	buf := []byte{ProtocolVersion}
+	buf := []byte{version}
 
 	switch m := msg.(type) {
 	case AuthMessage:
@@ -813,6 +916,30 @@ func PackMessage(msg BaseMessage) ([]byte, error) {
 	case ChannelDataAckMessage:
 		return packJSONMessage(buf, BinaryTypeChannelDataAck, m, "channel data ack")
 
+	case ChannelOpenMessage:
+		buf = append(buf, BinaryTypeChannelOpen)
+		channelID, err := uuidToBytes(m.ChannelID.String())
+		if err != nil {
+			return nil, fmt.Errorf("invalid ChannelID: %w", err)
+		}
+		buf = append(buf, channelID...)
+		if m.Resume {
+			buf = append(buf, 1)
+		}
+		return buf, nil
+
+	case SealedMessage:
+		buf = append(buf, BinaryTypeSealed)
+		channelID, err := uuidToBytes(m.ChannelID.String())
+		if err != nil {
+			return nil, fmt.Errorf("invalid ChannelID: %w", err)
+		}
+		buf = append(buf, channelID...)
+		dataLen := uint32(len(m.Data))
+		buf = append(buf, byte(dataLen>>24), byte(dataLen>>16), byte(dataLen>>8), byte(dataLen))
+		buf = append(buf, m.Data...)
+		return buf, nil
+
 	case WebRegisterMessage:
 		return packJSONMessage(buf, BinaryTypeWebRegister, m, "web register")
 
@@ -921,7 +1048,7 @@ func ParseMessageWithVersion(data []byte) (BaseMessage, byte, error) {
 	}
 
 	version := data[0]
-	if protocolMajor(version) != protocolMajor(ProtocolVersion) {
+	if !protocolMajorSupported(version) {
 		return nil, version, fmt.Errorf(
 			"%w: peer=%s local=%s",
 			errUnsupportedProtocolMajor,
@@ -1275,6 +1402,34 @@ func parseMessageBody(msgType byte, payload []byte) (BaseMessage, error) {
 			return nil, err
 		}
 		return msg, nil
+
+	case BinaryTypeChannelOpen:
+		if len(payload) < 16 { // ChannelID(16)
+			return nil, fmt.Errorf("invalid channel open message")
+		}
+		channelID, err := uuid.Parse(bytesToUUID(payload[:16]))
+		if err != nil {
+			return nil, fmt.Errorf("invalid ChannelID: %w", err)
+		}
+		msg := ChannelOpenMessage{ChannelID: channelID}
+		if len(payload) > 16 {
+			msg.Resume = payload[16] != 0
+		}
+		return msg, nil
+
+	case BinaryTypeSealed:
+		if len(payload) < 20 { // ChannelID(16) + DataLen(4)
+			return nil, fmt.Errorf("invalid sealed message")
+		}
+		channelID, err := uuid.Parse(bytesToUUID(payload[:16]))
+		if err != nil {
+			return nil, fmt.Errorf("invalid ChannelID: %w", err)
+		}
+		dataLen := uint32(payload[16])<<24 | uint32(payload[17])<<16 | uint32(payload[18])<<8 | uint32(payload[19])
+		if len(payload) < 20+int(dataLen) {
+			return nil, fmt.Errorf("invalid sealed message length")
+		}
+		return SealedMessage{ChannelID: channelID, Data: payload[20 : 20+dataLen]}, nil
 
 	case BinaryTypeWebRegister:
 		var msg WebRegisterMessage

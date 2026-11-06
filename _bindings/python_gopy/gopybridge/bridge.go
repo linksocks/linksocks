@@ -238,6 +238,13 @@ func (o *ClientOption) WithNoEnvProxy(value bool) *ClientOption {
 	o.option().WithNoEnvProxy(value)
 	return o
 }
+func (o *ClientOption) WithProtocolVersion(value string) *ClientOption {
+	v, err := linksocks.ParseProtocolGeneration(value)
+	if err == nil {
+		o.option().WithProtocolVersion(v)
+	}
+	return o
+}
 func (o *ClientOption) WithDirectMode(value string) *ClientOption {
 	o.option().WithDirectMode(linksocks.DirectMode(value))
 	return o

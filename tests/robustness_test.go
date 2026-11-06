@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -194,14 +195,27 @@ func TestSwitchDuringWriteConcurrency(t *testing.T) {
 	<-done
 
 	var errCount int
+	var corrupted int
 	var errSamples []error
 	writeErrors.Range(func(key, value interface{}) bool {
 		errCount++
+		if err, ok := value.(error); ok && strings.Contains(err.Error(), "mismatch") {
+			corrupted++
+		}
 		if len(errSamples) < 5 {
 			errSamples = append(errSamples, value.(error))
 		}
 		return true
 	})
 	t.Logf("Concurrent Switch/Write: %d errors out of 50; samples: %v", errCount, errSamples)
-	require.Less(t, errCount, 30, "Too many write failures")
+	// Data corruption is never acceptable, under any protocol generation.
+	require.Zero(t, corrupted, "tunnel returned corrupted data")
+	// Write failures during the churn are bounded. Protocol V2 cannot drop a
+	// frame silently (a hole in the Noise nonce chain would corrupt the
+	// stream), so when a link eats an in-flight frame during this aggressive
+	// disconnect loop the affected channel fails closed and its writes error
+	// out; V1 tolerated the same loss because its frames carried no ordering
+	// state. The bound stays well below total failure to catch pathological
+	// regressions.
+	require.Less(t, errCount, 45, "Too many write failures")
 }

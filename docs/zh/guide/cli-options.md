@@ -92,6 +92,7 @@
 | `--upstream-proxy` | `-x` | | 连接 WebSocket 服务端时使用的上游代理。也可用 `LINKSOCKS_UPSTREAM_PROXY` |
 | `--no-env-proxy` | `-E` | `false` | 忽略环境变量中的代理配置 |
 | `--fast-open` | `-f` | `false` | 远端尚未完全确认前即允许开始传数据。也可用 `LINKSOCKS_FASTOPEN` |
+| `--protocol-version` | | `v2` | 协议代：`v2` 为端到端加密（需要已升级的转发器），`v1` 为旧版明文协议 |
 | `--direct-mode` | | `auto` | 直连策略：`relay-only`、`auto` 或 `direct-only` |
 | `--direct-discovery` | | `stun` | 直连候选地址发现方式 |
 | `--direct-host-candidates` | | `auto` | 主机地址候选公布策略 |

@@ -259,6 +259,9 @@ class _FFIClientOption:
     def WithNoEnvProxy(self, v: bool) -> None:
         self._cfg[_json_key("no_env_proxy")] = bool(v)
 
+    def WithProtocolVersion(self, v: str) -> None:
+        self._cfg[_json_key("protocol_version")] = str(v)
+
     def WithDirectMode(self, v: str) -> None:
         self._cfg[_json_key("direct_mode")] = str(v)
 

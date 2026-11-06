@@ -159,6 +159,10 @@ token, err := srv.AddConnectorTokenWithRules("my_connector", "my_reverse_token",
 })
 ```
 
+::: warning 加密通道与服务端规则
+协议代 2 会在两端之间加密目标地址。forward token 的规则不受影响,因为那一侧的拨号由服务器自己完成,请求也是服务器解密的。connector token 的规则无法执行——转发器看不到目标地址——因此带规则的 token 使用协议代 2 连接时会在身份验证阶段被拒绝。需要转发器执行 connector 规则时,请把规则移到 provider 侧(拨号访问控制),或使用 `--protocol-version v1` 连接。
+:::
+
 **HTTP API** —— 两种 token 类型都支持可选的 `rules` 字段:
 
 ```bash

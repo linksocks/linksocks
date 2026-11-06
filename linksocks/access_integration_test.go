@@ -327,10 +327,13 @@ func TestConnectorTokenAccessControl(t *testing.T) {
 		t.Fatalf("add connector token with rules: %v", err)
 	}
 
-	// Provider: reverse client that performs the actual dial.
+	// Provider: reverse client that performs the actual dial. This scenario
+	// exercises the legacy server-side enforcement path, so both peers speak
+	// protocol V1: a relay cannot inspect sealed destinations on V2.
 	provider := NewLinkSocksClient(reverseToken, DefaultClientOption().
 		WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", wsPort)).
 		WithReverse(true).
+		WithProtocolVersion(ProtocolVersionV1).
 		WithSocksHost("127.0.0.1").
 		WithSocksPort(0).
 		WithSocksWaitServer(true).
@@ -340,9 +343,27 @@ func TestConnectorTokenAccessControl(t *testing.T) {
 	}
 	t.Cleanup(provider.Close)
 
+	// A V2 client on a connector token with server-side rules is refused at
+	// authentication: the relay could not enforce them on sealed traffic,
+	// and silently dropping enforcement is not an option.
+	v2Connector := NewLinkSocksClient(connectorToken, DefaultClientOption().
+		WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", wsPort)).
+		WithSocksHost("127.0.0.1").
+		WithSocksPort(0).
+		WithLogger(zerolog.Nop()))
+	t.Cleanup(v2Connector.Close)
+	err := v2Connector.WaitReady(ctx, 5*time.Second)
+	if err == nil {
+		t.Fatal("V2 connector on an access-controlled token unexpectedly authenticated")
+	}
+	if !strings.Contains(err.Error(), "access rules") {
+		t.Fatalf("V2 refusal should explain the access-control conflict, got: %v", err)
+	}
+
 	// Connector: forward-style client authenticated with the connector token.
 	connector := NewLinkSocksClient(connectorToken, DefaultClientOption().
 		WithWSURL(fmt.Sprintf("ws://127.0.0.1:%d", wsPort)).
+		WithProtocolVersion(ProtocolVersionV1).
 		WithSocksHost("127.0.0.1").
 		WithSocksPort(connectorSocks).
 		WithSocksWaitServer(true).

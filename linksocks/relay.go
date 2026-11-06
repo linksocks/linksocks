@@ -344,6 +344,11 @@ type Relay struct {
 	bufferPool           sync.Pool      // Buffer pool for reusing byte slices
 	cleanupQueue         chan uuid.UUID // Channel for delayed cleanup tasks
 
+	// secure is non-nil on client-side relays that speak protocol V2. It
+	// owns the end-to-end Noise sessions for relay channels; server-mode
+	// relays and legacy clients leave it nil and speak plaintext V1.
+	secure *secureHub
+
 	// orphanMu guards orphanData; buffered sends hold it, and expiry closes
 	// queues under it, so a queue is never closed under a send.
 	orphanMu   sync.Mutex
@@ -1180,6 +1185,16 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws MessageWriter, socksC
 			return err
 		}
 
+		// Protocol V2 opens the end-to-end encrypted channel before the
+		// connect request; the request itself (destination included) then
+		// travels sealed.
+		transport, err := r.openChannelTransport(channelID, channelQueue, ws)
+		if err != nil {
+			r.log.Warn().Err(err).Str("channel_id", channelID.String()).Msg("Secure channel open failed")
+			sendFailureAndClose(0x04) // host unreachable
+			return fmt.Errorf("open channel transport: %w", err)
+		}
+
 		// Send connection request to server
 		requestData := ConnectMessage{
 			Protocol:  "tcp",
@@ -1187,7 +1202,7 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws MessageWriter, socksC
 			Port:      int(targetPort),
 			ChannelID: channelID,
 		}
-		channel := r.registerLogicalChannel(channelID, "tcp", ws, ws, channelPathRelay)
+		channel := r.registerLogicalChannel(channelID, "tcp", transport, transport, channelPathRelay)
 		channel.setRequest(requestData)
 		channel.markResumeOwner()
 		ws = channel
@@ -1302,12 +1317,21 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws MessageWriter, socksC
 		r.flushOrphanData(channelID, connectQueue)
 		defer r.disconnectChannel(channelID)
 
+		// Protocol V2 opens the end-to-end encrypted channel first; the UDP
+		// associate request travels sealed like any other payload.
+		transport, err := r.openChannelTransport(channelID, connectQueue, ws)
+		if err != nil {
+			r.log.Warn().Err(err).Str("channel_id", channelID.String()).Msg("Secure channel open failed")
+			udpConn.Close()
+			return fmt.Errorf("open channel transport: %w", err)
+		}
+
 		// Send UDP associate request to server
 		requestData := ConnectMessage{
 			Protocol:  "udp",
 			ChannelID: channelID,
 		}
-		channel := r.registerLogicalChannel(channelID, "udp", ws, ws, channelPathRelay)
+		channel := r.registerLogicalChannel(channelID, "udp", transport, transport, channelPathRelay)
 		channel.setRequest(requestData)
 		channel.markResumeOwner()
 		ws = channel
@@ -2093,6 +2117,9 @@ func (r *Relay) doCleanup(channelID uuid.UUID) {
 		}
 	}
 	r.messageQueues.Delete(channelID)
+	if r.secure != nil {
+		r.secure.close(channelID)
+	}
 	if channel, ok := r.logicalChannels.LoadAndDelete(channelID); ok {
 		channel.(*logicalChannel).Close()
 	}

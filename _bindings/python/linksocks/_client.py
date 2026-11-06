@@ -58,6 +58,7 @@ class Client(_SnakePassthrough):
         upstream_username: Optional[str] = None,
         upstream_password: Optional[str] = None,
         no_env_proxy: Optional[bool] = None,
+        protocol_version: Optional[str] = None,
         direct_mode: Optional[str] = None,
         direct_discovery: Optional[str] = None,
         direct_host_candidates: Optional[str] = None,
@@ -146,6 +147,8 @@ class Client(_SnakePassthrough):
             opt.WithUpstreamAuth(upstream_username or "", upstream_password or "")
         if no_env_proxy is not None:
             opt.WithNoEnvProxy(bool(no_env_proxy))
+        if protocol_version is not None:
+            opt.WithProtocolVersion(str(protocol_version))
 
         if direct_mode is not None:
             opt.WithDirectMode(direct_mode)

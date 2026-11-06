@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -47,9 +48,12 @@ type ProxyTestServerOption struct {
 	PortPool          *linksocks.PortPool
 	LoggerPrefix      string
 	LogLevel          zerolog.Level
-	Reconnect         bool
-	FastOpen          bool
-	TransportGrace    time.Duration
+	// LogSink, when set, receives the server's zerolog output instead of
+	// stdout; tests use it to assert on what the relay observed.
+	LogSink        io.Writer
+	Reconnect      bool
+	FastOpen       bool
+	TransportGrace time.Duration
 }
 
 // ProxyTestClient encapsulates the client-side test environment
@@ -73,6 +77,11 @@ type ProxyTestClientOption struct {
 	TransportGrace time.Duration // How long established channels survive a WebSocket drop
 	SocksUsername  string        // Local proxy username (SOCKS5 + HTTP Basic)
 	SocksPassword  string        // Local proxy password (SOCKS5 + HTTP Basic)
+
+	// ProtocolVersion overrides the protocol generation. Zero keeps the
+	// client default (V2); direct-mode tests need V1 because direct
+	// signaling is a V1-generation feature.
+	ProtocolVersion byte
 
 	// Direct signaling options (optional; defaults keep relay-only behavior).
 	DirectMode                 linksocks.DirectMode
@@ -119,7 +128,13 @@ func forwardServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 				prefix = "SRV0"
 			}
 
-			if opt.LogLevel != 0 {
+			if opt.LogSink != nil {
+				level := opt.LogLevel
+				if level == 0 {
+					level = zerolog.TraceLevel
+				}
+				logger = zerolog.New(opt.LogSink).Level(level).With().Timestamp().Logger()
+			} else if opt.LogLevel != 0 {
 				logger = createPrefixedLoggerWithLevel(prefix, opt.LogLevel)
 			} else {
 				logger = createPrefixedLogger(prefix)
@@ -176,6 +191,19 @@ func clientReconnectDelay(opt *ProxyTestClientOption) time.Duration {
 	return time.Second
 }
 
+// clientProtocolVersion resolves the protocol generation for a test client.
+// Direct-mode tests must speak V1: protocol V2 runs relay-only because its
+// sealed channels replace direct signaling.
+func clientProtocolVersion(opt *ProxyTestClientOption) byte {
+	if opt.ProtocolVersion != 0 {
+		return opt.ProtocolVersion
+	}
+	if opt.DirectMode != "" && opt.DirectMode != linksocks.DirectModeRelayOnly {
+		return linksocks.ProtocolVersionV1
+	}
+	return 0
+}
+
 // forwardClient creates a WSS client in forward mode
 func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 	if opt == nil {
@@ -218,6 +246,9 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 
 		if opt.DirectMode != "" {
 			clientOpt.WithDirectMode(opt.DirectMode)
+		}
+		if v := clientProtocolVersion(opt); v != 0 {
+			clientOpt.WithProtocolVersion(v)
 		}
 		if opt.DirectDiscovery != "" {
 			clientOpt.WithDirectDiscovery(opt.DirectDiscovery)
@@ -315,7 +346,13 @@ func reverseServer(t *testing.T, opt *ProxyTestServerOption) *ProxyTestServer {
 				prefix = "SRV0"
 			}
 
-			if opt.LogLevel != 0 {
+			if opt.LogSink != nil {
+				level := opt.LogLevel
+				if level == 0 {
+					level = zerolog.TraceLevel
+				}
+				logger = zerolog.New(opt.LogSink).Level(level).With().Timestamp().Logger()
+			} else if opt.LogLevel != 0 {
 				logger = createPrefixedLoggerWithLevel(prefix, opt.LogLevel)
 			} else {
 				logger = createPrefixedLogger(prefix)
@@ -416,6 +453,9 @@ func reverseClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 
 	if opt.DirectMode != "" {
 		clientOpt.WithDirectMode(opt.DirectMode)
+	}
+	if v := clientProtocolVersion(opt); v != 0 {
+		clientOpt.WithProtocolVersion(v)
 	}
 	if opt.DirectDiscovery != "" {
 		clientOpt.WithDirectDiscovery(opt.DirectDiscovery)

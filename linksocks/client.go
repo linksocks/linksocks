@@ -100,6 +100,11 @@ type LinkSocksClient struct {
 	noEnvProxy      bool
 	numPartners     int
 
+	// protocolVersion selects the protocol generation this client speaks:
+	// ProtocolVersionV2 (encrypted channels) or ProtocolVersionV1 (legacy
+	// plaintext).
+	protocolVersion byte
+
 	// Direct signaling (experimental)
 	directMode       DirectMode
 	directDiscovery  DirectDiscovery
@@ -473,6 +478,12 @@ type ClientOption struct {
 	// to when it acts as the network provider (performs the actual dial).
 	// Nil means no restriction.
 	DialAccessControl *AccessControl
+
+	// ProtocolVersion selects the protocol generation this client speaks.
+	// Zero means ProtocolVersionV2 (end-to-end encrypted channels). Set
+	// ProtocolVersionV1 only to talk to relays that have not been upgraded;
+	// V2 never falls back to V1 on its own.
+	ProtocolVersion byte
 }
 
 // DefaultClientOption returns default client options
@@ -713,6 +724,14 @@ func (o *ClientOption) WithDialAccessControl(ac *AccessControl) *ClientOption {
 	return o
 }
 
+// WithProtocolVersion selects the protocol generation this client speaks.
+// ProtocolVersionV2 (the default) requires upgraded relays and peers; it never
+// falls back to plaintext V1 by itself.
+func (o *ClientOption) WithProtocolVersion(version byte) *ClientOption {
+	o.ProtocolVersion = version
+	return o
+}
+
 // WithNoEnvProxy sets whether to ignore environment proxy settings
 func (o *ClientOption) WithNoEnvProxy(noEnvProxy bool) *ClientOption {
 	o.NoEnvProxy = noEnvProxy
@@ -865,7 +884,8 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 		websockets:              make([]*WSConn, 0, opt.Threads),
 		connectorTokens:         make(map[string]struct{}),
 		noEnvProxy:              opt.NoEnvProxy,
-		directMode:              opt.DirectMode,
+		protocolVersion:         clientProtocolVersion(opt),
+		directMode:              clientDirectMode(opt),
 		directDiscovery:         opt.DirectDiscovery,
 		stunServers:             opt.StunServers,
 		directOnlyAction:        opt.DirectOnlyAction,
@@ -884,7 +904,35 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 		directQUICReadyCh:       make(chan struct{}),
 	}
 
+	// Protocol V2 clients own the end-to-end encryption hub for relay
+	// channels; legacy clients leave the relay in plaintext mode.
+	if protocolMajor(client.protocolVersion) == protocolMajor(ProtocolVersionV2) {
+		client.relay.secure = newClientSecureHub(client)
+	}
+
 	return client
+}
+
+// clientProtocolVersion resolves the protocol generation from options, with
+// zero meaning the current generation.
+func clientProtocolVersion(opt *ClientOption) byte {
+	if opt.ProtocolVersion == 0 {
+		return ProtocolVersionV2
+	}
+	return opt.ProtocolVersion
+}
+
+// clientDirectMode resolves the direct-mode option. Direct mode is disabled on
+// V2: its rendezvous signaling would expose peer addresses in plaintext, so V2
+// sessions always run relay-only.
+func clientDirectMode(opt *ClientOption) DirectMode {
+	if protocolMajor(clientProtocolVersion(opt)) == protocolMajor(ProtocolVersionV2) {
+		if opt.DirectMode != DirectModeRelayOnly {
+			opt.Logger.Info().Msg("Protocol V2 is end-to-end encrypted; direct mode is disabled")
+		}
+		return DirectModeRelayOnly
+	}
+	return opt.DirectMode
 }
 
 func minUUID(a, b uuid.UUID) uuid.UUID {
@@ -1176,6 +1224,18 @@ func (c *LinkSocksClient) resumeRelayChannels(ws MessageWriter) {
 	c.relay.logicalChannels.Range(func(_, value interface{}) bool {
 		channel, ok := value.(*logicalChannel)
 		if !ok || !channel.canResume() || channel.Path() == string(channelPathDirect) {
+			return true
+		}
+		if c.relay.secure != nil && c.relay.secure.has(channel.id) {
+			// V2 channels rebind with a plaintext ChannelOpen resume; the
+			// Noise session itself survives the link swap.
+			open := ChannelOpenMessage{ChannelID: channel.id, Resume: true}
+			c.relay.logMessage(open, "send", ws.Label())
+			if err := ws.WriteMessage(open); err != nil {
+				c.log.Debug().Err(err).Str("channel_id", channel.id.String()).Msg("Secure channel resume on reconnect failed")
+				return true
+			}
+			channel.resume()
 			return true
 		}
 		request := channel.requestMessage()
@@ -1470,12 +1530,12 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 		}
 
 		capMsg := DirectCapabilitiesMessage{SessionID: localSession, Candidates: cands, Discoveries: []string{discLabel}, PublicKey: localPub}
-		capMsg.ProtocolVersion = ProtocolVersion
+		capMsg.ProtocolVersion = c.protocolVersion
 		if err := c.sendDirectMessage(capMsg); err != nil {
 			c.log.Debug().Err(err).Msg("Failed to send direct capabilities")
 		}
 		for _, sid := range pending {
-			rendezvous := DirectRendezvousMessage{SessionID: sid, RemoteSessionID: localSession, Candidates: cands, PublicKey: localPub, ProtocolVersion: ProtocolVersion}
+			rendezvous := DirectRendezvousMessage{SessionID: sid, RemoteSessionID: localSession, Candidates: cands, PublicKey: localPub, ProtocolVersion: c.protocolVersion}
 			_ = c.sendDirectMessage(rendezvous)
 		}
 		c.directNotify()
@@ -2484,6 +2544,12 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 		q.Set("token", hashStr)
 		q.Set("reverse", strconv.FormatBool(c.reverse))
 		q.Set("instance", c.instanceID.String())
+		if protocolMajor(c.protocolVersion) == protocolMajor(ProtocolVersionV2) {
+			// Advertise the generation so an upgraded relay stamps its
+			// answers with V2; an unupgraded relay ignores the parameter and
+			// the version check below refuses to continue.
+			q.Set("version", fmt.Sprintf("0x%02X", c.protocolVersion))
+		}
 		u.RawQuery = q.Encode()
 		wsURLWithParams = u.String()
 	}
@@ -2568,6 +2634,9 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 	}
 
 	wsConn := NewWSConn(ws, strconv.Itoa(index), c.log)
+	// Stamp this link with the generation this client speaks so a V2 client
+	// never receives V1-stamped frames (and vice versa).
+	wsConn.SetProtocolVersion(c.protocolVersion)
 
 	c.mu.Lock()
 	if len(c.websockets) <= index {
@@ -2611,6 +2680,17 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 	c.remoteProtocolVersion = version
 	c.directMu.Unlock()
 
+	// A V2 client refuses to continue against a relay that answered in a
+	// different generation: falling back to plaintext silently would defeat
+	// the point of V2.
+	if protocolMajor(c.protocolVersion) == protocolMajor(ProtocolVersionV2) && protocolMajor(version) != protocolMajor(ProtocolVersionV2) {
+		wsConn.Close()
+		return &nonRetriableError{msg: fmt.Sprintf(
+			"relay does not support protocol V2 (relay speaks %s); upgrade the relay or select protocol version v1",
+			protocolVersionDebugString(version),
+		)}
+	}
+
 	c.relay.logMessage(msg, "recv", wsConn.Label())
 	authResponse, ok := msg.(AuthResponseMessage)
 	if !ok {
@@ -2651,7 +2731,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 
 	// Advertise direct signaling support in a backward-compatible way.
 	if c.directMode != DirectModeRelayOnly {
-		hello := LogMessage{Level: LogLevelDebug, Msg: fmt.Sprintf("%sdirect_signaling=1;protocol_version=0x%02X", DirectClientHelloPrefix, ProtocolVersion)}
+		hello := LogMessage{Level: LogLevelDebug, Msg: fmt.Sprintf("%sdirect_signaling=1;protocol_version=0x%02X", DirectClientHelloPrefix, c.protocolVersion)}
 		c.relay.logMessage(hello, "send", wsConn.Label())
 		if err := wsConn.WriteMessage(hello); err != nil {
 			wsConn.Close()
@@ -2990,6 +3070,14 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 
 			case ConnectMessage:
 				if c.reverse {
+					if protocolMajor(c.protocolVersion) == protocolMajor(ProtocolVersionV2) {
+						// A V2 provider only dials for sealed requests; a
+						// plaintext Connect means the peer or relay is not
+						// V2, and acting on it would silently downgrade.
+						c.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Refusing plaintext connect on a V2 provider")
+						_ = ws.WriteMessage(DisconnectMessage{ChannelID: m.ChannelID, Error: "protocol v2 requires an encrypted channel"})
+						continue
+					}
 					// Reuse the existing queue on resume so the channel's
 					// forwarding loop keeps draining the same buffer.
 					if _, ok := c.relay.messageQueues.Load(m.ChannelID); !ok {
@@ -3026,7 +3114,17 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 				} else {
 					c.log.Debug().Str("channel_id", m.ChannelID.String()).Msg("Disconnected")
 				}
-				c.relay.disconnectChannel(m.ChannelID)
+				c.handlePeerDisconnect(m)
+
+			case ChannelOpenMessage:
+				if c.relay.secure != nil {
+					c.relay.secure.acceptChannel(ws, m, nil)
+				}
+
+			case SealedMessage:
+				if c.relay.secure != nil {
+					c.relay.secure.deliver(m.ChannelID, m.Data)
+				}
 
 			case ConnectorResponseMessage:
 				if queue, ok := c.relay.messageQueues.Load(m.ChannelID); ok {
@@ -3084,6 +3182,33 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 			}
 		}
 	}
+}
+
+// handlePeerDisconnect applies a disconnect coming from the peer or the relay
+// and tears down any secure session for the channel.
+func (c *LinkSocksClient) handlePeerDisconnect(m DisconnectMessage) {
+	if c.relay.secure != nil {
+		c.relay.secure.close(m.ChannelID)
+	}
+	c.relay.disconnectChannel(m.ChannelID)
+}
+
+// handleSecureConnect starts the provider side of a V2 channel once the
+// peer's sealed ConnectMessage has been decrypted. The session doubles as the
+// channel writer, so every byte the provider sends from here on is sealed.
+func (c *LinkSocksClient) handleSecureConnect(writer MessageWriter, m ConnectMessage) {
+	// Reuse the existing queue on resume so the channel's forwarding loop
+	// keeps draining the same buffer.
+	if _, ok := c.relay.messageQueues.Load(m.ChannelID); !ok {
+		msgChan := make(chan BaseMessage, 1000)
+		c.relay.messageQueues.Store(m.ChannelID, msgChan)
+		c.relay.flushOrphanData(m.ChannelID, msgChan)
+	}
+	go func() {
+		if err := c.relay.HandleNetworkConnection(context.Background(), writer, m); err != nil && !errors.Is(err, context.Canceled) {
+			c.log.Debug().Err(err).Msg("Error handling secure network connection")
+		}
+	}()
 }
 
 // heartbeatHandler maintains WebSocket connection with periodic pings

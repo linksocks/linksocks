@@ -98,6 +98,7 @@ These three share the same client implementation. The difference is the default 
 | `--upstream-proxy` | `-x` | | Outbound proxy used to reach the WebSocket server. Also `LINKSOCKS_UPSTREAM_PROXY`. |
 | `--no-env-proxy` | `-E` | `false` | Ignore proxy environment variables |
 | `--fast-open` | `-f` | `false` | Allow data transfer before the remote side is fully confirmed. Also `LINKSOCKS_FASTOPEN`. |
+| `--protocol-version` | | `v2` | Protocol generation: `v2` (end-to-end encrypted, requires an upgraded relay) or `v1` (legacy plaintext). |
 | `--direct-mode` | | `auto` | `relay-only`, `auto`, or `direct-only` |
 | `--direct-discovery` | | `stun` | Direct candidate discovery method |
 | `--direct-host-candidates` | | `auto` | Host candidate advertisement policy |

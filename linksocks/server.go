@@ -441,6 +441,11 @@ func NewLinkSocksServer(opt *ServerOption) *LinkSocksServer {
 		directRendezvousPort:   opt.DirectRendezvousPort,
 	}
 
+	// The server relay can host local proxy entries for providers. Protocol
+	// V2 entries drive the initiator side of the encrypted channel through
+	// this hub; V1 providers keep using plaintext channels.
+	s.relay.secure = newServerSecureHub(s.relay, s.log)
+
 	return s
 }
 
@@ -1282,6 +1287,10 @@ type wsClientAuth struct {
 func (s *LinkSocksServer) handleWebSocket(ctx context.Context, ws *websocket.Conn, r *http.Request) {
 	// Wrap the websocket connection
 	wsConn := NewWSConn(ws, "", s.log)
+	// Default to the legacy generation until the connection identifies
+	// itself, so a client that has not been upgraded is never answered with
+	// V2-stamped frames.
+	wsConn.SetProtocolVersion(ProtocolVersionV1)
 	wsConn.SetClientIPFromRequest(r) // Extract and set client IP
 
 	auth, ok := s.authenticateWebSocketClient(wsConn, r)
@@ -1371,6 +1380,13 @@ func (s *LinkSocksServer) authenticateWebSocketClient(wsConn *WSConn, r *http.Re
 	// Check if using URL query parameters for authentication
 	query := r.URL.Query()
 	if tokenParam := query.Get("token"); tokenParam != "" {
+		// The query path never carries a frame, so the generation must be
+		// advertised explicitly; absent means legacy.
+		if v := query.Get("version"); v != "" {
+			if parsed, perr := ParseProtocolVersionParam(v); perr == nil {
+				wsConn.SetProtocolVersion(parsed)
+			}
+		}
 		s.log.Debug().Str("token_hash", tokenParam).Msg("Client is using token from URL query")
 		if len(tokenParam) != 64 { // SHA256 hash is 64 characters
 			return reject("invalid token format")
@@ -1413,11 +1429,14 @@ func (s *LinkSocksServer) authenticateWebSocketClient(wsConn *WSConn, r *http.Re
 			s.log.Debug().Err(err).Msg("Failed to read auth message")
 			return reject("invalid auth message: " + err.Error())
 		}
+		// Answer this connection in the generation it speaks.
+		wsConn.SetProtocolVersion(peerVersion)
 
-		if (peerVersion & 0x0f) != (ProtocolVersion & 0x0f) {
+		if !protocolMinorIsCurrent(peerVersion) {
+			knownMinor, _ := protocolKnownMinorForMajor(protocolMajor(peerVersion))
 			s.log.Warn().
 				Uint8("peer_minor_version", peerVersion&0x0f).
-				Uint8("server_minor_version", ProtocolVersion&0x0f).
+				Uint8("server_minor_version", knownMinor).
 				Msg("Minor protocol version mismatch detected; connection allowed but features may differ")
 		}
 
@@ -1443,6 +1462,20 @@ func (s *LinkSocksServer) authenticateWebSocketClient(wsConn *WSConn, r *http.Re
 	}
 
 	auth.clientID = uuid.New()
+
+	// Protocol V2 hides destinations from the relay, so token-bound rules
+	// that the relay enforced while forwarding a connector's connect can no
+	// longer be applied. Refuse the connection loudly instead of dropping
+	// enforcement silently; the operator can move the rules onto the
+	// provider client (dial access control) or use protocol V1.
+	if protocolMajor(wsConn.ProtocolVersion()) == protocolMajor(ProtocolVersionV2) && auth.isValidConnector {
+		s.mu.RLock()
+		connAC := s.connectorTokenAC[auth.token]
+		s.mu.RUnlock()
+		if connAC != nil && !connAC.Empty() {
+			return reject("connector token has server-side access rules that protocol v2 cannot enforce; configure rules on the provider client or connect with protocol v1")
+		}
+	}
 
 	s.mu.Lock()
 	// For reverse tokens with AllowManageConnector, generate a unique internal token
@@ -1600,9 +1633,14 @@ func (s *LinkSocksServer) dispatchMessages(ctx context.Context, ws *WSConn, hand
 				}
 				return err
 			}
+			// Track the connection's generation for both outbound stamping
+			// and same-generation pairing.
+			ws.SetProtocolVersion(peerVersion)
 
-			if (!versionSeen || lastPeerVersion != peerVersion) && protocolMinor(peerVersion) != protocolMinor(ProtocolVersion) {
-				warning := fmt.Sprintf("Protocol minor version mismatch: peer=%s server=%s; connection allowed but features may differ", protocolVersionDebugString(peerVersion), protocolVersionDebugString(ProtocolVersion))
+			if (!versionSeen || lastPeerVersion != peerVersion) && !protocolMinorIsCurrent(peerVersion) {
+				knownMinor, _ := protocolKnownMinorForMajor(protocolMajor(peerVersion))
+				knownVersion := protocolMajor(peerVersion)<<4 | knownMinor
+				warning := fmt.Sprintf("Protocol minor version mismatch: peer=%s server=%s; connection allowed but features may differ", protocolVersionDebugString(peerVersion), protocolVersionDebugString(knownVersion))
 				s.log.Warn().Msg(warning)
 				if err := ws.WriteMessage(LogMessage{Level: LogLevelWarn, Msg: warning}); err != nil {
 					return err
@@ -1742,6 +1780,54 @@ func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, cli
 				}
 			} else {
 				s.bufferConnectorReturn(m.ChannelID, m)
+			}
+
+		case SealedMessage:
+			// A server-side proxy entry owns the session for its channels;
+			// route the ciphertext into the hub instead of to a connector.
+			if s.relay.secure != nil && s.relay.secure.has(m.ChannelID) {
+				s.relay.secure.deliver(m.ChannelID, m.Data)
+				return
+			}
+			// Protocol V2 payload from a provider: opaque ciphertext routed
+			// to the connector by channel ID.
+			s.connCache.mu.RLock()
+			targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]
+			s.connCache.mu.RUnlock()
+
+			if exists {
+				s.relay.logMessage(m, "send", ws.Label())
+				if err := targetWS.WriteMessage(m); err != nil {
+					s.log.Debug().Err(err).Msg("Failed to forward sealed message to connector client")
+					s.bufferConnectorReturn(m.ChannelID, m)
+				}
+			} else {
+				s.bufferConnectorReturn(m.ChannelID, m)
+			}
+
+		case ChannelOpenMessage:
+			// A forward client opens an encrypted channel; the relay itself
+			// is the dialer and runs the responder side of the handshake.
+			// Token-bound destination rules stay enforceable here: the relay
+			// decrypts the sealed connect before dialing.
+			s.mu.RLock()
+			var fwdAC *AccessControl
+			if meta := s.clientMeta[clientID]; meta != nil {
+				fwdAC = s.forwardTokenAC[meta.InternalToken]
+			}
+			_, isForwardClient := s.clients[clientID]
+			s.mu.RUnlock()
+			if isForwardClient && s.relay.secure != nil {
+				var check func(ConnectMessage) error
+				if fwdAC != nil && !fwdAC.Empty() {
+					check = func(cm ConnectMessage) error {
+						if !fwdAC.Allow(cm.Address, cm.Port) {
+							return fmt.Errorf("destination blocked by access control")
+						}
+						return nil
+					}
+				}
+				s.relay.secure.acceptChannel(ws, m, check)
 			}
 
 		case ConnectMessage:
@@ -1935,8 +2021,18 @@ func (s *LinkSocksServer) connectorMessageDispatcher(ctx context.Context, ws *WS
 			s.reserveOrphanQueue(m.ChannelID)
 			s.startConnectorPump(m, ws, reverseToken, clientID, ctx)
 
+		case ChannelOpenMessage:
+			// Protocol V2 channel request: the destination stays sealed, so
+			// the relay only reserves the buffer and binds a matching
+			// provider before routing ciphertext.
+			s.reserveOrphanQueue(m.ChannelID)
+			s.startConnectorPumpV2(m, ws, reverseToken, clientID, ctx)
+
 		case DataMessage:
 			s.routeConnectorData(m, ws)
+
+		case SealedMessage:
+			s.routeConnectorSealed(m, ws)
 
 		case DisconnectMessage:
 			go func(m DisconnectMessage) {
@@ -2210,29 +2306,43 @@ func (s *LinkSocksServer) broadcastPartnersToReverseClients(reverseToken string)
 }
 
 // getNextWebSocketLocked returns the next available connection for token
-// using round-robin. Caller must hold s.mu.
-func (s *LinkSocksServer) getNextWebSocketLocked(token string) (*WSConn, error) {
+// using round-robin, restricted to links that speak the given protocol major.
+// major 0 matches any generation (used by the relay-side local proxy path).
+// Caller must hold s.mu.
+func (s *LinkSocksServer) getNextWebSocketLocked(token string, major byte) (*WSConn, error) {
 	if _, exists := s.tokenClients[token]; !exists || len(s.tokenClients[token]) == 0 {
 		return nil, fmt.Errorf("no available clients for token")
 	}
 
 	clients := s.tokenClients[token]
+	count := len(clients)
 	currentIndex := s.tokenIndexes[token]
-	s.tokenIndexes[token] = (currentIndex + 1) % len(clients)
+	s.tokenIndexes[token] = (currentIndex + 1) % count
 
-	s.log.Trace().Int("index", currentIndex).Msg("Using client index for request")
-
-	if currentIndex < len(clients) {
-		return clients[currentIndex].Conn, nil
+	for offset := 0; offset < count; offset++ {
+		idx := (currentIndex + offset) % count
+		conn := clients[idx].Conn
+		if major == 0 || protocolMajor(conn.ProtocolVersion()) == major {
+			s.log.Trace().Int("index", idx).Msg("Using client index for request")
+			return conn, nil
+		}
 	}
-	return clients[0].Conn, nil
+	return nil, fmt.Errorf("no available clients for token with protocol major %d", major)
 }
 
 // getNextWebSocket gets next available WebSocket connection using round-robin
 func (s *LinkSocksServer) getNextWebSocket(token string) (*WSConn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.getNextWebSocketLocked(token)
+	return s.getNextWebSocketLocked(token, 0)
+}
+
+// getNextWebSocketForVersion returns the next connection for token that
+// matches the given protocol major.
+func (s *LinkSocksServer) getNextWebSocketForVersion(token string, major byte) (*WSConn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.getNextWebSocketLocked(token, major)
 }
 
 // notifyTokenAvailabilityLocked wakes all requests waiting for a provider of
@@ -2244,6 +2354,19 @@ func (s *LinkSocksServer) notifyTokenAvailabilityLocked(token string) {
 	s.tokenAvailability[token] = make(chan struct{})
 }
 
+// connectorPumpSpec describes the bind request one connector pump drives.
+type connectorPumpSpec struct {
+	channelID uuid.UUID
+	// bindMessage builds the message forwarded to the provider on every bind
+	// and rebind: the plaintext Connect for V1, ChannelOpen for V2 (whose
+	// destination travels sealed between the peers).
+	bindMessage func(resume bool) BaseMessage
+	// checkAccess enforces relay-side destination ACLs where the address is
+	// visible (V1). V2 hides addresses from the relay, so it is nil and the
+	// dialing client enforces its own rules instead.
+	checkAccess func() (bool, string)
+}
+
 // startConnectorPump runs the per-channel forwarder pump: it binds the
 // channel to a provider, drains buffered data in order, and rebinds to a new
 // provider (with Resume) whenever the provider link drops. The pump runs on
@@ -2251,65 +2374,103 @@ func (s *LinkSocksServer) notifyTokenAvailabilityLocked(token string) {
 // transport grace window; channel cleanup (cleanupConnectorChannel) closes
 // the queue, which ends the pump.
 func (s *LinkSocksServer) startConnectorPump(m ConnectMessage, ws *WSConn, reverseToken string, clientID uuid.UUID, connCtx context.Context) {
+	spec := connectorPumpSpec{
+		channelID: m.ChannelID,
+		bindMessage: func(resume bool) BaseMessage {
+			req := m
+			req.Resume = resume
+			return req
+		},
+		checkAccess: func() (bool, string) {
+			s.mu.RLock()
+			var connAC *AccessControl
+			if meta := s.clientMeta[clientID]; meta != nil {
+				connAC = s.connectorTokenAC[meta.InternalToken]
+			}
+			s.mu.RUnlock()
+			if connAC != nil && !connAC.Empty() && !connAC.Allow(m.Address, m.Port) {
+				s.log.Warn().Str("address", m.Address).Int("port", m.Port).Msg("Connector connect blocked by token access control")
+				return false, "destination blocked by access control"
+			}
+			return true, ""
+		},
+	}
+	s.startConnectorPumpSpec(spec, m.Resume, ws, reverseToken, connCtx)
+}
+
+// startConnectorPumpV2 drives the same pump for a protocol V2 channel: the
+// provider binds through ChannelOpen and every payload is opaque ciphertext.
+func (s *LinkSocksServer) startConnectorPumpV2(m ChannelOpenMessage, ws *WSConn, reverseToken string, clientID uuid.UUID, connCtx context.Context) {
+	spec := connectorPumpSpec{
+		channelID: m.ChannelID,
+		bindMessage: func(resume bool) BaseMessage {
+			return ChannelOpenMessage{ChannelID: m.ChannelID, Resume: resume}
+		},
+	}
+	s.startConnectorPumpSpec(spec, m.Resume, ws, reverseToken, connCtx)
+}
+
+func (s *LinkSocksServer) startConnectorPumpSpec(spec connectorPumpSpec, initialResume bool, ws *WSConn, reverseToken string, connCtx context.Context) {
 	go func() {
+		m := spec.channelID
 		// A resume on a reconnected connector link must not start a second
 		// pump over the same queue; rebind the mapping only.
 		s.connCache.mu.Lock()
-		if s.connCache.pumpActive[m.ChannelID] {
-			if m.Resume {
-				s.connCache.channelIDToConnector[m.ChannelID] = ws
+		if s.connCache.pumpActive[m] {
+			if initialResume {
+				s.connCache.channelIDToConnector[m] = ws
 			}
 			s.connCache.mu.Unlock()
 			return
 		}
-		s.connCache.pumpActive[m.ChannelID] = true
+		s.connCache.pumpActive[m] = true
 		s.connCache.mu.Unlock()
 
 		// The pump owns the channel state: only a pump that actually started
 		// may tear the mappings down when it exits. A Resume handled by the
 		// rebind path above must not run cleanup.
-		defer s.cleanupConnectorChannel(m.ChannelID)
+		defer s.cleanupConnectorChannel(m)
 		defer func() {
 			s.connCache.mu.Lock()
-			delete(s.connCache.pumpActive, m.ChannelID)
+			delete(s.connCache.pumpActive, m)
 			s.connCache.mu.Unlock()
 		}()
 
 		// Enforce per-connector access control before forwarding to a provider
-		s.mu.RLock()
-		var connAC *AccessControl
-		if meta := s.clientMeta[clientID]; meta != nil {
-			connAC = s.connectorTokenAC[meta.InternalToken]
-		}
-		s.mu.RUnlock()
-		if connAC != nil && !connAC.Empty() && !connAC.Allow(m.Address, m.Port) {
-			s.log.Warn().Str("address", m.Address).Int("port", m.Port).Msg("Connector connect blocked by token access control")
-			s.rejectConnectRequest(ws, m, "destination blocked by access control")
-			return
+		// (V1 only; V2 destinations are sealed).
+		if spec.checkAccess != nil {
+			if ok, reason := spec.checkAccess(); !ok {
+				s.rejectConnectRequest(ws, ConnectMessage{ChannelID: m}, reason)
+				return
+			}
 		}
 
 		pumpCtx := connCtx
 		if s.transportGrace > 0 {
 			pumpCtx = context.Background()
 		}
-		boundBefore := m.Resume
+		boundBefore := initialResume
 		var reverseWS *WSConn
-		var pending *DataMessage
+		// pending keeps a payload whose write failed on a dropped provider
+		// link so it is retried on the rebind. Sealed frames must be retained
+		// too: dropping one would leave a hole in the peer's Noise nonce
+		// chain and kill the channel even though V1 tolerated the loss.
+		var pending BaseMessage
 
 		for {
-			if !s.pumpQueueAlive(m.ChannelID) {
+			if !s.pumpQueueAlive(m) {
 				return
 			}
 			if reverseWS == nil {
-				w, err := s.waitForNextWebSocket(pumpCtx, reverseToken, s.connectorWait)
+				w, err := s.waitForNextWebSocket(pumpCtx, reverseToken, s.connectorWait, protocolMajor(ws.ProtocolVersion()))
 				if err != nil {
-					if pumpCtx.Err() != nil || !s.pumpQueueAlive(m.ChannelID) {
+					if pumpCtx.Err() != nil || !s.pumpQueueAlive(m) {
 						return
 					}
 					if !boundBefore {
 						s.log.Debug().Err(err).Msg("Refusing connector connect")
 						response := ConnectResponseMessage{
-							ChannelID: m.ChannelID,
+							ChannelID: m,
 							Success:   false,
 							Error:     "no available reverse clients",
 						}
@@ -2334,15 +2495,15 @@ func (s *LinkSocksServer) startConnectorPump(m ConnectMessage, ws *WSConn, rever
 			// claimed via rebindConnectorChannels; the pump only publishes
 			// the mapping when it owns it (missing or still the same link).
 			s.connCache.mu.Lock()
-			if cur := s.connCache.channelIDToConnector[m.ChannelID]; cur == nil || cur == ws {
-				s.connCache.channelIDToConnector[m.ChannelID] = ws
+			if cur := s.connCache.channelIDToConnector[m]; cur == nil || cur == ws {
+				s.connCache.channelIDToConnector[m] = ws
 			}
-			s.connCache.channelIDToClient[m.ChannelID] = reverseWS
-			if !containsChannelID(s.connCache.tokenCache[reverseToken], m.ChannelID) {
-				s.connCache.tokenCache[reverseToken] = append(s.connCache.tokenCache[reverseToken], m.ChannelID)
+			s.connCache.channelIDToClient[m] = reverseWS
+			if !containsChannelID(s.connCache.tokenCache[reverseToken], m) {
+				s.connCache.tokenCache[reverseToken] = append(s.connCache.tokenCache[reverseToken], m)
 			}
 			var queue chan BaseMessage
-			if od, ok := s.connCache.orphanQueues[m.ChannelID]; ok {
+			if od, ok := s.connCache.orphanQueues[m]; ok {
 				if od.timer != nil {
 					od.timer.Stop()
 				}
@@ -2352,22 +2513,19 @@ func (s *LinkSocksServer) startConnectorPump(m ConnectMessage, ws *WSConn, rever
 				// The buffer expired while waiting; recreate it so the
 				// channel keeps working instead of silently losing all data.
 				od := &orphanData{queue: make(chan BaseMessage, orphanDataQueueSize)}
-				s.connCache.orphanQueues[m.ChannelID] = od
+				s.connCache.orphanQueues[m] = od
 				queue = od.queue
 			}
 			// Drain towards whoever currently owns the channel: after a
 			// connector reconnect the live link is the rebound one, not the
 			// link this pump started on.
-			drainTarget := s.connCache.channelIDToConnector[m.ChannelID]
+			drainTarget := s.connCache.channelIDToConnector[m]
 			s.connCache.mu.Unlock()
 
-			// First bind sends the original Connect; every rebind after a link
-			// drop sends Resume so the provider's existing channel is switched
-			// onto the new link instead of dialed again.
-			req := m
-			if boundBefore {
-				req.Resume = true
-			}
+			// First bind sends the original request; every rebind after a
+			// link drop sends Resume so the provider's existing channel is
+			// switched onto the new link instead of dialed again.
+			req := spec.bindMessage(boundBefore)
 			s.relay.logMessage(req, "send", ws.Label())
 			if err := reverseWS.WriteMessage(req); err != nil {
 				s.log.Debug().Err(err).Msg("Failed to bind provider, retrying")
@@ -2378,13 +2536,13 @@ func (s *LinkSocksServer) startConnectorPump(m ConnectMessage, ws *WSConn, rever
 				continue
 			}
 			boundBefore = true
-			s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Channel bound to provider")
+			s.log.Trace().Str("channel_id", m.String()).Msg("Channel bound to provider")
 
 			// The connector side of the mapping is live again: replay any
 			// return-path data that arrived while the connector was away so
 			// those messages are not lost.
 			if drainTarget != nil {
-				s.drainConnectorReturn(m.ChannelID, drainTarget)
+				s.drainConnectorReturn(m, drainTarget)
 			}
 
 			// Forward buffered (and subsequent) data in order. The queue
@@ -2394,7 +2552,7 @@ func (s *LinkSocksServer) startConnectorPump(m ConnectMessage, ws *WSConn, rever
 			for {
 				var msg BaseMessage
 				if pending != nil {
-					msg = *pending
+					msg = pending
 					pending = nil
 				} else {
 					select {
@@ -2412,8 +2570,9 @@ func (s *LinkSocksServer) startConnectorPump(m ConnectMessage, ws *WSConn, rever
 				s.relay.logMessage(msg, "send", ws.Label())
 				if err := reverseWS.WriteMessage(msg); err != nil {
 					s.log.Debug().Err(err).Msg("Provider link dropped, rebinding")
-					if dm, ok := msg.(DataMessage); ok {
-						pending = &dm
+					switch msg.(type) {
+					case DataMessage, SealedMessage:
+						pending = msg
 					}
 					reverseWS = nil
 					break drain
@@ -2448,29 +2607,40 @@ func containsChannelID(ids []uuid.UUID, id uuid.UUID) bool {
 // Buffered sends happen under the cache lock so cleanup can never close a
 // queue under a send; they are non-blocking and never stall the dispatcher.
 func (s *LinkSocksServer) routeConnectorData(m DataMessage, src *WSConn) {
+	s.routeConnectorPayload(m.ChannelID, m, src)
+}
+
+// routeConnectorSealed forwards one protocol V2 ciphertext frame from a
+// connector to the mapped provider, exactly like routeConnectorData without
+// ever looking inside.
+func (s *LinkSocksServer) routeConnectorSealed(m SealedMessage, src *WSConn) {
+	s.routeConnectorPayload(m.ChannelID, m, src)
+}
+
+func (s *LinkSocksServer) routeConnectorPayload(channelID uuid.UUID, msg BaseMessage, src *WSConn) {
 	s.connCache.mu.RLock()
-	od, queued := s.connCache.orphanQueues[m.ChannelID]
-	targetWS := s.connCache.channelIDToClient[m.ChannelID]
+	od, queued := s.connCache.orphanQueues[channelID]
+	targetWS := s.connCache.channelIDToClient[channelID]
 	if queued {
 		select {
-		case od.queue <- m:
+		case od.queue <- msg:
 			s.connCache.mu.RUnlock()
 			return
 		default:
 			s.connCache.mu.RUnlock()
-			s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Orphan data queue full, dropping message")
+			s.log.Warn().Str("channel_id", channelID.String()).Msg("Orphan data queue full, dropping message")
 			return
 		}
 	}
 	s.connCache.mu.RUnlock()
 	if targetWS != nil {
-		s.relay.logMessage(m, "send", src.Label())
-		if err := targetWS.WriteMessage(m); err != nil {
+		s.relay.logMessage(msg, "send", src.Label())
+		if err := targetWS.WriteMessage(msg); err != nil {
 			s.log.Debug().Err(err).Msg("Failed to forward data message")
 		}
 		return
 	}
-	s.bufferOrphanData(m)
+	s.bufferOrphanPayload(channelID, msg)
 }
 
 // bufferConnectorReturn retains return-path messages (provider -> connector)
@@ -2571,20 +2741,24 @@ func (s *LinkSocksServer) drainConnectorReturn(channelID uuid.UUID, target *WSCo
 // ConnectMessage binds the channel (then drained in order) or until
 // orphanDataTTL expires and the data is dropped.
 func (s *LinkSocksServer) bufferOrphanData(m DataMessage) {
+	s.bufferOrphanPayload(m.ChannelID, m)
+}
+
+func (s *LinkSocksServer) bufferOrphanPayload(channelID uuid.UUID, msg BaseMessage) {
 	s.connCache.mu.Lock()
-	od, ok := s.connCache.orphanQueues[m.ChannelID]
+	od, ok := s.connCache.orphanQueues[channelID]
 	if !ok {
 		od = &orphanData{queue: make(chan BaseMessage, orphanDataQueueSize)}
-		s.connCache.orphanQueues[m.ChannelID] = od
-		od.timer = time.AfterFunc(orphanDataTTL, func() { s.expireOrphanData(m.ChannelID) })
+		s.connCache.orphanQueues[channelID] = od
+		od.timer = time.AfterFunc(orphanDataTTL, func() { s.expireOrphanData(channelID) })
 	}
 	select {
-	case od.queue <- m:
+	case od.queue <- msg:
 		s.connCache.mu.Unlock()
-		s.log.Trace().Str("channel_id", m.ChannelID.String()).Msg("Buffered data for unbound channel")
+		s.log.Trace().Str("channel_id", channelID.String()).Msg("Buffered data for unbound channel")
 	default:
 		s.connCache.mu.Unlock()
-		s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Orphan data queue full, dropping message")
+		s.log.Warn().Str("channel_id", channelID.String()).Msg("Orphan data queue full, dropping message")
 	}
 }
 
@@ -2647,9 +2821,11 @@ func (s *LinkSocksServer) cleanupConnectorChannel(channelID uuid.UUID) {
 	s.connCache.mu.Unlock()
 }
 
-func (s *LinkSocksServer) waitForNextWebSocket(ctx context.Context, token string, timeout time.Duration) (*WSConn, error) {
+// waitForNextWebSocket waits for a provider of the given token whose protocol
+// generation matches the given major (0 matches any generation).
+func (s *LinkSocksServer) waitForNextWebSocket(ctx context.Context, token string, timeout time.Duration, major byte) (*WSConn, error) {
 	if timeout <= 0 {
-		return s.getNextWebSocket(token)
+		return s.getNextWebSocketForVersion(token, major)
 	}
 
 	timer := time.NewTimer(timeout)
@@ -2676,7 +2852,7 @@ func (s *LinkSocksServer) waitForNextWebSocket(ctx context.Context, token string
 		// Check availability and subscribe under the same lock so a provider
 		// published in between cannot be missed.
 		s.mu.Lock()
-		ws, err := s.getNextWebSocketLocked(token)
+		ws, err := s.getNextWebSocketLocked(token, major)
 		changed = s.tokenAvailability[token]
 		if changed == nil {
 			changed = make(chan struct{})
