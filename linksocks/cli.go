@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/linksocks/linksocks/zone"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -46,7 +47,7 @@ func (cli *CLI) initCommands() {
 	cli.rootCmd = &cobra.Command{
 		Use:          "linksocks",
 		Short:        "SOCKS5 over WebSocket proxy tool",
-		Long:         "LinkSocks can run as a forward proxy, reverse proxy provider, or agent-style connector setup.",
+		Long:         "LinkSocks relays SOCKS5 and HTTP proxy traffic, publishes local sites, and connects machines in shared virtual networks.",
 		Example:      strings.TrimSpace("linksocks server -t my_token\nlinksocks client -t my_token -u ws://localhost:8765 -p 9870\n\nlinksocks server -t my_token -r -p 9870\nlinksocks provider -t my_token -u ws://localhost:8765\n\nlinksocks server -t provider_token -c connector_token -r -p 9870\nlinksocks connector -t connector_token -u ws://localhost:8765 -p 1180"),
 		SilenceUsage: true,
 	}
@@ -215,7 +216,7 @@ func (cli *CLI) initCommands() {
 	})
 
 	// Add commands to root
-	cli.rootCmd.AddCommand(clientCmd, connectorCmd, providerCmd, serverCmd, webCmd, versionCmd)
+	cli.rootCmd.AddCommand(clientCmd, connectorCmd, providerCmd, serverCmd, webCmd, versionCmd, zone.NewCommand())
 }
 
 func (cli *CLI) configureCommandHelp(cmd *cobra.Command, config cliHelpConfig) {
