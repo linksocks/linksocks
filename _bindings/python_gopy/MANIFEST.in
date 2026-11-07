@@ -1,0 +1,7 @@
+include go.mod
+include go.sum
+recursive-include linksocks *.go
+recursive-include zone *.go
+recursive-include gopybridge *.go
+global-exclude __pycache__
+global-exclude *.py[co]

@@ -102,9 +102,10 @@ extras_require = {
 def prepare_go_sources():
     """Prepare Go source files by copying them to linksocks_go directory."""
     go_src_dir = here / "linksocks_go"
+    zone_src_dir = here / "zone"
     
     # If linksocks_go already exists (e.g., from source distribution), use it
-    if go_src_dir.exists() and (go_src_dir / "_python.go").exists():
+    if (go_src_dir / "_python.go").exists() and zone_src_dir.exists():
         print(f"Using existing Go sources in {go_src_dir}")
         return go_src_dir
     
@@ -135,6 +136,14 @@ def prepare_go_sources():
             print(f"Copied {go_file.name} to linksocks_go/")
     else:
         raise FileNotFoundError("Cannot find linksocks source directory")
+
+    zone_src = project_root / "zone"
+    if not zone_src.exists():
+        raise FileNotFoundError("Cannot find zone source directory")
+    zone_src_dir.mkdir(exist_ok=True)
+    for go_file in zone_src.glob("*.go"):
+        if not go_file.name.endswith("_test.go"):
+            shutil.copy2(go_file, zone_src_dir / go_file.name)
     
     print(f"Go sources prepared in {go_src_dir}")
     return go_src_dir
@@ -478,7 +487,7 @@ def ensure_python_bindings():
             )
 
     try:
-        prepare_ffi_go_sources()
+        ffi_src_dir = prepare_ffi_go_sources()
         env = os.environ.copy()
         env["CGO_ENABLED"] = "1"
         out_name = (
@@ -486,18 +495,27 @@ def ensure_python_bindings():
             if platform.system().lower() == "linux"
             else ("liblinksocks_ffi.dylib" if platform.system().lower() == "darwin" else "linksocks_ffi.dll")
         )
-        run_command(
-            [
-                "go",
-                "build",
-                "-buildmode=c-shared",
-                "-o",
-                str(ffi_dir / out_name),
-                "./linksocks_go_ffi",
-            ],
-            cwd=here,
-            env=env,
-        )
+        with tempfile.TemporaryDirectory(prefix="linksocks_ffi_build_") as tmpdir:
+            build_root = here
+            if have_local_sources:
+                build_root = Path(tmpdir)
+                for fname in ["go.mod", "go.sum"]:
+                    shutil.copy2(here / fname, build_root / fname)
+                shutil.copytree(local_go_src_dir, build_root / "linksocks")
+                shutil.copytree(here / "zone", build_root / "zone")
+                shutil.copytree(ffi_src_dir, build_root / "linksocks_go_ffi")
+            run_command(
+                [
+                    "go",
+                    "build",
+                    "-buildmode=c-shared",
+                    "-o",
+                    str(ffi_dir / out_name),
+                    "./linksocks_go_ffi",
+                ],
+                cwd=build_root,
+                env=env,
+            )
         print("Built linksocks_ffi shared library")
         return
     except Exception as e:
@@ -571,29 +589,28 @@ extras_require = {
 }
 
 class SdistWithGoSources(_sdist):
-    """Custom sdist that ensures Go sources (linksocks_go, go.mod, go.sum) exist
+    """Custom sdist that ensures Go sources (linksocks_go, zone, go.mod, go.sum) exist
     before creating the source distribution, and cleans them afterwards.
     """
 
     def run(self):
         go_src_dir = None
-        created_files = []
+        created_go_src = not (here / "linksocks_go").exists()
+        created_zone_src = not (here / "zone").exists()
+        created_files = [here / fname for fname in ["go.mod", "go.sum"] if not (here / fname).exists()]
         try:
             go_src_dir = prepare_go_sources()
-            # Track go.mod and go.sum created in this directory for cleanup
-            for fname in ["go.mod", "go.sum"]:
-                fpath = here / fname
-                if fpath.exists():
-                    created_files.append(fpath)
             super().run()
         finally:
             # Clean up generated Go sources and module files after sdist
             try:
-                if go_src_dir and Path(go_src_dir).exists():
+                if created_go_src and go_src_dir and Path(go_src_dir).exists():
                     shutil.rmtree(go_src_dir)
                     print(f"Cleaned up {go_src_dir}")
             except Exception as cleanup_err:
                 print(f"Warning: failed to remove {go_src_dir}: {cleanup_err}")
+            if created_zone_src and (here / "zone").exists():
+                shutil.rmtree(here / "zone")
             for fpath in created_files:
                 try:
                     if fpath.exists():

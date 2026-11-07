@@ -1,6 +1,7 @@
 # Include Go source files in linksocks_go directory
 recursive-include linksocks_go *.go
 recursive-include linksocks_go_ffi *.go
+recursive-include zone *.go
 include go.mod
 include go.sum
 

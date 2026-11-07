@@ -13,6 +13,7 @@ from pathlib import Path
 
 from setuptools import setup, find_packages
 from setuptools.command.build_py import build_py as _build_py
+from setuptools.command.sdist import sdist as _sdist
 
 try:
     from setuptools.command.editable_wheel import editable_wheel as _editable_wheel  # type: ignore
@@ -31,7 +32,8 @@ def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = No
 
 
 def ensure_go_sources(dst: Path) -> None:
-    if (dst / "_python.go").exists() and (here / "go.mod").exists():
+    zone_dst = dst.parent / "zone"
+    if (dst / "_python.go").exists() and (here / "go.mod").exists() and zone_dst.exists():
         return
     if not (project_root / "go.mod").exists():
         raise RuntimeError("Cannot find project root go.mod")
@@ -42,6 +44,14 @@ def ensure_go_sources(dst: Path) -> None:
         raise RuntimeError("Cannot find linksocks Go sources")
     for go_file in src_dir.glob("*.go"):
         shutil.copy2(go_file, dst / go_file.name)
+
+    zone_src = project_root / "zone"
+    if not zone_src.exists():
+        raise RuntimeError("Cannot find zone Go sources")
+    zone_dst.mkdir(parents=True, exist_ok=True)
+    for go_file in zone_src.glob("*.go"):
+        if not go_file.name.endswith("_test.go"):
+            shutil.copy2(go_file, zone_dst / go_file.name)
 
 
 def ensure_embedded_go_mod_files() -> None:
@@ -75,10 +85,8 @@ def select_go_package_dir() -> tuple[Path, Path]:
     ensure_embedded_go_mod_files()
     embedded_pkg.mkdir(parents=True, exist_ok=True)
     ensure_go_sources(here / "linksocks")
-    source = project_root / "_bindings" / "python_gopy" / "gopybridge" / "bridge.go"
-    if not source.exists():
+    if not (embedded_pkg / "bridge.go").exists():
         raise RuntimeError("Cannot find gopy bridge Go source")
-    shutil.copy2(source, embedded_pkg / source.name)
     return embedded_pkg, here
 
 
@@ -287,6 +295,27 @@ func linksocks_Server_Close(_handle CGoHandle, goRun C.char) {
         go_file.write_text(source, encoding="utf-8")
 
 
+class SdistWithGoSources(_sdist):
+    def run(self):
+        module_files = [here / "go.mod", here / "go.sum"]
+        source_dirs = [here / "linksocks", here / "zone"]
+        existing_files = {
+            path for path in module_files + [p for directory in source_dirs for p in directory.glob("*.go")]
+            if path.exists()
+        }
+        created_zone_src = not (here / "zone").exists()
+        try:
+            ensure_embedded_go_mod_files()
+            ensure_go_sources(here / "linksocks")
+            super().run()
+        finally:
+            for path in module_files + [p for directory in source_dirs for p in directory.glob("*.go")]:
+                if path not in existing_files:
+                    path.unlink()
+            if created_zone_src and (here / "zone").exists():
+                (here / "zone").rmdir()
+
+
 class BuildGopyOnBuildPy(_build_py):
     def run(self):
         build_gopy_bindings()
@@ -328,6 +357,7 @@ setup(
     },
     zip_safe=False,
     cmdclass={
+        "sdist": SdistWithGoSources,
         "build_py": BuildGopyOnBuildPy,
         **({"editable_wheel": BuildGopyOnEditableWheel} if _editable_wheel is not None else {}),
     },
