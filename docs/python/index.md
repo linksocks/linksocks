@@ -10,6 +10,10 @@ The Python bindings provide three main classes:
 - `Client` - WebSocket client that connects to servers and provides SOCKS5 functionality
 - `Web` - HTTP(S) site provider for a linksocks.js relay
 
+To connect machines with virtual IPv4 addresses, use the standalone
+[`linksocks zone` CLI](/guide/zones). Zones do not have a Python library API or a
+`Zone` class. Zone creation and deletion take place on the linksocks.js website.
+
 ## Quick Start
 
 ### Installation

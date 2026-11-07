@@ -10,6 +10,10 @@ Python 绑定提供三个主要类：
 - `Client` - 连接到服务器并提供 SOCKS5 功能的 WebSocket 客户端
 - `Web` - 面向 linksocks.js 中继的 HTTP(S) 网站 Provider
 
+需要通过虚拟 IPv4 地址连接多台机器时，请使用独立的
+[`linksocks zone` CLI](/zh/guide/zones)。Zone 没有 Python 库 API，也没有 `Zone`
+类；创建和删除网络在 linksocks.js 网站中完成。
+
 ## 快速开始
 
 ### 安装

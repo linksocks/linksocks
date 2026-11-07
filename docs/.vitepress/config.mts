@@ -66,6 +66,7 @@ export default defineConfig({
             text: 'Advanced Topics',
             items: [
               { text: 'Command-line Options', link: '/guide/cli-options' },
+              { text: 'Zone Networks', link: '/guide/zones' },
               { text: 'Authentication', link: '/guide/authentication' },
               { text: 'Load Balancing', link: '/guide/load-balancing' },
               { text: 'Fast Open', link: '/guide/fast-open' },
@@ -137,6 +138,7 @@ export default defineConfig({
             text: '进阶主题',
             items: [
               { text: '命令行选项', link: '/zh/guide/cli-options' },
+              { text: 'Zone 虚拟网络', link: '/zh/guide/zones' },
               { text: '身份验证', link: '/zh/guide/authentication' },
               { text: '负载均衡', link: '/zh/guide/load-balancing' },
               { text: '快速打开', link: '/zh/guide/fast-open' },

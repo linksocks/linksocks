@@ -14,6 +14,9 @@ LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCK
 
 📖 **文档**: https://linksocks-docs.zetx.tech/
 
+**网站**：[l.zetx.tech](https://l.zetx.tech) ·
+[公开 Zone](https://l.zetx.tech/zones)
+
 ## 特性
 
 1. 支持命令行使用、API 服务器和库集成
@@ -23,6 +26,7 @@ LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCK
 5. 本地代理身份验证（SOCKS5 用户名密码与 HTTP Basic）
 6. 支持 SOCKS5 上的 IPv6
 7. 支持 SOCKS5 上的 UDP
+8. Zone 虚拟 IPv4 网络：默认在本机运行 SOCKS5 代理，Linux 下可用 `--vlan` 创建二层 TAP 网卡
 
 ## 潜在应用场景
 
@@ -154,6 +158,30 @@ $ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/not-fou
 
 服务端（Cloudflare Worker、D1 数据库、管理后台与配额）说明见 linksocks.js 仓库。
 
+### Zone 虚拟网络
+
+Zone 是一组机器共享的虚拟 IPv4 网络。打开 linksocks.js 网站的 `/zones` 页面，
+即可查看成员并复制加入命令。加入无需账号；登录用户可以创建 Zone、删除自己的
+Zone，管理员可以管理全部 Zone。新建 Zone 默认为私有，只有拿到 Zone ID 的机器
+才能加入。公开 Zone 仅管理员可以创建，会出现在网站的 **Public zones** 视图和
+`linksocks zone list` 中。
+
+默认加入不需要特殊权限：`linksocks zone join <id>` 会在本机 `127.0.0.1:1080`
+启动 SOCKS5 代理，通过虚拟 IP 或成员名访问成员的 TCP 和 UDP 服务。Linux 下可用
+`--vlan`（需要 root）创建二层 TAP 网卡，支持 ARP、ICMP、广播、组播和 WOL。
+
+每台机器保留本地 Ed25519 身份。异常掉线后虚拟地址保留 24 小时，Ctrl+C 或
+`zone leave` 则立即释放。流量经 Worker 中继端到端加密传输。Zone 所有者和
+管理员可以设置欢迎语和防火墙规则（最多 64 条有序规则，含默认策略），并踢出
+或移除成员。
+
+平台要求、身份密钥、多网卡和真实 Linux 实测见
+[Zone 使用指南](https://linksocks.github.io/zh/guide/zones)。Zone 没有 Python 库 API。
+
+自行部署需要 Worker 的 `DB` 绑定、指向 SQLite 存储 `Zone` Durable Object 的
+`ZONE` 绑定，以及 D1 迁移 `0005_zones.sql` 与 `0006_zone_visibility.sql`。详见
+[Worker 部署说明](https://github.com/linksocks/linksocks.js/blob/main/README.cn.md#zone-虚拟网络)。
+
 ## 安装
 
 ### Golang 版本
@@ -181,7 +209,7 @@ LinkSocks 服务端可以部署在 Cloudflare Worker 上，详见：[linksocks/l
 
 [![部署到 Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/linksocks/linksocks.js)
 
-linksocks.js 版本是一个轻量级版本，不包含 API 功能。
+Worker 提供账号、网站发布和 Zone 管理页面，其管理接口与下文 Go 服务端的令牌 API 不同。
 
 ## API 服务
 

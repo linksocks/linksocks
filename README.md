@@ -18,6 +18,9 @@ Crucially, it supports Serverless Intranet Penetration (compatible with Cloudfla
 
 📖 **Documentation**: [https://linksocks.github.io](https://linksocks.github.io)
 
+**Website**: [l.zetx.tech](https://l.zetx.tech) ·
+[Public zones](https://l.zetx.tech/zones)
+
 ## Features
 
 1. Forward, reverse and relay proxy modes.
@@ -28,6 +31,7 @@ Crucially, it supports Serverless Intranet Penetration (compatible with Cloudfla
 6. Robust code driven by comprehensive tests.
 7. Command-line usage, API server, and library integration.
 8. Serverless relay server supported by Cloudflare Worker.
+9. Zone networks with virtual IPv4 addresses: a local SOCKS5 proxy by default, or an L2 TAP interface on Linux with `--vlan`.
 
 ## Potential Applications
 
@@ -186,6 +190,34 @@ automatically while the provider stays connected.
 The server side (Cloudflare Worker, D1 database, admin console and quotas) is
 documented in the linksocks.js repository.
 
+### Zone Networks
+
+A zone is a virtual IPv4 network shared by a group of machines. Browse
+`/zones` on a linksocks.js website to view members and copy a join command. No
+account is needed to join; signed-in users create zones and delete their own,
+and administrators manage all zones. New zones are private, and only machines
+given the zone ID can join. Only administrators can create public zones; those
+appear in the website's Public zones view and in `linksocks zone list`.
+
+Joining needs no privileges by default: `linksocks zone join <id>` starts a
+local SOCKS5 proxy on `127.0.0.1:1080` that reaches members by virtual IP or
+name over TCP and UDP. On Linux, `--vlan` (root) creates an L2 TAP interface
+with ARP, ICMP, broadcast, multicast and Wake-on-LAN support.
+
+Each machine keeps a local Ed25519 identity. An abrupt disconnect retains its
+virtual address for 24 hours, while Ctrl+C or `zone leave` releases it
+immediately. Traffic is end-to-end encrypted through the Worker relay. Zone
+owners and administrators can set a welcome message and firewall rules (up to
+64 ordered rules with a default policy) and kick or remove members.
+
+See the [zone guide](https://linksocks.github.io/guide/zones) for details and a
+verified Linux run. There is no Python library API for zones.
+
+Self-hosted coordinators need the Worker `DB` binding, the `ZONE` binding to
+the SQLite-backed `Zone` Durable Object, and the D1 migrations
+`0005_zones.sql` and `0006_zone_visibility.sql`. See
+[Worker deployment](https://github.com/linksocks/linksocks.js#zone-networks).
+
 ## Installation
 
 ### Golang Version
@@ -215,7 +247,8 @@ LinkSocks server (for self-managed connector relay) can be hosted on Cloudflare 
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/linksocks/linksocks.js)
 
-The linksocks.js version is a lite version and does not contain API functionality.
+The Worker includes a website for accounts, web publishing and zones. Its
+management endpoints are separate from the Go server's token API below.
 
 ## API Server
 
