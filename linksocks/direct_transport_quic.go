@@ -3,12 +3,10 @@ package linksocks
 import (
 	"context"
 	"errors"
-	"io"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/quic-go/quic-go"
 )
 
 type clientRelayWriter struct {
@@ -374,24 +372,4 @@ func (c *LinkSocksClient) deliverDataMessage(msg DataMessage) {
 	// Channel not bound yet: hold the data until the channel binds, like the
 	// relay-side orphan buffer, instead of dropping it.
 	c.relay.bufferOrphanData(msg)
-}
-
-func directQUICIsExpectedReadClose(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) {
-		return true
-	}
-	// When the peer closes a stream (e.g. after DisconnectMessage), quic-go may
-	// surface it as a StreamError with application error code 0.
-	var se *quic.StreamError
-	if errors.As(err, &se) {
-		return se.ErrorCode == 0
-	}
-	var ae *quic.ApplicationError
-	if errors.As(err, &ae) {
-		return ae.ErrorCode == 0
-	}
-	return false
 }

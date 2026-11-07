@@ -251,37 +251,6 @@ func (c *LinkSocksClient) ForceCloseDirectQUIC() {
 	c.quicNotify()
 }
 
-func (c *LinkSocksClient) directQUICPlaneIfReadyAndUsable(now time.Time) *DirectQUICDataPlane {
-	if c.directMode == DirectModeRelayOnly {
-		return nil
-	}
-	if !c.directIsUsable(now) {
-		return nil
-	}
-
-	c.directQUICMu.Lock()
-	mgr := c.directQUICManager
-	pl := c.directQUICPlane
-	readyCh := c.directQUICReadyCh
-	c.directQUICMu.Unlock()
-
-	if mgr == nil || pl == nil {
-		return nil
-	}
-
-	select {
-	case <-readyCh:
-		// continue
-	default:
-		return nil
-	}
-
-	if mgr.Active() == nil {
-		return nil
-	}
-	return pl
-}
-
 func (c *LinkSocksClient) directMarkDegraded(now time.Time, d time.Duration, reason string) {
 	if d <= 0 {
 		d = 30 * time.Second
@@ -1339,14 +1308,13 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 	c.directLocalPublicKey = append([]byte(nil), kp.pub...)
 	c.directMu.Unlock()
 
-	conn, err := listenUDPDualStack(ctx, 0)
-	if err != nil {
-		conn, err = net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
-	}
+	var listenConfig net.ListenConfig
+	packetConn, err := listenConfig.ListenPacket(ctx, "udp", ":0")
 	if err != nil {
 		c.log.Warn().Err(err).Msg("Direct UDP listen failed")
 		return
 	}
+	conn := packetConn.(*net.UDPConn)
 
 	upnpExternalPort := 0
 

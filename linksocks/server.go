@@ -2736,14 +2736,7 @@ func (s *LinkSocksServer) drainConnectorReturn(channelID uuid.UUID, target *WSCo
 	}
 }
 
-// bufferOrphanData retains data for a channel that is not bound yet.
-// There are no preconditions: data for any unknown channel is held until its
-// ConnectMessage binds the channel (then drained in order) or until
-// orphanDataTTL expires and the data is dropped.
-func (s *LinkSocksServer) bufferOrphanData(m DataMessage) {
-	s.bufferOrphanPayload(m.ChannelID, m)
-}
-
+// bufferOrphanPayload retains frames until the channel is bound or its queue expires.
 func (s *LinkSocksServer) bufferOrphanPayload(channelID uuid.UUID, msg BaseMessage) {
 	s.connCache.mu.Lock()
 	od, ok := s.connCache.orphanQueues[channelID]

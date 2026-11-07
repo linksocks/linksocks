@@ -2,9 +2,7 @@ package linksocks
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -291,73 +289,4 @@ func (w *bufferWriter) Write(p []byte) (int, error) {
 	// Keep raw line so consumers (e.g., Python) can parse JSON fields/levels.
 	addLogEntry(w.id, rawLine)
 	return len(p), nil
-}
-
-// formatLogLine parses a JSON log line and formats it with all fields
-func formatLogLine(line string) string {
-	// Try to parse as JSON
-	var logObj map[string]interface{}
-	if err := json.Unmarshal([]byte(line), &logObj); err != nil {
-		// If not valid JSON, return as-is
-		return line
-	}
-
-	// Extract basic fields
-	level, _ := logObj["level"].(string)
-	message, _ := logObj["message"].(string)
-	if message == "" {
-		message, _ = logObj["msg"].(string)
-	}
-	timestamp, _ := logObj["time"].(string)
-
-	// Build the formatted message starting with the basic message
-	var parts []string
-	if message != "" {
-		parts = append(parts, message)
-	}
-
-	// Collect other fields (excluding standard fields)
-	var extraFields []string
-	for key, value := range logObj {
-		switch key {
-		case "level", "time", "message", "msg":
-			// Skip standard fields
-			continue
-		default:
-			// Format the field as key=value
-			extraFields = append(extraFields, fmt.Sprintf("%s=%v", key, value))
-		}
-	}
-
-	// Sort extra fields for consistent output
-	sort.Strings(extraFields)
-
-	// Append extra fields to the message
-	if len(extraFields) > 0 {
-		if len(parts) > 0 {
-			parts = append(parts, strings.Join(extraFields, " "))
-		} else {
-			parts = extraFields
-		}
-	}
-
-	// Build the final formatted line
-	finalMessage := strings.Join(parts, " ")
-
-	// Create a simple structured log object for Python
-	result := map[string]interface{}{
-		"level":   level,
-		"message": finalMessage,
-	}
-	if timestamp != "" {
-		result["time"] = timestamp
-	}
-
-	// Convert back to JSON for Python to parse
-	if formatted, err := json.Marshal(result); err == nil {
-		return string(formatted)
-	}
-
-	// Fallback to original line if formatting fails
-	return line
 }

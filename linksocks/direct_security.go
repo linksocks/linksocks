@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/binary"
 	"errors"
 
 	"github.com/google/uuid"
@@ -88,8 +87,4 @@ func verifyDirectProbeMAC(sessionKey []byte, version byte, typ byte, sessionID u
 	}
 	expected := computeDirectProbeMAC(sessionKey, version, typ, sessionID, nonce)
 	return subtle.ConstantTimeCompare(expected[:], mac[:]) == 1
-}
-
-func putUint16BE(b []byte, v uint16) {
-	binary.BigEndian.PutUint16(b, v)
 }

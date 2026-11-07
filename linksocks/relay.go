@@ -494,14 +494,6 @@ func (r *Relay) expireOrphanData(channelID uuid.UUID) {
 	r.log.Warn().Str("channel_id", channelID.String()).Msg("Dropped buffered data for channel that never connected")
 }
 
-func (r *Relay) switchLogicalChannel(channelID uuid.UUID, writer MessageWriter, path channelPath) error {
-	channel, ok := r.logicalChannel(channelID)
-	if !ok {
-		return fmt.Errorf("logical channel %s not found", channelID)
-	}
-	return channel.Switch(writer, path)
-}
-
 func (r *Relay) logicalChannelPath(channelID uuid.UUID) string {
 	channel, ok := r.logicalChannel(channelID)
 	if !ok {
