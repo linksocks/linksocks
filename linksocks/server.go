@@ -1789,11 +1789,29 @@ func (s *LinkSocksServer) messageDispatcher(ctx context.Context, ws *WSConn, cli
 				s.relay.secure.deliver(m.ChannelID, m.Data)
 				return
 			}
+			isForwardSender := false
+			s.mu.RLock()
+			if meta := s.clientMeta[clientID]; meta != nil {
+				isForwardSender = meta.Role == directClientRoleForward
+			}
+			s.mu.RUnlock()
 			// Protocol V2 payload from a provider: opaque ciphertext routed
 			// to the connector by channel ID.
 			s.connCache.mu.RLock()
 			targetWS, exists := s.connCache.channelIDToConnector[m.ChannelID]
 			s.connCache.mu.RUnlock()
+
+			if !exists && isForwardSender {
+				// A client with several links can open the channel on one
+				// link and send the first handshake frame on another; the
+				// frame can be dispatched before the ChannelOpen that creates
+				// the relay-dialer session. Give the session a bounded moment
+				// to appear before treating the payload as connector traffic.
+				if s.relay.secure != nil && s.relay.secure.awaitChannel(m.ChannelID, sealedClaimWait) {
+					s.relay.secure.deliver(m.ChannelID, m.Data)
+					return
+				}
+			}
 
 			if exists {
 				s.relay.logMessage(m, "send", ws.Label())

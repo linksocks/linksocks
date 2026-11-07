@@ -43,6 +43,10 @@ const (
 	secureInboundQueue = 512
 	// secureHandshakeStepTimeout bounds waiting for one handshake frame.
 	secureHandshakeStepTimeout = 30 * time.Second
+	// sealedClaimWait bounds how long a sealed frame waits for the
+	// ChannelOpen that creates its session when a client spreads the two
+	// messages over different links.
+	sealedClaimWait = 750 * time.Millisecond
 )
 
 var errSecureSessionClosed = errors.New("secure channel: session closed")
@@ -60,6 +64,12 @@ type secureHub struct {
 	relay    *Relay
 	log      zerolog.Logger
 	sessions sync.Map // channelID -> *secureSession
+
+	// waiters holds callers blocked in awaitChannel until a session for the
+	// channel is registered, so a frame whose ChannelOpen is still in flight
+	// on another link is not misrouted.
+	waitersMu sync.Mutex
+	waiters   map[uuid.UUID][]chan struct{}
 }
 
 func newClientSecureHub(c *LinkSocksClient) *secureHub {
@@ -85,6 +95,56 @@ func (h *secureHub) session(channelID uuid.UUID) (*secureSession, bool) {
 
 func (h *secureHub) register(s *secureSession) {
 	h.sessions.Store(s.channelID, s)
+	h.wakeWaiters(s.channelID)
+}
+
+// awaitChannel waits until a session for the channel is registered. A client
+// with several links may send ChannelOpen and the first handshake frame over
+// different links; the frame can be dispatched before the open that creates
+// the session, so handlers give the session a bounded moment to appear.
+func (h *secureHub) awaitChannel(channelID uuid.UUID, timeout time.Duration) bool {
+	if h.has(channelID) {
+		return true
+	}
+	waiter := make(chan struct{})
+	h.waitersMu.Lock()
+	if h.waiters == nil {
+		h.waiters = make(map[uuid.UUID][]chan struct{})
+	}
+	h.waiters[channelID] = append(h.waiters[channelID], waiter)
+	h.waitersMu.Unlock()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-waiter:
+		return true
+	case <-timer.C:
+		h.waitersMu.Lock()
+		list := h.waiters[channelID]
+		for i, w := range list {
+			if w == waiter {
+				h.waiters[channelID] = append(list[:i], list[i+1:]...)
+				break
+			}
+		}
+		if len(h.waiters[channelID]) == 0 {
+			delete(h.waiters, channelID)
+		}
+		h.waitersMu.Unlock()
+		// The session may have been registered as the timer fired.
+		return h.has(channelID)
+	}
+}
+
+func (h *secureHub) wakeWaiters(channelID uuid.UUID) {
+	h.waitersMu.Lock()
+	list := h.waiters[channelID]
+	delete(h.waiters, channelID)
+	h.waitersMu.Unlock()
+	for _, w := range list {
+		close(w)
+	}
 }
 
 // remove drops a session registration if it still points at s, so a session
@@ -379,9 +439,16 @@ func (s *secureSession) setLink(link MessageWriter) {
 
 // deliver buffers a ciphertext frame for the session loop. It blocks instead
 // of dropping: the nonce chain must stay contiguous, so a full buffer applies
-// backpressure to the whole link.
+// backpressure to the whole link. Buffering is attempted before the session's
+// end is considered, so a frame that arrives while the peer is tearing the
+// channel down is not the one that gets lost.
 func (s *secureSession) deliver(data []byte) {
 	s.log.Trace().Int("bytes", len(data)).Msg("Sealed frame received")
+	select {
+	case s.inbound <- data:
+		return
+	default:
+	}
 	select {
 	case s.inbound <- data:
 	case <-s.done:
@@ -389,11 +456,18 @@ func (s *secureSession) deliver(data []byte) {
 }
 
 func (s *secureSession) receive() ([]byte, bool) {
+	// Frames buffered before the session closed must still be decrypted and
+	// dispatched; only an empty buffer ends the loop.
 	select {
-	case <-s.done:
-		return nil, false
 	case ct := <-s.inbound:
 		return ct, true
+	default:
+	}
+	select {
+	case ct := <-s.inbound:
+		return ct, true
+	case <-s.done:
+		return nil, false
 	}
 }
 
@@ -649,6 +723,15 @@ func (s *secureSession) dispatch(msg BaseMessage) {
 func (s *secureSession) deliverToQueue(msg BaseMessage) {
 	if s.queue == nil {
 		return
+	}
+	// Hand the message to the local pump before considering the session's end:
+	// a teardown disconnect closes the session while the peer's last data
+	// frame may still be in flight, and dropping it would truncate the
+	// response the pump is about to write.
+	select {
+	case s.queue <- msg:
+		return
+	default:
 	}
 	select {
 	case s.queue <- msg:
