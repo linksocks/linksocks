@@ -183,11 +183,13 @@ These flags can also be provided as environment variables (handy for Docker / Co
 With ECH the TLS ClientHello no longer carries the relay hostname, which keeps
 the connection alive on networks that reset specific hostnames by SNI. The
 client finds the config through, in order: `--ech-config`, an in-process cache,
-the system resolver (asking about every name on the CNAME chain, twice, over
-UDP and TCP, because zones rotate the chain), DNS-over-HTTPS providers (AliDNS,
-and Cloudflare by IP and by name), the relay's own `/api/ech` endpoint, and
-finally a config already accepted for another relay host in this process.
-Nothing is written to disk.
+plaintext DNS (the system resolver plus well-known public resolvers, asking
+about every name on the CNAME chain, twice, over UDP and TCP, because zones
+rotate the chain), DNS-over-HTTPS providers (AliDNS, and Cloudflare by IP and
+by name), the relay's own `/api/ech` endpoint, and finally a config already
+accepted for another relay host in this process. Nothing is written to disk.
+The public resolvers matter on Windows, which has no `resolv.conf`, and on
+networks where the local resolver hides the record.
 
 When nothing can be found and the connection is reset before the handshake
 finishes, the client says so. The way out is to pin a config fetched from a

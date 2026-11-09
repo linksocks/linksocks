@@ -175,10 +175,12 @@ linksocks client -t my_token -u ws://localhost:8765 --direct-mode auto
 ### Encrypted Client Hello
 
 启用 ECH 后 TLS ClientHello 不再携带中继域名，因此按 SNI 重置特定域名的网络不会
-切断连接。客户端按以下顺序查找配置：`--ech-config`、进程内缓存、系统解析器（把
-CNAME 链上的每个名字都问一遍、共两轮，UDP 被截断时改用 TCP，因为域名链会轮换）、
-DNS-over-HTTPS（阿里 DNS、Cloudflare 的 IP 与域名端点）、中继自身的 `/api/ech`
-端点，最后是本次进程内中继已接受过的其他域名配置。不会写入磁盘。
+切断连接。客户端按以下顺序查找配置：`--ech-config`、进程内缓存、明文 DNS（系统
+解析器，外加若干公共解析器；把 CNAME 链上的每个名字都问一遍、共两轮，UDP 被截断时
+改用 TCP，因为域名链会轮换）、DNS-over-HTTPS（阿里 DNS、Cloudflare 的 IP 与域名
+端点）、中继自身的 `/api/ech` 端点，最后是本次进程内中继已接受过的其他域名配置。
+不会写入磁盘。公共解析器是为了覆盖 Windows（没有 `resolv.conf`）以及本地解析器
+不返回该记录的网络。
 
 如果所有来源都拿不到配置、且连接在握手完成前被重置，客户端会明确提示。解决办法是
 在可访问中继的网络里取出配置并固定：

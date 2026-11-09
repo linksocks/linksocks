@@ -98,14 +98,27 @@ var (
 	echSystemLookup = lookupECHViaSystemDNS
 	// echRelayEndpointLookup is stubbed in tests.
 	echRelayEndpointLookup = lookupViaRelayEndpoint
-	dohTimeout             = 5 * time.Second
-	maxCNAMEHops           = 8
+	// systemDNSServers is stubbed in tests.
+	systemDNSServers = configuredDNSServers
+	// fallbackDNSServers are public plaintext resolvers; AliDNS and DNSPod
+	// answer from networks that block foreign resolvers, Cloudflare and
+	// Google cover the other direction.
+	fallbackDNSServers = []string{"223.5.5.5:53", "119.29.29.29:53", "1.1.1.1:53", "8.8.8.8:53"}
+	dohTimeout         = 5 * time.Second
+	maxCNAMEHops       = 8
 	// systemDNSNames bounds how many names from a CNAME chain the system
 	// resolver is asked about, because zones rotate the chain between queries.
 	systemDNSNames = 6
 	// systemDNSPasses bounds how many times the walk restarts from the
 	// original name, catching a rotation that puts the record back in view.
 	systemDNSPasses = 2
+	// systemDNSBudget bounds one full plaintext-DNS walk, so a black-holed
+	// resolver cannot delay the dial for long.
+	systemDNSBudget = 12 * time.Second
+	// dnsQueryTimeout bounds a single query.
+	dnsQueryTimeout = 3 * time.Second
+	// maxDNSServers caps how many resolvers one walk asks.
+	maxDNSServers = 6
 )
 
 const (
@@ -266,29 +279,24 @@ func cachedEntry(host string) ([]byte, bool) {
 // only the chain and not the terminal HTTPS record. answered reports whether
 // the resolver replied at all.
 func lookupECHViaSystemDNS(ctx context.Context, host string) (list []byte, ttl time.Duration, answered bool) {
-	config, err := dns.ClientConfigFromFile("/etc/resolv.conf")
-	if err != nil || len(config.Servers) == 0 {
+	servers := dnsServers()
+	if len(servers) == 0 {
 		return nil, 0, false
 	}
-	client := &dns.Client{Timeout: 5 * time.Second}
-	port := config.Port
-	if port == "" {
-		port = "53"
-	}
+	ctx, cancel := context.WithTimeout(ctx, systemDNSBudget)
+	defer cancel()
 
 	// Providers disagree about which name in a CNAME chain carries the HTTPS
 	// record, and zones rotate their chains between queries. Ask about the
 	// original name and about every name the chain mentions.
 	answeredAny := false
-	// The zone rotates CNAME targets between queries, so one pass can miss a
-	// view that still carries the HTTPS record.
 	for pass := 0; pass < systemDNSPasses; pass++ {
 		queue := []string{dns.Fqdn(host)}
 		seen := map[string]bool{queue[0]: true}
 		for len(queue) > 0 && len(seen) <= systemDNSNames {
 			name := queue[0]
 			queue = queue[1:]
-			list, ttl, answered, targets := queryHTTPSName(ctx, client, config, name, port)
+			list, ttl, answered, targets := queryHTTPSName(ctx, servers, name)
 			if answered {
 				answeredAny = true
 			}
@@ -307,10 +315,45 @@ func lookupECHViaSystemDNS(ctx context.Context, host string) (list []byte, ttl t
 	return nil, 0, answeredAny
 }
 
-// queryHTTPSName asks the configured resolvers for one name, following its own
-// CNAME chain. It returns the ECH config, the TTL, whether any resolver
+// dnsServers lists the plaintext resolvers to ask: the system configuration
+// when it can be read, then well-known public resolvers.
+//
+// The public resolvers exist because the system configuration is not always
+// available (Windows has no resolv.conf) and because resolvers disagree about
+// a rotating CNAME chain: one answers with the HTTPS record, another with only
+// the chain. Queries are plaintext on purpose — the ECH config is public data,
+// and a network that resets TLS connections by hostname still resolves names.
+func dnsServers() []string {
+	servers := systemDNSServers()
+	servers = append(servers, fallbackDNSServers...)
+	if len(servers) > maxDNSServers {
+		servers = servers[:maxDNSServers]
+	}
+	return servers
+}
+
+// configuredDNSServers reads the resolver list from the system configuration.
+func configuredDNSServers() []string {
+	config, err := dns.ClientConfigFromFile("/etc/resolv.conf")
+	if err != nil || len(config.Servers) == 0 {
+		return nil
+	}
+	port := config.Port
+	if port == "" {
+		port = "53"
+	}
+	servers := make([]string, 0, len(config.Servers))
+	for _, server := range config.Servers {
+		servers = append(servers, net.JoinHostPort(server, port))
+	}
+	return servers
+}
+
+// queryHTTPSName asks each resolver in turn for one name, following the name's
+// own CNAME chain. It returns the ECH config, the TTL, whether any resolver
 // answered, and the CNAME targets seen along the way.
-func queryHTTPSName(ctx context.Context, client *dns.Client, config *dns.ClientConfig, host, port string) ([]byte, time.Duration, bool, []string) {
+func queryHTTPSName(ctx context.Context, servers []string, host string) ([]byte, time.Duration, bool, []string) {
+	client := &dns.Client{Timeout: dnsQueryTimeout}
 	answered := false
 	var targets []string
 	name := host
@@ -318,16 +361,19 @@ func queryHTTPSName(ctx context.Context, client *dns.Client, config *dns.ClientC
 		message := new(dns.Msg)
 		message.SetQuestion(name, dns.TypeHTTPS)
 		var response *dns.Msg
-		for _, server := range config.Servers {
-			reply, _, err := client.ExchangeContext(ctx, message, net.JoinHostPort(server, port))
+		for _, server := range servers {
+			if ctx.Err() != nil {
+				return nil, 0, answered, targets
+			}
+			reply, _, err := client.ExchangeContext(ctx, message, server)
 			if err == nil && reply != nil && reply.Rcode == dns.RcodeSuccess {
 				response = reply
 				break
 			}
 			// A truncated answer means the resolver wants TCP.
 			if reply != nil && reply.Truncated {
-				tcpClient := &dns.Client{Net: "tcp", Timeout: 5 * time.Second}
-				if reply, _, err := tcpClient.ExchangeContext(ctx, message, net.JoinHostPort(server, port)); err == nil && reply != nil {
+				tcpClient := &dns.Client{Net: "tcp", Timeout: dnsQueryTimeout}
+				if reply, _, err := tcpClient.ExchangeContext(ctx, message, server); err == nil && reply != nil {
 					response = reply
 					break
 				}

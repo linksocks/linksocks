@@ -129,12 +129,10 @@ func TestECHFromRecords(t *testing.T) {
 
 // A local resolver that answers CNAME chains the way AliDNS does: only the
 // chain, never the terminal HTTPS record, so the client must follow it.
-func TestSystemDNSFollowsCNAMEChain(t *testing.T) {
-	resetECHState(t)
-	raw, err := base64.StdEncoding.DecodeString(cloudflareECHConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
+// startChainResolver answers a CNAME chain like the real zone: the first name
+// only carries a CNAME, the terminal name carries the HTTPS record.
+func startChainResolver(t *testing.T, echConfig string) string {
+	t.Helper()
 	packetConn, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +145,7 @@ func TestSystemDNSFollowsCNAMEChain(t *testing.T) {
 		case "relay.example.com.":
 			reply.Answer = []dns.RR{&dns.CNAME{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeCNAME, Ttl: 42}, Target: "edge.example.net."}}
 		case "edge.example.net.":
-			record, err := dns.NewRR(`edge.example.net. 60 IN HTTPS 1 . alpn="h2" ech="` + base64.StdEncoding.EncodeToString(raw) + `"`)
+			record, err := dns.NewRR(`edge.example.net. 60 IN HTTPS 1 . alpn="h2" ech="` + echConfig + `"`)
 			if err == nil {
 				reply.Answer = []dns.RR{record}
 			}
@@ -157,31 +155,56 @@ func TestSystemDNSFollowsCNAMEChain(t *testing.T) {
 		_ = w.WriteMsg(reply)
 	})}
 	go func() { _ = server.ActivateAndServe() }()
-	defer server.Shutdown()
+	t.Cleanup(func() { _ = server.Shutdown() })
+	return packetConn.LocalAddr().String()
+}
 
-	// Point the lookup at this resolver through resolv.conf semantics: the
-	// helper reads /etc/resolv.conf, so exercise the same query path directly.
-	client := &dns.Client{Timeout: 3 * time.Second}
-	name := "relay.example.com."
-	var list []byte
-	for hop := 0; hop < maxCNAMEHops; hop++ {
-		message := new(dns.Msg)
-		message.SetQuestion(name, dns.TypeHTTPS)
-		response, _, err := client.Exchange(message, packetConn.LocalAddr().String())
-		if err != nil || response == nil {
-			t.Fatal(err)
-		}
-		if list, _ = echFromRecords(response.Answer); len(list) > 0 {
-			break
-		}
-		next, ok := lastCNAMETarget(response.Answer)
-		if !ok {
-			t.Fatal("chain ended without an HTTPS record")
-		}
-		name = next
+func stubDNSServers(t *testing.T, system, fallback []string) {
+	t.Helper()
+	previousSystem, previousFallback := systemDNSServers, fallbackDNSServers
+	systemDNSServers = func() []string { return system }
+	fallbackDNSServers = fallback
+	t.Cleanup(func() {
+		systemDNSServers = previousSystem
+		fallbackDNSServers = previousFallback
+	})
+}
+
+func TestSystemDNSFollowsCNAMEChain(t *testing.T) {
+	resetECHState(t)
+	raw, err := base64.StdEncoding.DecodeString(cloudflareECHConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := startChainResolver(t, base64.StdEncoding.EncodeToString(raw))
+	stubDNSServers(t, []string{address}, nil)
+
+	list, _, answered := lookupECHViaSystemDNS(context.Background(), "relay.example.com")
+	if !answered {
+		t.Fatal("the walk reported no answer")
 	}
 	if string(list) != string(raw) {
 		t.Fatalf("followed chain returned %d bytes, want %d", len(list), len(raw))
+	}
+}
+
+// Windows has no resolv.conf, and a network that resets TLS by hostname may
+// still answer plaintext DNS: the public resolvers must be asked as well.
+func TestSystemDNFallsBackToPublicResolvers(t *testing.T) {
+	resetECHState(t)
+	raw, err := base64.StdEncoding.DecodeString(cloudflareECHConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := startChainResolver(t, base64.StdEncoding.EncodeToString(raw))
+	stubDNSServers(t, nil, []string{address})
+
+	list, _, _ := lookupECHViaSystemDNS(context.Background(), "relay.example.com")
+	if string(list) != string(raw) {
+		t.Fatalf("fallback resolvers returned %d bytes, want %d", len(list), len(raw))
+	}
+	if servers := dnsServers(); len(servers) > maxDNSServers {
+		t.Fatalf("dnsServers returned %d entries, want at most %d", len(servers), maxDNSServers)
 	}
 }
 
