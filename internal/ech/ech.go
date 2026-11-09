@@ -4,9 +4,10 @@
 // which is what keeps the connection alive on networks that block specific
 // hostnames by SNI. Because that network behaviour is exactly when the ECH
 // config is hardest to fetch, discovery walks several sources: a manual
-// override, a local cache, the system resolver, several DNS-over-HTTPS
-// providers, and finally a config discovered for another relay host on the
-// same Cloudflare edge.
+// override, an in-process cache, the system resolver, several DNS-over-HTTPS
+// providers, the relay's own /api/ech endpoint, and finally a config
+// discovered earlier for another relay host on the same Cloudflare edge.
+// Nothing is written to disk: a pinned config is passed in every run.
 package ech
 
 import (
@@ -21,7 +22,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -98,7 +98,6 @@ var (
 	echSystemLookup = lookupECHViaSystemDNS
 	// echRelayEndpointLookup is stubbed in tests.
 	echRelayEndpointLookup = lookupViaRelayEndpoint
-	echCacheDir            = defaultCacheDir
 	dohTimeout             = 5 * time.Second
 	maxCNAMEHops           = 8
 	// systemDNSNames bounds how many names from a CNAME chain the system
@@ -145,104 +144,6 @@ func lastGood() []byte {
 	echLastGoodMu.Lock()
 	defer echLastGoodMu.Unlock()
 	return echLastGood
-}
-
-func defaultCacheDir() string {
-	base, err := os.UserConfigDir()
-	if err != nil || base == "" {
-		return ""
-	}
-	return filepath.Join(base, "linksocks")
-}
-
-// cacheFilePath is the on-disk ECH cache.
-func cacheFilePath() string {
-	dir := echCacheDir()
-	if dir == "" {
-		return ""
-	}
-	return filepath.Join(dir, "ech-cache.json")
-}
-
-type diskCacheFile struct {
-	Hosts map[string]struct {
-		Config  string `json:"config"`
-		Expires int64  `json:"expires"`
-	} `json:"hosts"`
-}
-
-// readDiskCache returns the cached config for host. fresh reports whether it is
-// still within its record TTL; a stale entry is still returned so callers can
-// use it as a last resort.
-func readDiskCache(host string) (list []byte, fresh bool) {
-	path := cacheFilePath()
-	if path == "" {
-		return nil, false
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, false
-	}
-	var file diskCacheFile
-	if err := json.Unmarshal(data, &file); err != nil {
-		return nil, false
-	}
-	entry, ok := file.Hosts[host]
-	if !ok {
-		return nil, false
-	}
-	list, err = base64.StdEncoding.DecodeString(entry.Config)
-	if err != nil || len(list) == 0 {
-		return nil, false
-	}
-	if entry.Expires > 0 && time.Now().UnixMilli() < entry.Expires {
-		return list, true
-	}
-	if time.Now().UnixMilli() < entry.Expires+echStaleGrace.Milliseconds() {
-		return list, false
-	}
-	return nil, false
-}
-
-// writeDiskCache stores config for host, keeping other hosts and dropping
-// entries past the stale grace.
-func writeDiskCache(host string, list []byte, ttl time.Duration) {
-	path := cacheFilePath()
-	if path == "" || host == "" || len(list) == 0 {
-		return
-	}
-	file := diskCacheFile{Hosts: map[string]struct {
-		Config  string `json:"config"`
-		Expires int64  `json:"expires"`
-	}{}}
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &file)
-		if file.Hosts == nil {
-			file.Hosts = map[string]struct {
-				Config  string `json:"config"`
-				Expires int64  `json:"expires"`
-			}{}
-		}
-	}
-	now := time.Now().UnixMilli()
-	for name, entry := range file.Hosts {
-		if now > entry.Expires+echStaleGrace.Milliseconds() {
-			delete(file.Hosts, name)
-		}
-	}
-	file.Hosts[host] = struct {
-		Config  string `json:"config"`
-		Expires int64  `json:"expires"`
-	}{Config: base64.StdEncoding.EncodeToString(list), Expires: now + ttl.Milliseconds()}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return
-	}
-	data, err := json.MarshalIndent(file, "", "  ")
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(path, data, 0o600)
 }
 
 // discoverySources names the source that produced a config, for logging.
@@ -293,7 +194,6 @@ func echConfigListFor(ctx context.Context, host string, req Request, proxy func(
 			Str("ech_config", base64.StdEncoding.EncodeToString(found.list)).
 			Msg("Using Encrypted Client Hello for the relay connection")
 		rememberLastGood(found.list)
-		writeDiskCache(host, found.list, ttl)
 	}
 	return found.list
 }
@@ -305,12 +205,9 @@ func echConfigListFor(ctx context.Context, host string, req Request, proxy func(
 func discoverECHConfigList(ctx context.Context, host string, req Request, proxy func(*http.Request) (*url.URL, error), log zerolog.Logger) discovery {
 	var sawAnswer bool
 
-	// 1. Local memory, then disk: cheapest and works when lookups are blocked.
+	// 1. In-process memory: cheapest.
 	if entry, ok := cachedEntry(host); ok {
 		return discovery{list: entry, source: "cache"}
-	}
-	if list, fresh := readDiskCache(host); fresh {
-		return discovery{list: list, source: "disk-cache"}
 	}
 
 	// 2. System resolver.
@@ -346,12 +243,6 @@ func discoverECHConfigList(ctx context.Context, host string, req Request, proxy 
 	if list := lastGood(); len(list) > 0 {
 		log.Debug().Str("host", host).Msg("Reusing an ECH config discovered for another relay host")
 		return discovery{list: list, source: "reused"}
-	}
-
-	// 6. A stale entry from disk beats a plain ClientHello on a network that
-	// blocks this hostname by SNI.
-	if list, _ := readDiskCache(host); len(list) > 0 {
-		return discovery{list: list, source: "disk-cache-stale"}
 	}
 
 	if sawAnswer {
@@ -669,7 +560,6 @@ func rememberAccepted(host string, list []byte) {
 	acceptedMu.Unlock()
 
 	rememberLastGood(list)
-	writeDiskCache(host, list, echCacheMaxTTL)
 }
 
 var (

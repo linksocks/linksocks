@@ -54,6 +54,19 @@ jobs:
             echo EOF
           } >> $GITHUB_OUTPUT
 
+      - name: Remove draft releases whose tags are gone
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release list --limit 100 --json tagName,isDraft \
+            --jq '.[] | select(.isDraft) | .tagName' | while read -r tag; do
+            [ -n "$tag" ] || continue
+            if ! git ls-remote --tags origin "refs/tags/$tag" | grep -q .; then
+              echo "Deleting draft release $tag: its tag no longer exists"
+              gh release delete "$tag" --yes
+            fi
+          done
+
       - name: Create Draft Release
         uses: softprops/action-gh-release@v1
         with:

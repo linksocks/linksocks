@@ -10,12 +10,11 @@ offers **Encrypted Client Hello** by default (`--ech auto`):
 
 1. The client looks for an `ech` parameter in the relay host's HTTPS DNS
    record. Discovery in order: `--ech-config` / `LINKSOCKS_ECH_CONFIG`, the
-   in-process cache, the cache file (`<user config>/linksocks/ech-cache.json`),
-   the system resolver (type-`HTTPS` queries following CNAME chains, re-run to
-   catch chain rotation), DNS-over-HTTPS providers (AliDNS; Cloudflare by IP
-   and by name), the relay's `/api/ech` endpoint, and finally a config already
-   accepted for another relay host. A config a relay accepted is written back
-   to the cache.
+   in-process cache, the system resolver (type-`HTTPS` queries for every name
+   on the CNAME chain, two passes, UDP falling back to TCP), DNS-over-HTTPS
+   providers (AliDNS; Cloudflare by IP and by name), the relay's `/api/ech`
+   endpoint, and finally a config already accepted for another relay host in
+   this process. Nothing is written to disk.
 2. The config is cached with the record's TTL and re-fetched on later
    connections; redirects re-look up the config for each new host, so a
    load-balancer entry point that sends the client to a backend gets ECH for

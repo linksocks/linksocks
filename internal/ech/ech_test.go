@@ -44,15 +44,6 @@ func resetECHState(t *testing.T) {
 	})
 }
 
-func isolateConfigDir(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	previous := echCacheDir
-	echCacheDir = func() string { return dir }
-	t.Cleanup(func() { echCacheDir = previous })
-	return dir
-}
-
 func TestParseMode(t *testing.T) {
 	cases := map[string]string{
 		"":         Auto,
@@ -239,7 +230,6 @@ func TestECHFromDoHAnswerPicksTerminal(t *testing.T) {
 // provider may still carry it.
 func TestDiscoveryFallsThroughProviders(t *testing.T) {
 	resetECHState(t)
-	isolateConfigDir(t)
 
 	configList, key, err := echtest.ConfigAndKey("ech.test")
 	if err != nil {
@@ -283,7 +273,6 @@ func TestDiscoveryFallsThroughProviders(t *testing.T) {
 // same ECH key.
 func TestDiscoveryReusesConfigFromAnotherHost(t *testing.T) {
 	resetECHState(t)
-	isolateConfigDir(t)
 	configList, _, err := echtest.ConfigAndKey("ech.test")
 	if err != nil {
 		t.Fatal(err)
@@ -291,6 +280,9 @@ func TestDiscoveryReusesConfigFromAnotherHost(t *testing.T) {
 	rememberLastGood(configList)
 	restoreProviders(t, nil)
 	restoreSystemLookup(t, func(context.Context, string) ([]byte, time.Duration, bool) { return nil, 0, true })
+	restoreRelayEndpoint(t, func(context.Context, string, func(*http.Request) (*url.URL, error), zerolog.Logger) ([]byte, time.Duration) {
+		return nil, 0
+	})
 
 	found := discoverECHConfigList(context.Background(), "blocked.example.com", Request{EntryHost: "blocked.example.com"}, nil, zerolog.Nop())
 	if string(found.list) != string(configList) || found.source != "reused" {
@@ -298,31 +290,8 @@ func TestDiscoveryReusesConfigFromAnotherHost(t *testing.T) {
 	}
 }
 
-// A config discovered once is written to disk and used when every lookup fails
-// later, which is what happens on networks that filter DNS and reset SNI.
-func TestDiscoveryUsesDiskCacheWhenLookupsFail(t *testing.T) {
-	resetECHState(t)
-	dir := isolateConfigDir(t)
-	configList, _, err := echtest.ConfigAndKey("ech.test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeDiskCache("relay.example.com", configList, time.Hour)
-	if _, err := os.Stat(filepath.Join(dir, "ech-cache.json")); err != nil {
-		t.Fatalf("cache file was not written: %v", err)
-	}
-	restoreProviders(t, nil)
-	restoreSystemLookup(t, func(context.Context, string) ([]byte, time.Duration, bool) { return nil, 0, false })
-
-	found := discoverECHConfigList(context.Background(), "relay.example.com", Request{}, nil, zerolog.Nop())
-	if string(found.list) != string(configList) {
-		t.Fatalf("discovery returned %d bytes, want the disk cache", len(found.list))
-	}
-}
-
 func TestDiscoveryCachesPerHost(t *testing.T) {
 	resetECHState(t)
-	isolateConfigDir(t)
 	configList, _, err := echtest.ConfigAndKey("ech.test")
 	if err != nil {
 		t.Fatal(err)
@@ -348,7 +317,6 @@ func TestDiscoveryCachesPerHost(t *testing.T) {
 // redirect hop reachable on networks that reset unknown hostnames by SNI.
 func TestDiscoveryUsesRelayEndpoint(t *testing.T) {
 	resetECHState(t)
-	isolateConfigDir(t)
 	configList, _, err := echtest.ConfigAndKey("ech.test")
 	if err != nil {
 		t.Fatal(err)
@@ -429,7 +397,6 @@ func TestConfigUsesPinnedList(t *testing.T) {
 
 func TestECHHandshakeAgainstLocalServer(t *testing.T) {
 	resetECHState(t)
-	isolateConfigDir(t)
 	const publicName = "ech.test"
 	configList, key, err := echtest.ConfigAndKey(publicName)
 	if err != nil {
@@ -462,7 +429,6 @@ func TestECHHandshakeAgainstLocalServer(t *testing.T) {
 // *tls.ECHRejectionError so the caller can retry without ECH.
 func TestECHRejectionIsReported(t *testing.T) {
 	resetECHState(t)
-	isolateConfigDir(t)
 	configList, _, err := echtest.ConfigAndKey("ech.test")
 	if err != nil {
 		t.Fatal(err)
