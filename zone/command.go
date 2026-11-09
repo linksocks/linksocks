@@ -4,6 +4,7 @@ package zone
 
 import (
 	"fmt"
+	"github.com/rs/zerolog"
 	"os"
 	"os/signal"
 	"strings"
@@ -23,6 +24,10 @@ func NewCommand() *cobra.Command {
 	cmd.PersistentFlags().StringVarP(&opt.url, "url", "u", "https://l.zetx.tech", "Zone coordinator URL")
 	cmd.PersistentFlags().StringVar(&opt.identity, "identity", "", "Machine identity key file (default: user config directory)")
 	cmd.PersistentFlags().BoolVarP(&opt.noProxy, "no-env-proxy", "E", false, "Connect without environment proxy settings")
+	cmd.PersistentFlags().StringVar(&opt.ech, "ech", "auto", "Encrypted Client Hello for the coordinator connection (auto|off)")
+
+	// Warnings (for example a rejected ECH offer) go to the command's output.
+	opt.logger = zerolog.New(cmd.OutOrStdout()).Level(zerolog.WarnLevel)
 	join := &cobra.Command{Use: "join <zone-id>", Short: "Connect this machine to a zone", Args: cobra.ExactArgs(1)}
 	join.Flags().StringVar(&opt.name, "name", "", "Machine name (default: hostname)")
 	join.Flags().StringVar(&opt.iface, "interface", "", "TAP interface name for --vlan (default: lz0)")

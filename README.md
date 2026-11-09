@@ -35,6 +35,7 @@ Proxy channels are end-to-end encrypted (protocol generation 2): the provider an
 8. Command-line usage, API server, and library integration.
 9. Serverless relay server supported by Cloudflare Worker.
 10. Zone networks with virtual IPv4 addresses: a local SOCKS5 proxy by default, or an L2 TAP interface on Linux with `--vlan`.
+11. Encrypted Client Hello by default: relay connections look up the relay host's ECH config and hide the target hostname from the TLS ClientHello.
 
 ## Potential Applications
 

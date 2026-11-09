@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/linksocks/linksocks/internal/echtest"
 	"github.com/rs/zerolog"
 )
 
@@ -35,8 +36,9 @@ func TestWebSocketDialFollowsRelayRedirect(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, err := dialWebSocketFollowingRedirects(ctx, websocket.DefaultDialer,
-		"ws"+strings.TrimPrefix(entry.URL, "http")+"/socket?token=abc&web=1", zerolog.Nop())
+	conn, err := dialRelayWebSocket(ctx,
+		"ws"+strings.TrimPrefix(entry.URL, "http")+"/socket?token=abc&web=1",
+		relayDialOptions{Logger: zerolog.Nop()})
 	if err != nil {
 		t.Fatalf("dial through redirect: %v", err)
 	}
@@ -61,9 +63,66 @@ func TestWebSocketDialReportsRedirectLoop(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := dialWebSocketFollowingRedirects(ctx, websocket.DefaultDialer,
-		"ws"+strings.TrimPrefix(server.URL, "http")+"/socket", zerolog.Nop())
+	_, err := dialRelayWebSocket(ctx,
+		"ws"+strings.TrimPrefix(server.URL, "http")+"/socket",
+		relayDialOptions{Logger: zerolog.Nop()})
 	if err == nil || !strings.Contains(err.Error(), "too many redirects") {
 		t.Fatalf("dial error = %v, want too many redirects", err)
+	}
+}
+
+// A relay without ECH support rejects the offer; the dial must fall back to a
+// plain ClientHello so a privacy feature never costs connectivity.
+func TestWebSocketDialFallsBackWhenECHIsRejected(t *testing.T) {
+	upgraded := make(chan bool, 1)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		conn, err := (&websocket.Upgrader{}).Upgrade(response, request, nil)
+		if err != nil {
+			upgraded <- false
+			return
+		}
+		defer conn.Close()
+		upgraded <- true
+	}))
+	defer server.Close()
+
+	configList, _, err := echtest.ConfigAndKey("ech.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := dialRelayWebSocket(ctx, "wss://"+strings.TrimPrefix(server.URL, "https://")+"/socket", relayDialOptions{
+		Insecure:    true,
+		ECHMode:     ECHAuto,
+		echOverride: configList,
+		Logger:      zerolog.Nop(),
+	})
+	if err != nil {
+		t.Fatalf("dial failed although the fallback should have connected: %v", err)
+	}
+	defer conn.Close()
+	select {
+	case ok := <-upgraded:
+		if !ok {
+			t.Fatal("server never saw a successful WebSocket upgrade")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the upgrade")
+	}
+}
+
+// ECH off must not offer ECH at all.
+func TestWebSocketDialECHAutoSkipsPlainWebSocket(t *testing.T) {
+	conn, err := dialRelayWebSocket(context.Background(), "ws://127.0.0.1:1/socket", relayDialOptions{
+		ECHMode: ECHAuto,
+		Logger:  zerolog.Nop(),
+	})
+	if conn != nil {
+		conn.Close()
+	}
+	if err == nil {
+		t.Fatal("dial to a closed port succeeded")
 	}
 }

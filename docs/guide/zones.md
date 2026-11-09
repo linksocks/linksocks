@@ -139,6 +139,7 @@ name and use non-overlapping networks.
 | `--vlan` | Create an L2 TAP interface instead of using proxy mode (Linux, root) |
 | `--interface` | TAP interface name for `--vlan`; default `lz0` |
 | `--no-env-proxy`, `-E` | Ignore environment proxy settings |
+| `--ech` | Encrypted Client Hello for the coordinator connection; default `auto` |
 
 Run these subcommands under `linksocks`. `--url` accepts HTTP(S) and WebSocket
 URLs. Use HTTPS for a remote coordinator. The `--name`, `--socks-port`,

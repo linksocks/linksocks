@@ -30,6 +30,7 @@ LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCK
 7. 支持 SOCKS5 上的 IPv6
 8. 支持 SOCKS5 上的 UDP
 9. Zone 虚拟 IPv4 网络：默认在本机运行 SOCKS5 代理，Linux 下可用 `--vlan` 创建二层 TAP 网卡
+10. 默认启用 Encrypted Client Hello：连接中继时查找中继域名的 ECH 配置，TLS ClientHello 中不再暴露目标主机名
 
 ## 潜在应用场景
 

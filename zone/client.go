@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/linksocks/linksocks/internal/ech"
+	"github.com/rs/zerolog"
 )
 
 type options struct {
@@ -31,6 +33,8 @@ type options struct {
 	socksPortSet bool
 	vlan         bool
 	noProxy      bool
+	ech          string
+	logger       zerolog.Logger
 	out          io.Writer
 }
 
@@ -134,6 +138,17 @@ func connect(ctx context.Context, opt options, identity ed25519.PrivateKey, acti
 	dialer := *websocket.DefaultDialer
 	if opt.noProxy {
 		dialer.Proxy = nil
+	}
+	if u.Scheme == "wss" {
+		echMode := opt.ech
+		if echMode == "" {
+			echMode = ech.Auto
+		}
+		var proxy func(*http.Request) (*url.URL, error)
+		if !opt.noProxy {
+			proxy = http.ProxyFromEnvironment
+		}
+		dialer.TLSClientConfig = ech.Config(ctx, u.Hostname(), false, echMode, proxy, opt.logger, nil)
 	}
 	ws, response, err := dialer.DialContext(ctx, u.String(), nil)
 	if err != nil {

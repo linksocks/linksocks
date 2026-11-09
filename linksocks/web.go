@@ -28,10 +28,13 @@ import (
 
 // WebOption configures the `linksocks web` provider.
 type WebOption struct {
-	URL            string
-	Token          string
-	HostPrefix     string
-	Backends       []string
+	URL        string
+	Token      string
+	HostPrefix string
+	Backends   []string
+	// ECH controls Encrypted Client Hello for the relay connection: ECHAuto
+	// (default) or ECHOff.
+	ECH            string
 	Insecure       bool
 	NoReconnect    bool
 	ReconnectDelay time.Duration
@@ -168,8 +171,11 @@ func runWebOnce(ctx context.Context, opt WebOption, state *webState, token *stri
 		return err
 	}
 
-	dialer := websocket.DefaultDialer
-	ws, err := dialWebSocketFollowingRedirects(ctx, dialer, wsURL, opt.Logger)
+	ws, err := dialRelayWebSocket(ctx, wsURL, relayDialOptions{
+		Insecure: opt.Insecure,
+		ECHMode:  opt.ECH,
+		Logger:   opt.Logger,
+	})
 	if err != nil {
 		return fmt.Errorf("websocket handshake failed: %w", err)
 	}
@@ -940,6 +946,12 @@ func (cli *CLI) runWeb(cmd *cobra.Command, args []string) error {
 	serverURL, _ := cmd.Flags().GetString("url")
 	serverURL = resolveStringFlagEnv(cmd, "url", "LINKSOCKS_URL", serverURL)
 	hostPrefix, _ := cmd.Flags().GetString("domain-prefix")
+	echRaw, _ := cmd.Flags().GetString("ech")
+	echRaw = resolveStringFlagEnv(cmd, "ech", "LINKSOCKS_ECH", echRaw)
+	echMode, err := ParseECHMode(echRaw)
+	if err != nil {
+		return err
+	}
 	locals, _ := cmd.Flags().GetStringArray("local")
 	insecure, _ := cmd.Flags().GetBool("insecure")
 	noReconnect, _ := cmd.Flags().GetBool("no-reconnect")
@@ -985,6 +997,7 @@ func (cli *CLI) runWeb(cmd *cobra.Command, args []string) error {
 		URL:         serverURL,
 		Token:       token,
 		HostPrefix:  hostPrefix,
+		ECH:         echMode,
 		Backends:    backends,
 		Insecure:    insecure,
 		NoReconnect: noReconnect,

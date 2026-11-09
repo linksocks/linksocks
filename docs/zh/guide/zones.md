@@ -113,6 +113,7 @@ UDP 广播、WOL 魔术包、组播和原始以太网帧都能在成员之间传
 | `--vlan` | 不使用代理模式，改为创建二层 TAP 网卡（Linux，需要 root） |
 | `--interface` | `--vlan` 使用的 TAP 网卡名称，默认 `lz0` |
 | `--no-env-proxy`、`-E` | 忽略环境变量中的代理设置 |
+| `--ech` | 连接协调服务时的 Encrypted Client Hello，默认 `auto` |
 
 这些子命令均在 `linksocks` 下运行。`--url` 接受 HTTP(S) 和 WebSocket 地址，
 连接远端协调服务时使用 HTTPS。`--name`、`--socks-port`、`--vlan` 和 `--interface`

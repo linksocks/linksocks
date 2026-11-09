@@ -97,6 +97,7 @@ These three share the same client implementation. The difference is the default 
 | `--threads` | `-T` | `1` | Number of transfer threads |
 | `--upstream-proxy` | `-x` | | Outbound proxy used to reach the WebSocket server. Also `LINKSOCKS_UPSTREAM_PROXY`. |
 | `--no-env-proxy` | `-E` | `false` | Ignore proxy environment variables |
+| `--ech` | | `auto` | Encrypted Client Hello for relay connections: `auto` offers ECH when the relay host publishes an ECH config in its HTTPS DNS record, `off` always sends a plain ClientHello. Also `LINKSOCKS_ECH`. |
 | `--fast-open` | `-f` | `false` | Allow data transfer before the remote side is fully confirmed. Also `LINKSOCKS_FASTOPEN`. |
 | `--protocol-version` | | `v2` | Protocol generation: `v2` (end-to-end encrypted, requires an upgraded relay) or `v1` (legacy plaintext). |
 | `--direct-mode` | | `auto` | `relay-only`, `auto`, or `direct-only` |
@@ -173,6 +174,7 @@ These flags can also be provided as environment variables (handy for Docker / Co
 | `LINKSOCKS_API_KEY` | `--api-key` |
 | `LINKSOCKS_CONNECTOR_AUTONOMY` | `--connector-autonomy` |
 | `LINKSOCKS_UPSTREAM_PROXY` | `--upstream-proxy` |
+| `LINKSOCKS_ECH` | `--ech` |
 | `LINKSOCKS_FASTOPEN` | `--fast-open` |
 
 ## Upstream Proxy Format
