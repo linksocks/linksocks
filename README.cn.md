@@ -10,6 +10,8 @@ LinkSocks 是一个基于 WebSocket 协议的跨网络跨机器 SOCKS 代理实�
 
 LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCKS 代理服务（正向代理模式），或使没有公网 IP 的客户端连接并作为 SOCKS 代理服务器（反向代理模式）。
 
+代理通道端到端加密（协议代 2）：provider 与 connector 协商 Noise XX 会话，目标地址、载荷和对端裁决都在密文内，中继只按 channel ID 转发帧；Zone 数据包在成员之间加密；网站发布沿用旧协议代，因为中继需要读取 HTTP 才能提供服务域名。
+
 ![架构图](https://github.com/linksocks/linksocks/raw/main/images/abstract.svg)
 
 📖 **文档**: https://linksocks-docs.zetx.tech/
@@ -19,14 +21,15 @@ LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCK
 
 ## 特性
 
-1. 支持命令行使用、API 服务器和库集成
-2. 支持正向、反向和中继代理模式
-3. 反向代理支持轮询负载均衡
-4. 混合本地代理端口：同一端口同时支持 SOCKS5 与 HTTP 代理
-5. 本地代理身份验证（SOCKS5 用户名密码与 HTTP Basic）
-6. 支持 SOCKS5 上的 IPv6
-7. 支持 SOCKS5 上的 UDP
-8. Zone 虚拟 IPv4 网络：默认在本机运行 SOCKS5 代理，Linux 下可用 `--vlan` 创建二层 TAP 网卡
+1. 代理通道端到端加密（协议代 2）：provider 与 connector 运行 Noise XX 握手，目标地址与载荷都在密文内，中继只按 channel ID 转发
+2. 支持命令行使用、API 服务器和库集成
+3. 支持正向、反向和中继代理模式
+4. 反向代理支持轮询负载均衡
+5. 混合本地代理端口：同一端口同时支持 SOCKS5 与 HTTP 代理
+6. 本地代理身份验证（SOCKS5 用户名密码与 HTTP Basic）
+7. 支持 SOCKS5 上的 IPv6
+8. 支持 SOCKS5 上的 UDP
+9. Zone 虚拟 IPv4 网络：默认在本机运行 SOCKS5 代理，Linux 下可用 `--vlan` 创建二层 TAP 网卡
 
 ## 潜在应用场景
 

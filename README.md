@@ -14,6 +14,8 @@ Its architecture allows you to hide the proxy server behind a WAF or CDN (like C
 
 Crucially, it supports Serverless Intranet Penetration (compatible with Cloudflare Workers). This allows you to bridge two private networks securely without a dedicated VPS. Since both the user and the internal resource actively connect to the serverless cloud relay, you can access your home or office network without a public IP or opening any risky inbound ports.
 
+Proxy channels are end-to-end encrypted (protocol generation 2): the provider and connector negotiate a Noise XX session, so destination addresses, payloads and peer decisions stay inside the ciphertext, and the relay only forwards frames by channel ID. Zone packets are encrypted between members as well. Site publishing runs on the legacy protocol because the relay reads HTTP to serve the hostname.
+
 ![Main Diagram](https://github.com/linksocks/linksocks/raw/main/images/abstract.svg)
 
 📖 **Documentation**: [https://linksocks.github.io](https://linksocks.github.io)
@@ -23,15 +25,16 @@ Crucially, it supports Serverless Intranet Penetration (compatible with Cloudfla
 
 ## Features
 
-1. Forward, reverse and relay proxy modes.
-2. Round-robin load balancing for reverse proxy.
-3. Hybrid local proxy port: SOCKS5 and HTTP proxy on the same port.
-4. Local proxy authentication (SOCKS5 username/password and HTTP Basic).
-5. IPv6 & UDP over SOCKS5 support.
-6. Robust code driven by comprehensive tests.
-7. Command-line usage, API server, and library integration.
-8. Serverless relay server supported by Cloudflare Worker.
-9. Zone networks with virtual IPv4 addresses: a local SOCKS5 proxy by default, or an L2 TAP interface on Linux with `--vlan`.
+1. End-to-end encrypted proxy channels (protocol generation 2): a Noise XX handshake between provider and connector keeps destinations and payloads inside the ciphertext, and the relay only routes frames by channel ID.
+2. Forward, reverse and relay proxy modes.
+3. Round-robin load balancing for reverse proxy.
+4. Hybrid local proxy port: SOCKS5 and HTTP proxy on the same port.
+5. Local proxy authentication (SOCKS5 username/password and HTTP Basic).
+6. IPv6 & UDP over SOCKS5 support.
+7. Robust code driven by comprehensive tests.
+8. Command-line usage, API server, and library integration.
+9. Serverless relay server supported by Cloudflare Worker.
+10. Zone networks with virtual IPv4 addresses: a local SOCKS5 proxy by default, or an L2 TAP interface on Linux with `--vlan`.
 
 ## Potential Applications
 
