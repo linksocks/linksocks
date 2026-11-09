@@ -30,7 +30,7 @@ import (
 type WebOption struct {
 	URL            string
 	Token          string
-	Host           string
+	HostPrefix     string
 	Backends       []string
 	Insecure       bool
 	NoReconnect    bool
@@ -42,10 +42,11 @@ type WebOption struct {
 }
 
 type webState struct {
-	mu            sync.Mutex
-	host          string
-	expiresAt     time.Time
-	rotateSeconds int
+	mu              sync.Mutex
+	requestedPrefix string
+	currentHost     string
+	expiresAt       time.Time
+	rotateSeconds   int
 }
 
 type webConn struct {
@@ -89,7 +90,27 @@ const (
 	webDefaultReconnects = 3 * time.Second
 )
 
-var errRetryWithoutCustomHost = errors.New("retry without custom host")
+var errRetryWithoutDomainPrefix = errors.New("retry without domain prefix")
+
+// validDomainPrefix reports whether value is a single DNS label that can be
+// composed into "<prefix>.<WEB_ZONE>". Full domains are rejected: the relay
+// owns the zone, and the CLI only lets a provider label its own site.
+func validDomainPrefix(value string) bool {
+	if value == "" || len(value) > 63 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9':
+		case c == '-' && i > 0 && i < len(value)-1:
+		default:
+			return false
+		}
+	}
+	return true
+}
 
 // RunWeb runs a web provider until the context is cancelled.
 func RunWeb(ctx context.Context, opt WebOption) error {
@@ -102,8 +123,13 @@ func RunWeb(ctx context.Context, opt WebOption) error {
 	if opt.Token == "" {
 		opt.Token = "anonymous"
 	}
+	prefix := strings.ToLower(strings.TrimSpace(opt.HostPrefix))
+	if prefix != "" && !validDomainPrefix(prefix) {
+		return fmt.Errorf("invalid domain prefix %q: use a single DNS label such as \"blog\", not a full domain", opt.HostPrefix)
+	}
+	opt.HostPrefix = prefix
 
-	state := &webState{host: strings.TrimSpace(opt.Host)}
+	state := &webState{requestedPrefix: opt.HostPrefix}
 	token := opt.Token
 	delay := opt.ReconnectDelay
 
@@ -173,11 +199,13 @@ func runWebOnce(ctx context.Context, opt WebOption, state *webState, token *stri
 	}
 
 	state.mu.Lock()
-	host := state.host
+	prefix := state.requestedPrefix
 	state.mu.Unlock()
 
+	// The registration carries the domain prefix, not a hostname: the relay
+	// composes it under its own WEB_ZONE.
 	if err := c.send(WebRegisterMessage{
-		Host:     host,
+		Host:     prefix,
 		Backends: c.backends(),
 		Insecure: opt.Insecure,
 		Label:    "linksocks web",
@@ -316,15 +344,15 @@ func (c *webConn) handleMessage(msg BaseMessage) error {
 	switch m := msg.(type) {
 	case WebRegisterResponseMessage:
 		if !m.Success {
-			if strings.Contains(m.Error, "Custom hostnames") && c.opt.Host != "" {
+			if strings.Contains(m.Error, "Custom hostnames") && c.opt.HostPrefix != "" {
 				c.state.mu.Lock()
-				c.state.host = ""
+				c.state.requestedPrefix = ""
 				c.state.mu.Unlock()
-				return errRetryWithoutCustomHost
+				return errRetryWithoutDomainPrefix
 			}
 			if strings.Contains(strings.ToLower(m.Error), "expired") {
 				c.state.mu.Lock()
-				c.state.host = ""
+				c.state.requestedPrefix = ""
 				c.state.mu.Unlock()
 			}
 			return fmt.Errorf("web registration failed: %s", m.Error)
@@ -335,7 +363,7 @@ func (c *webConn) handleMessage(msg BaseMessage) error {
 			expires = time.UnixMilli(m.ExpiresAt)
 		}
 		c.state.mu.Lock()
-		c.state.host = m.Host
+		c.state.currentHost = m.Host
 		c.state.expiresAt = expires
 		c.state.rotateSeconds = m.RotateSeconds
 		c.state.mu.Unlock()
@@ -384,8 +412,8 @@ func (c *webConn) handleMessage(msg BaseMessage) error {
 			expires = time.UnixMilli(m.ExpiresAt)
 		}
 		c.state.mu.Lock()
-		oldHost := c.state.host
-		c.state.host = m.Host
+		oldHost := c.state.currentHost
+		c.state.currentHost = m.Host
 		c.state.expiresAt = expires
 		c.state.rotateSeconds = m.RotateSeconds
 		c.state.mu.Unlock()
@@ -911,7 +939,7 @@ func (cli *CLI) runWeb(cmd *cobra.Command, args []string) error {
 	token = resolveStringFlagEnv(cmd, "token", "LINKSOCKS_TOKEN", token)
 	serverURL, _ := cmd.Flags().GetString("url")
 	serverURL = resolveStringFlagEnv(cmd, "url", "LINKSOCKS_URL", serverURL)
-	host, _ := cmd.Flags().GetString("domain")
+	hostPrefix, _ := cmd.Flags().GetString("domain-prefix")
 	locals, _ := cmd.Flags().GetStringArray("local")
 	insecure, _ := cmd.Flags().GetBool("insecure")
 	noReconnect, _ := cmd.Flags().GetBool("no-reconnect")
@@ -949,14 +977,14 @@ func (cli *CLI) runWeb(cmd *cobra.Command, args []string) error {
 	logger.Info().
 		Str("server", serverURL).
 		Strs("backends", backends).
-		Str("domain", host).
+		Str("domain_prefix", hostPrefix).
 		Bool("insecure", insecure).
 		Msg("Starting LinkSocks web provider")
 
 	return RunWeb(ctx, WebOption{
 		URL:         serverURL,
 		Token:       token,
-		Host:        host,
+		HostPrefix:  hostPrefix,
 		Backends:    backends,
 		Insecure:    insecure,
 		NoReconnect: noReconnect,

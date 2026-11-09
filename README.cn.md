@@ -110,79 +110,57 @@ linksocks connector -t my_connector_token -u ws://localhost:8765 -p 1180
 WebSocket 隧道，源站始终位于 NAT 之后，无需公网 IP 或入站端口。
 
 ```bash
-# 匿名临时域名（服务端 WEB_ZONE=example.com）
-linksocks web -u wss://linksocks.example.com -l http://127.0.0.1:8080
+# 匿名临时域名（公共中继）
+linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
 
-# 使用账号令牌发布固定域名，并配置两个本地源站
-linksocks web -u wss://linksocks.example.com -t ls_xxx \
-  --domain blog.example.com \
+# 使用账号令牌发布自定义域名前缀，并配置两个本地源站
+linksocks web -u wss://l.zetx.tech -t ls_xxx \
+  --domain-prefix blog \
   -l http://127.0.0.1:8080 -l http://127.0.0.1:8081
 ```
 
-参数概览：`-t/--token`、`-u/--url`、`-l/--local`（可重复）、`--domain`、
+参数概览：`-t/--token`、`-u/--url`、`-l/--local`（可重复）、`-p/--domain-prefix`、
 `--insecure`（跳过 https 源站证书校验）、`-R/--no-reconnect`、`-d/--debug`。
 
-`--domain` 使用的是账号的**永久域名授权**，需要在 linksocks.js 管理后台为对应账号
-开启。授权后该域名不轮换也不过期，Provider 在场就一直有效；没有授权的账号请求
-`--domain` 会被服务端拒绝。服务端开启强制临时域名（`forceTemporaryHost`）时，
-未获授权的账号即使指定 `--domain` 也会被改写成随机域名，日志里会给出新 URL。
-
-#### 实测示例
-
-先在本地起一个网页服务，再通过公共中继发布，最后从公网访问：
-
-```bash
-$ python3 -m http.server 8080 --bind 127.0.0.1
-
-$ linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
-2026-11-02T16:41:25+08:00 INF Starting LinkSocks web provider backends=["http://127.0.0.1:8080"] domain= insecure=false server=wss://l.zetx.tech
-2026-11-02T16:41:28+08:00 INF Welcome to LinkSocks.js relay server. This server is running in edge: AMS (Amsterdam, Netherlands), relay: KIX (Osaka, Japan). Your connection comes from CN (<client-ip>). After you connected, this relay group has 1 provider and 0 connectors.
-2026-11-02T16:41:29+08:00 INF Web site published backends=1 expires=2026-11-02T22:41:28+08:00 host=ugxzfihx.team1.cc.cd temporary=true url=https://ugxzfihx.team1.cc.cd
-2026-11-02T16:41:29+08:00 INF Temporary URL https://ugxzfihx.team1.cc.cd expires at 2026-11-02T22:41:28+08:00; it will rotate automatically
-```
-
-中继分配了 `https://ugxzfihx.team1.cc.cd`，访问该地址的请求会转发到本地源站：
-
-```bash
-$ curl -sS https://ugxzfihx.team1.cc.cd/
-<!doctype html>
-<html><head><title>LinkSocks demo site</title></head>
-<body><h1>Hello from a local origin</h1><p id="marker">linksocks-web-demo-20261102</p><script src="/assets/app.js"></script></body></html>
-
-$ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/assets/app.js
-200
-
-$ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/not-found
-404
-```
-
-终端保持运行时隧道一直有效，`Ctrl+C` 结束。临时域名按服务端配置的临时网址有效期
-过期（默认 6 小时），Provider 在线期间域名会自动轮换。
+`--domain-prefix blog` 会把站点发布到 `blog.<WEB_ZONE>`：域名由中继选择，Provider
+无法自行指定域名。永久域名授权、轮换规则和强制临时域名模式见
+[网站发布指南](https://linksocks.github.io/zh/guide/quick-start)，指南里也有公共中继的实测过程。
 
 服务端（Cloudflare Worker、D1 数据库、管理后台与配额）说明见 linksocks.js 仓库。
 
 ### Zone 虚拟网络
 
-Zone 是一组机器共享的虚拟 IPv4 网络。打开 linksocks.js 网站的 `/zones` 页面，
-即可查看成员并复制加入命令。加入无需账号；登录用户可以创建 Zone、删除自己的
-Zone，管理员可以管理全部 Zone。新建 Zone 默认为私有，只有拿到 Zone ID 的机器
-才能加入。公开 Zone 仅管理员可以创建，会出现在网站的 **Public zones** 视图和
-`linksocks zone list` 中。
+Zone 把多台机器连成一个虚拟 IPv4 网络：每台机器获得自己的地址，成员之间可以互相
+访问 TCP 和 UDP 服务，流量端到端加密。先在网站的 `/zones` 页面创建 Zone，再在每台
+机器上加入；加入无需账号：
 
-默认加入不需要特殊权限：`linksocks zone join <id>` 会在本机 `127.0.0.1:1080`
-启动 SOCKS5 代理，通过虚拟 IP 或成员名访问成员的 TCP 和 UDP 服务。Linux 下可用
-`--vlan`（需要 root）创建二层 TAP 网卡，支持 ARP、ICMP、广播、组播和 WOL。
+```bash
+# 机器 A
+linksocks zone join <zone-id>
 
-每台机器保留本地 Ed25519 身份。异常掉线后虚拟地址保留 24 小时，Ctrl+C 或
-`zone leave` 则立即释放。流量经 Worker 中继端到端加密传输。Zone 所有者和
-管理员可以设置欢迎语和防火墙规则（最多 64 条有序规则，含默认策略），并踢出
-或移除成员。
+# 机器 B
+linksocks zone join <zone-id>
+```
 
-平台要求、身份密钥、多网卡和真实 Linux 实测见
-[Zone 使用指南](https://linksocks.github.io/zh/guide/zones)。Zone 没有 Python 库 API。
+每台机器会打印分配到的地址，并在本机 `127.0.0.1:1080` 启动 SOCKS5 代理；之后可以
+用虚拟地址或成员名访问其他成员：
 
-自行部署需要 Worker 的 `DB` 绑定、指向 SQLite 存储 `Zone` Durable Object 的
-`ZONE` 绑定，以及 D1 迁移 `0005_zones.sql` 与 `0006_zone_visibility.sql`。详见
+```bash
+curl --socks5-hostname 127.0.0.1:1080 http://machine-b:8080
+```
+
+`zone join` 默认使用公共协调服务 `https://l.zetx.tech`，可用 `-u` 指定其他地址。
+Linux 下 `--vlan`（需要 root）会改用二层 TAP 网卡加入，额外支持 ARP、ICMP、广播、
+组播和 WOL。`linksocks zone leave` 立即释放地址，`linksocks zone list` 列出公开
+Zone。
+
+新建 Zone 默认为私有，只有拿到 Zone ID 的机器才能加入。所有者和管理员可以在同一个
+`/zones` 页面管理成员、防火墙规则、欢迎语和踢人。平台要求、身份密钥等细节和真实
+Linux 实测见 [Zone 使用指南](https://linksocks.github.io/zh/guide/zones)。Zone 没有
+Python 库 API。
+
+自行部署需要 Worker 的 `DB` 绑定、指向 SQLite 存储 `Zone` Durable Object 的 `ZONE`
+绑定，以及 D1 迁移 `0005_zones.sql` 与 `0006_zone_visibility.sql`。详见
 [Worker 部署说明](https://github.com/linksocks/linksocks.js/blob/main/README.cn.md#zone-虚拟网络)。
 
 ## 安装

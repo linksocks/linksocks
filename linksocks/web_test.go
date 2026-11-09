@@ -15,6 +15,31 @@ import (
 	"github.com/rs/zerolog"
 )
 
+func TestValidDomainPrefix(t *testing.T) {
+	valid := []string{"blog", "a", "a-b", "my-site-2", strings.Repeat("a", 63)}
+	for _, prefix := range valid {
+		if !validDomainPrefix(prefix) {
+			t.Errorf("validDomainPrefix(%q) = false, want true", prefix)
+		}
+	}
+	invalid := []string{"", "-blog", "blog-", "bad_label", "blog.example.com", strings.Repeat("a", 64), "BLOG"}
+	for _, prefix := range invalid {
+		if validDomainPrefix(prefix) {
+			t.Errorf("validDomainPrefix(%q) = true, want false", prefix)
+		}
+	}
+}
+
+func TestRunWebRejectsFullDomainAsPrefix(t *testing.T) {
+	err := RunWeb(context.Background(), WebOption{
+		HostPrefix: "blog.example.com",
+		Backends:   []string{"http://127.0.0.1:8080"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "single DNS label") {
+		t.Fatalf("RunWeb error = %v, want domain prefix validation error", err)
+	}
+}
+
 func TestRunWebChecksServerVersion(t *testing.T) {
 	tests := []struct {
 		name         string

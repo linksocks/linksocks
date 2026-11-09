@@ -134,92 +134,65 @@ requests travel over the same WebSocket tunnel, so the origin stays behind NAT
 with no inbound ports.
 
 ```bash
-# Anonymous temporary host on a linksocks.js deployment with WEB_ZONE=example.com
-linksocks web -u wss://linksocks.example.com -l http://127.0.0.1:8080
+# Anonymous temporary host on the public relay
+linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
 
-# Account token, custom host and two origins for local load balancing
-linksocks web -u wss://linksocks.example.com -t ls_xxx \
-  --domain blog.example.com \
+# Account token, a domain prefix of your own and two origins for local load balancing
+linksocks web -u wss://l.zetx.tech -t ls_xxx \
+  --domain-prefix blog \
   -l http://127.0.0.1:8080 -l http://127.0.0.1:8081
 ```
 
 Flag summary: `-t/--token`, `-u/--url`, `-l/--local` (repeatable),
-`--domain`, `--insecure` (skip TLS verification for https origins),
+`-p/--domain-prefix`, `--insecure` (skip TLS verification for https origins),
 `-R/--no-reconnect`, `-d/--debug`.
 
-`--domain` spends the account's **permanent hostname grant**, which an
-administrator enables per account in the linksocks.js console. A granted host
-never rotates and never expires, so it stays up as long as its provider does;
-the relay refuses `--domain` from an account without the grant. When the
-deployment turns on forced temporary hostnames (`forceTemporaryHost`), an
-ungranted account is rewritten to a generated host and the log line reports the
-new URL.
-
-#### A real run
-
-Serve a local site, publish it through the public relay, and fetch it from the
-internet:
-
-```bash
-$ python3 -m http.server 8080 --bind 127.0.0.1
-
-$ linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
-2026-11-02T16:41:25+08:00 INF Starting LinkSocks web provider backends=["http://127.0.0.1:8080"] domain= insecure=false server=wss://l.zetx.tech
-2026-11-02T16:41:28+08:00 INF Welcome to LinkSocks.js relay server. This server is running in edge: AMS (Amsterdam, Netherlands), relay: KIX (Osaka, Japan). Your connection comes from CN (<client-ip>). After you connected, this relay group has 1 provider and 0 connectors.
-2026-11-02T16:41:29+08:00 INF Web site published backends=1 expires=2026-11-02T22:41:28+08:00 host=ugxzfihx.team1.cc.cd temporary=true url=https://ugxzfihx.team1.cc.cd
-2026-11-02T16:41:29+08:00 INF Temporary URL https://ugxzfihx.team1.cc.cd expires at 2026-11-02T22:41:28+08:00; it will rotate automatically
-```
-
-The relay assigned `https://ugxzfihx.team1.cc.cd`, and requests to it reach the
-local origin:
-
-```bash
-$ curl -sS https://ugxzfihx.team1.cc.cd/
-<!doctype html>
-<html><head><title>LinkSocks demo site</title></head>
-<body><h1>Hello from a local origin</h1><p id="marker">linksocks-web-demo-20261102</p><script src="/assets/app.js"></script></body></html>
-
-$ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/assets/app.js
-200
-
-$ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/not-found
-404
-```
-
-The tunnel stays open until `Ctrl+C`. The temporary hostname expires after the
-deployment's temporary URL lifetime (6 hours by default) and rotates
-automatically while the provider stays connected.
+`--domain-prefix blog` publishes the site at `blog.<WEB_ZONE>`: the relay picks
+the zone, so a provider never names a domain itself. The prefix stays up as long
+as its provider does; the [web publishing guide](https://linksocks.github.io/guide/quick-start)
+covers the hostname grant, rotation and forced temporary mode, together with a
+real run against the public relay.
 
 The server side (Cloudflare Worker, D1 database, admin console and quotas) is
 documented in the linksocks.js repository.
 
 ### Zone Networks
 
-A zone is a virtual IPv4 network shared by a group of machines. Browse
-`/zones` on a linksocks.js website to view members and copy a join command. No
-account is needed to join; signed-in users create zones and delete their own,
-and administrators manage all zones. New zones are private, and only machines
-given the zone ID can join. Only administrators can create public zones; those
-appear in the website's Public zones view and in `linksocks zone list`.
+A zone connects machines into a virtual IPv4 network: every member gets its own
+address, members reach each other's TCP and UDP services, and traffic between
+them is end-to-end encrypted. Create a zone on the website's `/zones` page,
+then join it from each machine. No account is needed to join:
 
-Joining needs no privileges by default: `linksocks zone join <id>` starts a
-local SOCKS5 proxy on `127.0.0.1:1080` that reaches members by virtual IP or
-name over TCP and UDP. On Linux, `--vlan` (root) creates an L2 TAP interface
-with ARP, ICMP, broadcast, multicast and Wake-on-LAN support.
+```bash
+# Machine A
+linksocks zone join <zone-id>
 
-Each machine keeps a local Ed25519 identity. An abrupt disconnect retains its
-virtual address for 24 hours, while Ctrl+C or `zone leave` releases it
-immediately. Traffic is end-to-end encrypted through the Worker relay. Zone
-owners and administrators can set a welcome message and firewall rules (up to
-64 ordered rules with a default policy) and kick or remove members.
+# Machine B
+linksocks zone join <zone-id>
+```
 
-See the [zone guide](https://linksocks.github.io/guide/zones) for details and a
-verified Linux run. There is no Python library API for zones.
+Each machine prints the address it received and starts a local SOCKS5 proxy on
+`127.0.0.1:1080`; members are then reachable by address or by name:
 
-Self-hosted coordinators need the Worker `DB` binding, the `ZONE` binding to
-the SQLite-backed `Zone` Durable Object, and the D1 migrations
-`0005_zones.sql` and `0006_zone_visibility.sql`. See
-[Worker deployment](https://github.com/linksocks/linksocks.js#zone-networks).
+```bash
+curl --socks5-hostname 127.0.0.1:1080 http://machine-b:8080
+```
+
+`zone join` talks to the public coordinator `https://l.zetx.tech` unless `-u`
+says otherwise. On Linux, `--vlan` (root) joins with an L2 TAP interface
+instead, adding ARP, ICMP, broadcast, multicast and Wake-on-LAN. `linksocks zone
+leave` releases the address at once and `linksocks zone list` shows public
+zones.
+
+New zones are private: only machines given the zone ID can join. Owners and
+administrators manage members, firewall rules, the welcome message and kicking
+on the same `/zones` page. See the [zone guide](https://linksocks.github.io/guide/zones)
+for platform requirements, identity files and a verified Linux run. There is no
+Python API for zones.
+
+Self-hosted coordinators need the Worker `DB` binding, the `ZONE` binding to the
+SQLite-backed `Zone` Durable Object, and the D1 migrations `0005_zones.sql` and
+`0006_zone_visibility.sql`; see [Worker deployment](https://github.com/linksocks/linksocks.js#zone-networks).
 
 ## Installation
 

@@ -19,8 +19,10 @@ from ._base import (
 class Web:
     """Publish a local HTTP(S) site through a LinkSocks.js web relay.
 
-    The relay returns a temporary hostname under its ``WEB_ZONE`` (or the
-    provider's custom ``domain``) and forwards requests to ``backends``.
+    The relay returns a hostname under its ``WEB_ZONE`` and forwards requests
+    to ``backends``. Pass ``domain_prefix`` to publish under a fixed label of
+    your own (for example ``blog`` for ``blog.<WEB_ZONE>``) when the relay
+    grants the account a permanent hostname.
     """
 
     def __init__(
@@ -29,7 +31,7 @@ class Web:
         *,
         url: str = "ws://localhost:8765",
         token: str = "",
-        domain: Optional[str] = None,
+        domain_prefix: Optional[str] = None,
         insecure: bool = False,
         no_reconnect: bool = False,
         reconnect_delay: Optional[DurationLike] = None,
@@ -44,7 +46,7 @@ class Web:
         cfg: dict[str, Any] = {
             "url": url,
             "token": token,
-            "host": domain or "",
+            "host_prefix": domain_prefix or "",
             "backends": list(backends),
             "insecure": bool(insecure),
             "no_reconnect": bool(no_reconnect),

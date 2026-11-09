@@ -103,7 +103,7 @@ func (cli *CLI) initCommands() {
 	webCmd.Flags().StringP("token", "t", "", "Provider token from the LinkSocks.js dashboard (default: anonymous)")
 	webCmd.Flags().StringP("url", "u", "ws://localhost:8765", "LinkSocks.js server address")
 	webCmd.Flags().StringArrayP("local", "l", nil, "Local backend URL, repeatable (e.g. http://127.0.0.1:8080)")
-	webCmd.Flags().String("domain", "", "Custom remote hostname under WEB_ZONE")
+	webCmd.Flags().StringP("domain-prefix", "p", "", "Domain prefix for a custom host under the relay's WEB_ZONE (e.g. blog for blog.team1.cc.cd)")
 	webCmd.Flags().Bool("insecure", false, "Skip TLS certificate verification for https backends")
 	webCmd.Flags().BoolP("no-reconnect", "R", false, "Stop when the server disconnects")
 	webCmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")

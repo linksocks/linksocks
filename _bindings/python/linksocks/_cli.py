@@ -281,7 +281,7 @@ def client(
 @click.option("--token", "-t", default=None, help="Provider token from the LinkSocks.js dashboard (env: LINKSOCKS_TOKEN)")
 @click.option("--url", "-u", default="ws://localhost:8765", help="LinkSocks.js server address")
 @click.option("--local", "-l", "locals", multiple=True, required=True, help="Local backend URL, repeatable (e.g. http://127.0.0.1:8080)")
-@click.option("--domain", default=None, help="Custom remote hostname under WEB_ZONE")
+@click.option("--domain-prefix", "-p", default=None, help="Domain prefix for a custom host under the relay's WEB_ZONE (e.g. blog)")
 @click.option("--insecure", is_flag=True, default=False, help="Skip TLS certificate verification for https backends")
 @click.option("--no-reconnect", "-R", is_flag=True, default=False, help="Stop when the server disconnects")
 @click.option("--debug", "-d", count=True, help="Debug logging (-d for debug, -dd for trace)")
@@ -289,7 +289,7 @@ def web(
     token: Optional[str],
     url: str,
     locals: tuple,
-    domain: Optional[str],
+    domain_prefix: Optional[str],
     insecure: bool,
     no_reconnect: bool,
     debug: int,
@@ -313,7 +313,7 @@ def web(
             list(locals),
             url=url,
             token=actual_token or "",
-            domain=domain,
+            domain_prefix=domain_prefix,
             insecure=insecure,
             no_reconnect=no_reconnect,
         )

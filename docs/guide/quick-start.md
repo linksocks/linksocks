@@ -165,18 +165,23 @@ over the WebSocket tunnel, so the origin needs no public IP or inbound port.
 # Temporary hostname under the relay's WEB_ZONE
 linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
 
-# Dashboard token, fixed hostname and two local origins
+# Dashboard token, a domain prefix of your own and two local origins
 linksocks web -u wss://l.zetx.tech -t ls_xxx \
-  --domain blog.example.com \
+  --domain-prefix blog \
   -l http://127.0.0.1:8080 -l http://127.0.0.1:8081
 ```
 
-Flags: `-t/--token`, `-u/--url`, `-l/--local` (repeatable), `--domain`,
+Flags: `-t/--token`, `-u/--url`, `-l/--local` (repeatable), `-p/--domain-prefix`,
 `--insecure`, `-R/--no-reconnect`, `-d/--debug`.
 
-A fixed `--domain` needs the relay operator's hostname grant: without it the
-relay refuses the requested hostname, and with forced temporary hostnames
-enabled it rewrites the site to a generated one.
+`--domain-prefix blog` publishes the site at `blog.<WEB_ZONE>`; the relay picks
+the zone, so a provider never names a domain itself. The prefix requires the
+account's **permanent hostname grant**, which an administrator enables per
+account in the linksocks.js console. A granted prefix never rotates and never
+expires, so the site stays up as long as its provider does; the relay refuses a
+prefix from an account without the grant. When the deployment forces temporary
+hostnames (`forceTemporaryHost`), an ungranted provider is rewritten to a
+generated host and the log line reports the new URL.
 
 A real run against the public relay:
 
@@ -184,20 +189,20 @@ A real run against the public relay:
 $ python3 -m http.server 8080 --bind 127.0.0.1
 
 $ linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
-2026-11-02T16:41:25+08:00 INF Starting LinkSocks web provider backends=["http://127.0.0.1:8080"] domain= insecure=false server=wss://l.zetx.tech
-2026-11-02T16:41:28+08:00 INF Welcome to LinkSocks.js relay server. This server is running in edge: AMS (Amsterdam, Netherlands), relay: KIX (Osaka, Japan). Your connection comes from CN (<client-ip>). After you connected, this relay group has 1 provider and 0 connectors.
-2026-11-02T16:41:29+08:00 INF Web site published backends=1 expires=2026-11-02T22:41:28+08:00 host=ugxzfihx.team1.cc.cd temporary=true url=https://ugxzfihx.team1.cc.cd
-2026-11-02T16:41:29+08:00 INF Temporary URL https://ugxzfihx.team1.cc.cd expires at 2026-11-02T22:41:28+08:00; it will rotate automatically
+2026-11-09T13:27:15+08:00 INF Starting LinkSocks web provider backends=["http://127.0.0.1:8080"] domain_prefix= insecure=false server=wss://l.zetx.tech
+2026-11-09T13:27:23+08:00 INF Welcome to LinkSocks.js relay server. This server is running in edge: FRA (Frankfurt, Germany), relay: KIX (Osaka, Japan). Your connection comes from CN (<client-ip>). After you connected, this relay group has 1 provider and 0 connectors.
+2026-11-09T13:27:25+08:00 INF Web site published backends=1 expires=2026-11-09T19:27:24+08:00 host=2prxq5bk.team1.cc.cd temporary=true url=https://2prxq5bk.team1.cc.cd
+2026-11-09T13:27:25+08:00 INF Temporary URL https://2prxq5bk.team1.cc.cd expires at 2026-11-09T19:27:24+08:00; it will rotate automatically
 
-$ curl -sS https://ugxzfihx.team1.cc.cd/
+$ curl -sS https://2prxq5bk.team1.cc.cd/
 <!doctype html>
 <html><head><title>LinkSocks demo site</title></head>
-<body><h1>Hello from a local origin</h1><p id="marker">linksocks-web-demo-20261102</p><script src="/assets/app.js"></script></body></html>
+<body><h1>Hello from a local origin</h1><p id="marker">linksocks-web-demo-20261109</p><script src="/assets/app.js"></script></body></html>
 
-$ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/assets/app.js
+$ curl -sS -o /dev/null -w '%{http_code}\n' https://2prxq5bk.team1.cc.cd/assets/app.js
 200
 
-$ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/not-found
+$ curl -sS -o /dev/null -w '%{http_code}\n' https://2prxq5bk.team1.cc.cd/not-found
 404
 ```
 

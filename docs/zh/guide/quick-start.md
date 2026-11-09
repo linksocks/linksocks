@@ -166,17 +166,20 @@ WebSocket 隧道，源站无需公网 IP 或入站端口。
 # 中继 WEB_ZONE 下的临时域名
 linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
 
-# 使用控制台 token 发布固定域名，并配置两个本地源站
+# 使用控制台 token 发布自定义域名前缀，并配置两个本地源站
 linksocks web -u wss://l.zetx.tech -t ls_xxx \
-  --domain blog.example.com \
+  --domain-prefix blog \
   -l http://127.0.0.1:8080 -l http://127.0.0.1:8081
 ```
 
-参数：`-t/--token`、`-u/--url`、`-l/--local`（可重复）、`--domain`、
+参数：`-t/--token`、`-u/--url`、`-l/--local`（可重复）、`-p/--domain-prefix`、
 `--insecure`、`-R/--no-reconnect`、`-d/--debug`。
 
-固定域名 `--domain` 需要中继方授权：没有授权时中继会拒绝该域名；开启强制临时域名后
-会改写成随机生成的域名。
+`--domain-prefix blog` 会把站点发布到 `blog.<WEB_ZONE>`：域名由中继选择，Provider
+无法自行指定域名。该前缀需要账号的**永久域名授权**，需要在 linksocks.js 管理后台为
+对应账号开启。授权后前缀不轮换也不过期，Provider 在场就一直有效；没有授权的账号
+请求前缀会被服务端拒绝。服务端开启强制临时域名（`forceTemporaryHost`）时，未获
+授权的 Provider 会被改写成随机域名，日志里会给出新 URL。
 
 通过公共中继实测：
 
@@ -184,20 +187,20 @@ linksocks web -u wss://l.zetx.tech -t ls_xxx \
 $ python3 -m http.server 8080 --bind 127.0.0.1
 
 $ linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
-2026-11-02T16:41:25+08:00 INF Starting LinkSocks web provider backends=["http://127.0.0.1:8080"] domain= insecure=false server=wss://l.zetx.tech
-2026-11-02T16:41:28+08:00 INF Welcome to LinkSocks.js relay server. This server is running in edge: AMS (Amsterdam, Netherlands), relay: KIX (Osaka, Japan). Your connection comes from CN (<client-ip>). After you connected, this relay group has 1 provider and 0 connectors.
-2026-11-02T16:41:29+08:00 INF Web site published backends=1 expires=2026-11-02T22:41:28+08:00 host=ugxzfihx.team1.cc.cd temporary=true url=https://ugxzfihx.team1.cc.cd
-2026-11-02T16:41:29+08:00 INF Temporary URL https://ugxzfihx.team1.cc.cd expires at 2026-11-02T22:41:28+08:00; it will rotate automatically
+2026-11-09T13:27:15+08:00 INF Starting LinkSocks web provider backends=["http://127.0.0.1:8080"] domain_prefix= insecure=false server=wss://l.zetx.tech
+2026-11-09T13:27:23+08:00 INF Welcome to LinkSocks.js relay server. This server is running in edge: FRA (Frankfurt, Germany), relay: KIX (Osaka, Japan). Your connection comes from CN (<client-ip>). After you connected, this relay group has 1 provider and 0 connectors.
+2026-11-09T13:27:25+08:00 INF Web site published backends=1 expires=2026-11-09T19:27:24+08:00 host=2prxq5bk.team1.cc.cd temporary=true url=https://2prxq5bk.team1.cc.cd
+2026-11-09T13:27:25+08:00 INF Temporary URL https://2prxq5bk.team1.cc.cd expires at 2026-11-09T19:27:24+08:00; it will rotate automatically
 
-$ curl -sS https://ugxzfihx.team1.cc.cd/
+$ curl -sS https://2prxq5bk.team1.cc.cd/
 <!doctype html>
 <html><head><title>LinkSocks demo site</title></head>
-<body><h1>Hello from a local origin</h1><p id="marker">linksocks-web-demo-20261102</p><script src="/assets/app.js"></script></body></html>
+<body><h1>Hello from a local origin</h1><p id="marker">linksocks-web-demo-20261109</p><script src="/assets/app.js"></script></body></html>
 
-$ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/assets/app.js
+$ curl -sS -o /dev/null -w '%{http_code}\n' https://2prxq5bk.team1.cc.cd/assets/app.js
 200
 
-$ curl -sS -o /dev/null -w '%{http_code}\n' https://ugxzfihx.team1.cc.cd/not-found
+$ curl -sS -o /dev/null -w '%{http_code}\n' https://2prxq5bk.team1.cc.cd/not-found
 404
 ```
 

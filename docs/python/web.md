@@ -14,10 +14,10 @@ with Web(["http://127.0.0.1:8080"], url="wss://l.zetx.tech") as site:
     print(f"Published at https://{host}")
 ```
 
-The relay returns a temporary hostname under its `WEB_ZONE`, or the hostname
-passed in `domain`. Several backends are served round-robin. A fixed `domain`
-requires the relay to allow it: an account without the hostname grant is
-refused.
+The relay returns a temporary hostname under its `WEB_ZONE`, or a hostname under
+a prefix passed in `domain_prefix`. Several backends are served round-robin. A
+`domain_prefix` requires the relay to allow it: an account without the hostname
+grant is refused.
 
 ## Constructor
 
@@ -27,7 +27,7 @@ Web(
     *,
     url: str = "ws://localhost:8765",
     token: str = "",
-    domain: Optional[str] = None,
+    domain_prefix: Optional[str] = None,
     insecure: bool = False,
     no_reconnect: bool = False,
     reconnect_delay: Optional[DurationLike] = None,
@@ -40,7 +40,7 @@ Web(
 | `backends` | `list[str]` | Required | Local HTTP(S) origin URLs |
 | `url` | `str` | `"ws://localhost:8765"` | linksocks.js server URL |
 | `token` | `str` | `""` | Dashboard provider token |
-| `domain` | `str \| None` | `None` | Fixed hostname under the relay's `WEB_ZONE` |
+| `domain_prefix` | `str \| None` | `None` | Label of your own under the relay's `WEB_ZONE`, e.g. `blog` for `blog.<WEB_ZONE>` |
 | `insecure` | `bool` | `False` | Skip TLS verification for HTTPS backends |
 | `no_reconnect` | `bool` | `False` | Stop when the relay disconnects |
 | `reconnect_delay` | `DurationLike` | `None` | Delay between reconnect attempts |
@@ -91,7 +91,7 @@ async def main():
     async with Web(
         ["http://127.0.0.1:8080", "http://127.0.0.1:8081"],
         url="wss://l.zetx.tech",
-        domain="blog.example.com",
+        domain_prefix="blog",
     ) as site:
         print(f"Published at https://{site.host}")
         await asyncio.Future()
@@ -112,9 +112,9 @@ The installed `linksocks` command exposes the same provider:
 # Temporary hostname
 linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
 
-# Dashboard token, fixed hostname and two origins
+# Dashboard token, a domain prefix of your own and two origins
 linksocks web -u wss://l.zetx.tech -t ls_xxx \
-  --domain blog.example.com \
+  --domain-prefix blog \
   -l http://127.0.0.1:8080 -l http://127.0.0.1:8081
 ```
 

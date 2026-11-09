@@ -13,8 +13,8 @@ with Web(["http://127.0.0.1:8080"], url="wss://l.zetx.tech") as site:
     print(f"已发布：https://{host}")
 ```
 
-中继会在其 `WEB_ZONE` 下分配临时域名，也可以用 `domain` 指定固定域名。
-传入多个 backend 时按轮询方式转发。固定域名需要中继方授权，未授权的账号会被拒绝。
+中继会在其 `WEB_ZONE` 下分配临时域名，也可以用 `domain_prefix` 指定自定义域名前缀。
+传入多个 backend 时按轮询方式转发。前缀需要中继方授权，未授权的账号会被拒绝。
 
 ## 构造函数
 
@@ -24,7 +24,7 @@ Web(
     *,
     url: str = "ws://localhost:8765",
     token: str = "",
-    domain: Optional[str] = None,
+    domain_prefix: Optional[str] = None,
     insecure: bool = False,
     no_reconnect: bool = False,
     reconnect_delay: Optional[DurationLike] = None,
@@ -37,7 +37,7 @@ Web(
 | `backends` | `list[str]` | 必填 | 本地 HTTP(S) 源站地址 |
 | `url` | `str` | `"ws://localhost:8765"` | linksocks.js 服务地址 |
 | `token` | `str` | `""` | 控制台 Provider token |
-| `domain` | `str \| None` | `None` | 中继 `WEB_ZONE` 下的固定域名 |
+| `domain_prefix` | `str \| None` | `None` | 中继 `WEB_ZONE` 下的自定义前缀，例如 `blog` 对应 `blog.<WEB_ZONE>` |
 | `insecure` | `bool` | `False` | 跳过 HTTPS 源站的证书校验 |
 | `no_reconnect` | `bool` | `False` | 中继断开后停止运行 |
 | `reconnect_delay` | `DurationLike` | `None` | 重连间隔 |
@@ -88,7 +88,7 @@ async def main():
     async with Web(
         ["http://127.0.0.1:8080", "http://127.0.0.1:8081"],
         url="wss://l.zetx.tech",
-        domain="blog.example.com",
+        domain_prefix="blog",
     ) as site:
         print(f"已发布：https://{site.host}")
         await asyncio.Future()
@@ -108,9 +108,9 @@ asyncio.run(main())
 # 临时域名
 linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
 
-# 控制台 token、固定域名和两个源站
+# 控制台 token、自定义域名前缀和两个源站
 linksocks web -u wss://l.zetx.tech -t ls_xxx \
-  --domain blog.example.com \
+  --domain-prefix blog \
   -l http://127.0.0.1:8080 -l http://127.0.0.1:8081
 ```
 
