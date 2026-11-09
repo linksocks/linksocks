@@ -520,3 +520,47 @@ func restoreSystemLookup(t *testing.T, lookup func(context.Context, string) ([]b
 	echSystemLookup = lookup
 	t.Cleanup(func() { echSystemLookup = previous })
 }
+
+// A connection to an IP literal must not run the discovery walk: it would
+// spend the whole budget on a name that cannot carry an HTTPS record.
+func TestConfigSkipsDiscoveryForIPLiterals(t *testing.T) {
+	resetECHState(t)
+	restoreSystemLookup(t, func(context.Context, string) ([]byte, time.Duration, bool) {
+		t.Fatal("discovery ran for an IP literal")
+		return nil, 0, false
+	})
+	cfg := Config(context.Background(), Request{Host: "203.0.113.7", Mode: Auto, Logger: zerolog.Nop()})
+	if Offered(cfg) || cfg.MinVersion != 0 {
+		t.Fatal("an IP literal received ECH settings")
+	}
+	if cfg.ServerName != "203.0.113.7" {
+		t.Fatalf("ServerName = %q", cfg.ServerName)
+	}
+}
+
+// Every source together stays inside the discovery budget, so a network that
+// silently drops DNS, DNS-over-HTTPS and the relay endpoint delays a dial by
+// seconds rather than minutes.
+func TestDiscoveryRespectsBudget(t *testing.T) {
+	resetECHState(t)
+	stubDNSServers(t, []string{"192.0.2.1:53"}, []string{"192.0.2.2:53"}) // TEST-NET, drops everything
+	restoreProviders(t, []dohProvider{{name: "blackhole", baseURL: "http://192.0.2.3/"}})
+	restoreRelayEndpoint(t, func(ctx context.Context, _ string, _ func(*http.Request) (*url.URL, error), _ zerolog.Logger) ([]byte, time.Duration) {
+		// The real lookup honours the request context; so must the stub.
+		select {
+		case <-ctx.Done():
+		case <-time.After(2 * discoveryBudget):
+		}
+		return nil, 0
+	})
+
+	started := time.Now()
+	list := echConfigListFor(context.Background(), "no-config.example", Request{EntryHost: "entry.example"}, nil)
+	elapsed := time.Since(started)
+	if len(list) != 0 {
+		t.Fatalf("discovery returned %d bytes from a black hole", len(list))
+	}
+	if elapsed > discoveryBudget+2*time.Second {
+		t.Fatalf("discovery took %v, want it bounded by %v", elapsed, discoveryBudget)
+	}
+}

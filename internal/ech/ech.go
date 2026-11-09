@@ -114,9 +114,13 @@ var (
 	systemDNSPasses = 2
 	// systemDNSBudget bounds one full plaintext-DNS walk, so a black-holed
 	// resolver cannot delay the dial for long.
-	systemDNSBudget = 12 * time.Second
+	systemDNSBudget = 6 * time.Second
+	// discoveryBudget bounds every source together: a network that silently
+	// drops DNS and DNS-over-HTTPS must not add up to a minute of waiting
+	// before the dial proceeds without ECH.
+	discoveryBudget = 8 * time.Second
 	// dnsQueryTimeout bounds a single query.
-	dnsQueryTimeout = 3 * time.Second
+	dnsQueryTimeout = 2 * time.Second
 	// maxDNSServers caps how many resolvers one walk asks.
 	maxDNSServers = 6
 )
@@ -181,7 +185,9 @@ func echConfigListFor(ctx context.Context, host string, req Request, proxy func(
 	}
 	echCacheMu.Unlock()
 
-	found := discoverECHConfigList(ctx, host, req, proxy, log)
+	discoveryCtx, cancel := context.WithTimeout(ctx, discoveryBudget)
+	defer cancel()
+	found := discoverECHConfigList(discoveryCtx, host, req, proxy, log)
 	ttl := found.ttl
 	if ttl <= 0 {
 		ttl = echCacheMissTTL
@@ -565,6 +571,13 @@ func Config(ctx context.Context, req Request) *tls.Config {
 	log := req.Logger
 	config := &tls.Config{ServerName: host, InsecureSkipVerify: req.Insecure}
 	if req.Mode == Off {
+		return config
+	}
+	if net.ParseIP(host) != nil && len(req.Pinned) == 0 {
+		// A connection to an IP literal carries no hostname, so there is
+		// nothing for ECH to hide and no HTTPS record to look up. A pinned
+		// config still applies, which is how tests drive the handshake against
+		// a local server.
 		return config
 	}
 	list := req.Pinned
