@@ -97,7 +97,8 @@ These three share the same client implementation. The difference is the default 
 | `--threads` | `-T` | `1` | Number of transfer threads |
 | `--upstream-proxy` | `-x` | | Outbound proxy used to reach the WebSocket server. Also `LINKSOCKS_UPSTREAM_PROXY`. |
 | `--no-env-proxy` | `-E` | `false` | Ignore proxy environment variables |
-| `--ech` | | `auto` | Encrypted Client Hello for relay connections: `auto` offers ECH when the relay host publishes an ECH config in its HTTPS DNS record, `off` always sends a plain ClientHello. Also `LINKSOCKS_ECH`. |
+| `--ech` | | `auto` | Encrypted Client Hello for relay connections: `auto` offers ECH when a config can be found, `off` always sends a plain ClientHello. Also `LINKSOCKS_ECH`. |
+| `--ech-config` | | | Pinned ECH config list as base64, or `@file` containing it. Replaces every discovery source. Also `LINKSOCKS_ECH_CONFIG`. |
 | `--fast-open` | `-f` | `false` | Allow data transfer before the remote side is fully confirmed. Also `LINKSOCKS_FASTOPEN`. |
 | `--protocol-version` | | `v2` | Protocol generation: `v2` (end-to-end encrypted, requires an upgraded relay) or `v1` (legacy plaintext). |
 | `--direct-mode` | | `auto` | `relay-only`, `auto`, or `direct-only` |
@@ -175,6 +176,28 @@ These flags can also be provided as environment variables (handy for Docker / Co
 | `LINKSOCKS_CONNECTOR_AUTONOMY` | `--connector-autonomy` |
 | `LINKSOCKS_UPSTREAM_PROXY` | `--upstream-proxy` |
 | `LINKSOCKS_ECH` | `--ech` |
+| `LINKSOCKS_ECH_CONFIG` | `--ech-config` |
+
+### Encrypted Client Hello
+
+With ECH the TLS ClientHello no longer carries the relay hostname, which keeps
+the connection alive on networks that reset specific hostnames by SNI. The
+client finds the config through, in order: `--ech-config`, an in-process cache,
+a cache file under the user config directory (`linksocks/ech-cache.json`), the
+system resolver (following CNAME chains and retrying, because zones rotate
+them), DNS-over-HTTPS providers (AliDNS, and Cloudflare by IP and by name),
+the relay's own `/api/ech` endpoint, and finally a config already accepted for
+another relay host. A config a relay accepted is written back to the cache, so
+the connection keeps working while the network blocks the lookups.
+
+When nothing can be found and the connection is reset before the handshake
+finishes, the client says so. The way out is to pin a config fetched from a
+network that can reach the relay:
+
+```bash
+curl -sS https://l.zetx.tech/api/ech           # {"host":"...","ech":"AEX..."}
+linksocks connector -t token -u wss://l.zetx.tech --ech-config 'AEX...'
+```
 | `LINKSOCKS_FASTOPEN` | `--fast-open` |
 
 ## Upstream Proxy Format

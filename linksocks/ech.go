@@ -17,3 +17,8 @@ const (
 func ParseECHMode(value string) (string, error) {
 	return ech.ParseMode(value)
 }
+
+// ParseECHConfig parses a pinned ECH config list (base64 or @file).
+func ParseECHConfig(value string) ([]byte, error) {
+	return ech.ParseConfigList(value)
+}

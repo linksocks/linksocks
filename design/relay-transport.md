@@ -8,11 +8,14 @@ measured on the way there.
 Every relay connection is a WebSocket over TLS. On top of that the client
 offers **Encrypted Client Hello** by default (`--ech auto`):
 
-1. The client looks up the relay host's HTTPS DNS record for an `ech`
-   parameter — first through the system resolver (a DNS query for type
-   `HTTPS`, following CNAME chains), and if the local resolver does not answer
-   HTTPS queries, through a DNS-over-HTTPS resolver using the same proxy
-   settings as the relay connection.
+1. The client looks for an `ech` parameter in the relay host's HTTPS DNS
+   record. Discovery in order: `--ech-config` / `LINKSOCKS_ECH_CONFIG`, the
+   in-process cache, the cache file (`<user config>/linksocks/ech-cache.json`),
+   the system resolver (type-`HTTPS` queries following CNAME chains, re-run to
+   catch chain rotation), DNS-over-HTTPS providers (AliDNS; Cloudflare by IP
+   and by name), the relay's `/api/ech` endpoint, and finally a config already
+   accepted for another relay host. A config a relay accepted is written back
+   to the cache.
 2. The config is cached with the record's TTL and re-fetched on later
    connections; redirects re-look up the config for each new host, so a
    load-balancer entry point that sends the client to a backend gets ECH for
@@ -30,6 +33,23 @@ DBG Relay TLS handshake finished ech_accepted=true host=l.zetx.tech
 DBG Relay TLS handshake finished ech_accepted=true host=cdn.team1.cc.cd
 INF Authentication successful for reverse proxy
 ```
+
+### Why the relay serves /api/ech
+
+The networks that need ECH most are the ones that also block the lookups: a
+client that cannot reach a DNS-over-HTTPS endpoint and whose resolver hides the
+HTTPS record behind a rotating CNAME chain has no way to learn the config, and
+then the redirect hop gets reset by SNI. The relay itself is reachable on its
+entry hostname, so it resolves its own HTTPS record from Cloudflare's network
+and answers `GET /api/ech` with the config. Measured: the entry point on a
+filtered network answered with a config that the backend accepted
+(`ech_accepted=true` on both hops), and a config from an unrelated zone of the
+same edge was accepted as well, which is why reusing a discovered config is
+safe.
+
+A deployment whose entry point is a separate load balancer should serve the
+same endpoint there; `lb-entry.js` in the linksocks.js repository does that
+without redirecting.
 
 ## Why not QUIC
 

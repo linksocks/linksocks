@@ -34,6 +34,8 @@ type options struct {
 	vlan         bool
 	noProxy      bool
 	ech          string
+	echConfigRaw string
+	echConfig    []byte
 	logger       zerolog.Logger
 	out          io.Writer
 }
@@ -148,7 +150,14 @@ func connect(ctx context.Context, opt options, identity ed25519.PrivateKey, acti
 		if !opt.noProxy {
 			proxy = http.ProxyFromEnvironment
 		}
-		dialer.TLSClientConfig = ech.Config(ctx, u.Hostname(), false, echMode, proxy, opt.logger, nil)
+		dialer.TLSClientConfig = ech.Config(ctx, ech.Request{
+			Host:      u.Hostname(),
+			EntryHost: u.Hostname(),
+			Mode:      echMode,
+			Proxy:     proxy,
+			Pinned:    opt.echConfig,
+			Logger:    opt.logger,
+		})
 	}
 	ws, response, err := dialer.DialContext(ctx, u.String(), nil)
 	if err != nil {

@@ -91,7 +91,8 @@
 | `--threads` | `-T` | `1` | 数据传输线程数 |
 | `--upstream-proxy` | `-x` | | 连接 WebSocket 服务端时使用的上游代理。也可用 `LINKSOCKS_UPSTREAM_PROXY` |
 | `--no-env-proxy` | `-E` | `false` | 忽略环境变量中的代理配置 |
-| `--ech` | | `auto` | 连接中继时是否使用 Encrypted Client Hello：`auto` 会在中继域名的 HTTPS DNS 记录发布 ECH 配置时启用，`off` 始终发送明文 ClientHello。也可用 `LINKSOCKS_ECH` |
+| `--ech` | | `auto` | 连接中继时是否使用 Encrypted Client Hello：`auto` 在能找到配置时启用，`off` 始终发送明文 ClientHello。也可用 `LINKSOCKS_ECH` |
+| `--ech-config` | | | 固定的 ECH 配置（base64，或用 `@文件`），指定后不再进行任何自动查找。也可用 `LINKSOCKS_ECH_CONFIG` |
 | `--fast-open` | `-f` | `false` | 远端尚未完全确认前即允许开始传数据。也可用 `LINKSOCKS_FASTOPEN` |
 | `--protocol-version` | | `v2` | 协议代：`v2` 为端到端加密（需要已升级的转发器），`v1` 为旧版明文协议 |
 | `--direct-mode` | | `auto` | 直连策略：`relay-only`、`auto` 或 `direct-only` |
@@ -169,6 +170,24 @@ linksocks client -t my_token -u ws://localhost:8765 --direct-mode auto
 | `LINKSOCKS_CONNECTOR_AUTONOMY` | `--connector-autonomy` |
 | `LINKSOCKS_UPSTREAM_PROXY` | `--upstream-proxy` |
 | `LINKSOCKS_ECH` | `--ech` |
+| `LINKSOCKS_ECH_CONFIG` | `--ech-config` |
+
+### Encrypted Client Hello
+
+启用 ECH 后 TLS ClientHello 不再携带中继域名，因此按 SNI 重置特定域名的网络不会
+切断连接。客户端按以下顺序查找配置：`--ech-config`、进程内缓存、用户配置目录下的
+缓存文件（`linksocks/ech-cache.json`）、系统解析器（跟随 CNAME 链并重试，因为域名链
+会轮换）、DNS-over-HTTPS（阿里 DNS、Cloudflare 的 IP 与域名端点）、中继自身的
+`/api/ech` 端点，最后是中继已接受过的其他域名配置。中继接受过的配置会写回缓存，
+因此在网络封锁查询期间连接依然可用。
+
+如果所有来源都拿不到配置、且连接在握手完成前被重置，客户端会明确提示。解决办法是
+在可访问中继的网络里取出配置并固定：
+
+```bash
+curl -sS https://l.zetx.tech/api/ech           # {"host":"...","ech":"AEX..."}
+linksocks connector -t token -u wss://l.zetx.tech --ech-config 'AEX...'
+```
 | `LINKSOCKS_FASTOPEN` | `--fast-open` |
 
 ## 上游代理 URL 格式

@@ -34,7 +34,9 @@ type WebOption struct {
 	Backends   []string
 	// ECH controls Encrypted Client Hello for the relay connection: ECHAuto
 	// (default) or ECHOff.
-	ECH            string
+	ECH string
+	// ECHConfig pins the ECH config list, replacing DNS discovery.
+	ECHConfig      []byte
 	Insecure       bool
 	NoReconnect    bool
 	ReconnectDelay time.Duration
@@ -172,9 +174,10 @@ func runWebOnce(ctx context.Context, opt WebOption, state *webState, token *stri
 	}
 
 	ws, err := dialRelayWebSocket(ctx, wsURL, relayDialOptions{
-		Insecure: opt.Insecure,
-		ECHMode:  opt.ECH,
-		Logger:   opt.Logger,
+		Insecure:  opt.Insecure,
+		ECHMode:   opt.ECH,
+		ECHConfig: opt.ECHConfig,
+		Logger:    opt.Logger,
 	})
 	if err != nil {
 		return fmt.Errorf("websocket handshake failed: %w", err)
@@ -952,6 +955,12 @@ func (cli *CLI) runWeb(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	echConfigRaw, _ := cmd.Flags().GetString("ech-config")
+	echConfigRaw = resolveStringFlagEnv(cmd, "ech-config", "LINKSOCKS_ECH_CONFIG", echConfigRaw)
+	echConfig, err := ParseECHConfig(echConfigRaw)
+	if err != nil {
+		return err
+	}
 	locals, _ := cmd.Flags().GetStringArray("local")
 	insecure, _ := cmd.Flags().GetBool("insecure")
 	noReconnect, _ := cmd.Flags().GetBool("no-reconnect")
@@ -998,6 +1007,7 @@ func (cli *CLI) runWeb(cmd *cobra.Command, args []string) error {
 		Token:       token,
 		HostPrefix:  hostPrefix,
 		ECH:         echMode,
+		ECHConfig:   echConfig,
 		Backends:    backends,
 		Insecure:    insecure,
 		NoReconnect: noReconnect,

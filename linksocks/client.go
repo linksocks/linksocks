@@ -98,6 +98,7 @@ type LinkSocksClient struct {
 	socksReady      chan struct{}
 	noEnvProxy      bool
 	echMode         string
+	echConfig       []byte
 	numPartners     int
 
 	// protocolVersion selects the protocol generation this client speaks:
@@ -417,6 +418,8 @@ type ClientOption struct {
 	// host publishes an ECH config (ECHAuto, the default) or disables it
 	// (ECHOff).
 	ECH string
+	// ECHConfig pins the ECH config list, replacing DNS discovery.
+	ECHConfig []byte
 
 	// Direct connection options (default auto with STUN discovery)
 	DirectMode       DirectMode
@@ -717,6 +720,13 @@ func (o *ClientOption) WithECH(mode string) *ClientOption {
 	return o
 }
 
+// WithECHConfig pins the ECH config list for relay connections, replacing DNS
+// discovery.
+func (o *ClientOption) WithECHConfig(list []byte) *ClientOption {
+	o.ECHConfig = list
+	return o
+}
+
 func (o *ClientOption) WithDirectMode(mode DirectMode) *ClientOption {
 	o.DirectMode = mode
 	return o
@@ -864,6 +874,7 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 		connectorTokens:         make(map[string]struct{}),
 		noEnvProxy:              opt.NoEnvProxy,
 		echMode:                 opt.ECH,
+		echConfig:               opt.ECHConfig,
 		protocolVersion:         clientProtocolVersion(opt),
 		directMode:              clientDirectMode(opt),
 		directDiscovery:         opt.DirectDiscovery,
@@ -2527,6 +2538,7 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 	// host publishes an ECH config.
 	ws, err := dialRelayWebSocket(ctx, wsURLWithParams, relayDialOptions{
 		ECHMode:    c.echMode,
+		ECHConfig:  c.echConfig,
 		NoEnvProxy: c.noEnvProxy,
 		Logger:     c.log,
 	})

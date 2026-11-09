@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/linksocks/linksocks/internal/ech"
 	"github.com/spf13/cobra"
 )
 
@@ -25,6 +26,7 @@ func NewCommand() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opt.identity, "identity", "", "Machine identity key file (default: user config directory)")
 	cmd.PersistentFlags().BoolVarP(&opt.noProxy, "no-env-proxy", "E", false, "Connect without environment proxy settings")
 	cmd.PersistentFlags().StringVar(&opt.ech, "ech", "auto", "Encrypted Client Hello for the coordinator connection (auto|off)")
+	cmd.PersistentFlags().StringVar(&opt.echConfigRaw, "ech-config", "", "Pinned ECH config list for the coordinator connection as base64 (or @file)")
 
 	// Warnings (for example a rejected ECH offer) go to the command's output.
 	opt.logger = zerolog.New(cmd.OutOrStdout()).Level(zerolog.WarnLevel)
@@ -86,6 +88,13 @@ func prepareOptions(opt *options, command *cobra.Command, id string) error {
 	}
 	opt.id = id
 	opt.out = command.OutOrStdout()
+	if opt.echConfigRaw != "" {
+		parsed, err := ech.ParseConfigList(opt.echConfigRaw)
+		if err != nil {
+			return err
+		}
+		opt.echConfig = parsed
+	}
 	if opt.socksPort < 0 || opt.socksPort > 65535 {
 		return fmt.Errorf("SOCKS port must be between 0 and 65535")
 	}

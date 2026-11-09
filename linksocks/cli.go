@@ -105,6 +105,7 @@ func (cli *CLI) initCommands() {
 	webCmd.Flags().StringArrayP("local", "l", nil, "Local backend URL, repeatable (e.g. http://127.0.0.1:8080)")
 	webCmd.Flags().StringP("domain-prefix", "p", "", "Domain prefix for a custom host under the relay's WEB_ZONE (e.g. blog for blog.team1.cc.cd)")
 	webCmd.Flags().String("ech", ECHAuto, "Encrypted Client Hello for the relay connection (auto|off)")
+	webCmd.Flags().String("ech-config", "", "Pinned ECH config list for the relay connection as base64 (or @file); replaces DNS discovery")
 	webCmd.Flags().Bool("insecure", false, "Skip TLS certificate verification for https backends")
 	webCmd.Flags().BoolP("no-reconnect", "R", false, "Stop when the server disconnects")
 	webCmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")
@@ -129,6 +130,7 @@ func (cli *CLI) initCommands() {
 		cmd.Flags().BoolP("fast-open", "f", false, "Assume connection success and allow data transfer immediately")
 		cmd.Flags().BoolP("no-env-proxy", "E", false, "Ignore proxy settings from environment variables when connecting to the websocket server")
 		cmd.Flags().String("ech", ECHAuto, "Encrypted Client Hello for the relay connection (auto|off)")
+		cmd.Flags().String("ech-config", "", "Pinned ECH config list for relay connections as base64 (or @file); replaces DNS discovery")
 		cmd.Flags().String("protocol-version", "v2", "Protocol generation (v2|v1); v2 is end-to-end encrypted and requires an upgraded relay")
 
 		// Direct connection options (default auto with STUN discovery)
@@ -181,7 +183,7 @@ func (cli *CLI) initCommands() {
 	cli.configureCommandHelp(clientCmd, cliHelpConfig{
 		Overview:   "Use client for the local SOCKS endpoint in forward mode. In reverse deployments, client -r acts as the provider that exits through its local network.",
 		KeyFlags:   []string{"token", "url", "reverse", "socks-port", "socks-host"},
-		OtherFlags: []string{"connector-token", "socks-username", "socks-password", "socks-no-wait", "no-reconnect", "retry-auth", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "ech", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "protocol-version", "debug", "help"},
+		OtherFlags: []string{"connector-token", "socks-username", "socks-password", "socks-no-wait", "no-reconnect", "retry-auth", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "ech", "ech-config", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "protocol-version", "debug", "help"},
 		Examples: []string{
 			"# Forward proxy\nlinksocks client -t my_token -u ws://localhost:8765 -p 9870",
 			"# Reverse provider\nlinksocks client -t my_token -u ws://localhost:8765 -r",
@@ -191,7 +193,7 @@ func (cli *CLI) initCommands() {
 	cli.configureCommandHelp(providerCmd, cliHelpConfig{
 		Overview:   "Provider is a shortcut for client -r. Use it when this machine should provide outbound network access for a reverse proxy deployment.",
 		KeyFlags:   []string{"token", "url"},
-		OtherFlags: []string{"connector-token", "no-reconnect", "retry-auth", "fast-open", "upstream-proxy", "no-env-proxy", "ech", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "protocol-version", "threads", "debug", "help"},
+		OtherFlags: []string{"connector-token", "no-reconnect", "retry-auth", "fast-open", "upstream-proxy", "no-env-proxy", "ech", "ech-config", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "protocol-version", "threads", "debug", "help"},
 		Examples: []string{
 			"# Basic provider\nlinksocks provider -t my_token -u ws://localhost:8765",
 			"# Provider with autonomy\nlinksocks provider -t my_token -c my_connector -u ws://localhost:8765",
@@ -200,7 +202,7 @@ func (cli *CLI) initCommands() {
 	cli.configureCommandHelp(connectorCmd, cliHelpConfig{
 		Overview:   "Connector is an alias for client and is commonly used with a connector token to expose a local SOCKS5 port that reaches a reverse provider.",
 		KeyFlags:   []string{"token", "url", "socks-port", "socks-host"},
-		OtherFlags: []string{"socks-username", "socks-password", "socks-no-wait", "no-reconnect", "retry-auth", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "ech", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "protocol-version", "debug", "help"},
+		OtherFlags: []string{"socks-username", "socks-password", "socks-no-wait", "no-reconnect", "retry-auth", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "ech", "ech-config", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "protocol-version", "debug", "help"},
 		Examples: []string{
 			"# Connector side of agent mode\nlinksocks connector -t connector_token -u ws://localhost:8765 -p 1180",
 		},
@@ -429,6 +431,12 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	echConfigRaw, _ := cmd.Flags().GetString("ech-config")
+	echConfigRaw = resolveStringFlagEnv(cmd, "ech-config", "LINKSOCKS_ECH_CONFIG", echConfigRaw)
+	echConfig, err := ParseECHConfig(echConfigRaw)
+	if err != nil {
+		return err
+	}
 
 	protocolVersionRaw, _ := cmd.Flags().GetString("protocol-version")
 	protocolVersion, err := ParseProtocolGeneration(protocolVersionRaw)
@@ -501,6 +509,7 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 		WithThreads(threads).
 		WithNoEnvProxy(noEnvProxy).
 		WithECH(echMode).
+		WithECHConfig(echConfig).
 		WithProtocolVersion(protocolVersion).
 		WithDirectMode(directMode).
 		WithDirectDiscovery(directDiscovery).

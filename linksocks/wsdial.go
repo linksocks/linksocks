@@ -19,9 +19,18 @@ type relayDialOptions struct {
 	Insecure bool
 	// ECHMode is ECHAuto (default) or ECHOff.
 	ECHMode string
-	// echOverride replaces the discovered ECH config list (used to retry with
-	// the configs a server offered, and by tests).
+	// ECHConfig pins the ECH config list (--ech-config / LINKSOCKS_ECH_CONFIG).
+	// It replaces every discovery source.
+	ECHConfig []byte
+	// echOverride replaces the discovered ECH config list; the dial layer sets
+	// it when a server hands out retry configs, and tests use it directly.
 	echOverride []byte
+	// echHint is set by the dial layer when a connection failed without ECH,
+	// so callers can report the likely cause once.
+	echHint *string
+	// entryHost is the host of the relay URL the caller configured; it differs
+	// from the current hop after a redirect.
+	entryHost string
 	// NoEnvProxy ignores proxy settings from the environment.
 	NoEnvProxy bool
 	Logger     zerolog.Logger
@@ -53,7 +62,19 @@ func newRelayDialer(ctx context.Context, rawURL string, opt relayDialOptions) (*
 		if echMode == "" {
 			echMode = ECHAuto
 		}
-		dialer.TLSClientConfig = ech.Config(ctx, parsed.Hostname(), opt.Insecure, echMode, proxy, opt.Logger, opt.echOverride)
+		override := opt.echOverride
+		if override == nil {
+			override = opt.ECHConfig
+		}
+		dialer.TLSClientConfig = ech.Config(ctx, ech.Request{
+			Host:      parsed.Hostname(),
+			EntryHost: opt.entryHost,
+			Insecure:  opt.Insecure,
+			Mode:      echMode,
+			Proxy:     proxy,
+			Pinned:    override,
+			Logger:    opt.Logger,
+		})
 	case "ws", "http":
 		if opt.Insecure {
 			dialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
@@ -76,15 +97,32 @@ func newRelayDialer(ctx context.Context, rawURL string, opt relayDialOptions) (*
 func dialRelayWebSocket(ctx context.Context, rawURL string, opt relayDialOptions) (*websocket.Conn, error) {
 	currentURL := rawURL
 	echRetried := false
+	if opt.entryHost == "" {
+		if parsed, err := url.Parse(rawURL); err == nil {
+			opt.entryHost = parsed.Hostname()
+		}
+	}
 
 	for redirectsLeft := MaxRedirects; redirectsLeft >= 0; redirectsLeft-- {
 		dialer, err := newRelayDialer(ctx, currentURL, opt)
 		if err != nil {
 			return nil, err
 		}
+		offered := ech.Offered(dialer.TLSClientConfig)
 		conn, resp, err := dialer.DialContext(ctx, currentURL, nil)
 		if err == nil {
 			return conn, nil
+		}
+		if !offered && opt.ECHMode != ECHOff && ech.ResetSuspected(err) {
+			// A connection that dies before the handshake completes, on a host
+			// whose ECH config could not be found, is what an SNI-based block
+			// looks like. Say so once, with the way out.
+			message := fmt.Sprintf("connection to %s failed before the TLS handshake finished and no ECH config was found for it; "+
+				"if this network blocks relay hostnames by SNI, supply a config with --ech-config or LINKSOCKS_ECH_CONFIG", currentURL)
+			if opt.echHint != nil {
+				*opt.echHint = message
+			}
+			opt.Logger.Warn().Err(err).Str("url", currentURL).Msg(message)
 		}
 		// gorilla replaces the body with an in-memory reader on a failed
 		// handshake, so closing it here is always safe.
