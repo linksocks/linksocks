@@ -1,8 +1,11 @@
 package linksocks
 
 import (
+	"context"
 	"encoding/json"
+	"net"
 	"testing"
+	"time"
 )
 
 func TestAccessControlEmptyAllowsAll(t *testing.T) {
@@ -187,5 +190,35 @@ func TestAccessControlInvalidInput(t *testing.T) {
 	}
 	if _, err := NewAccessControl([]AccessRule{{Ports: []PortSpec{{Start: 9000, End: 8000}}}}); err == nil {
 		t.Error("NewAccessControl() should reject reversed port range")
+	}
+}
+
+// A resolver that never answers must not keep the SOCKS client waiting: the
+// destination is rejected within the resolve bound.
+func TestAccessControlResolveIsBounded(t *testing.T) {
+	ac, err := NewAccessControl([]AccessRule{
+		{Addrs: []string{"127.0.0.0/8"}, Ports: []PortSpec{PortRange(30000, 30010)}},
+	})
+	if err != nil {
+		t.Fatalf("NewAccessControl() error = %v", err)
+	}
+
+	previous := net.DefaultResolver
+	net.DefaultResolver = &net.Resolver{
+		PreferGo: true,
+		// A resolver whose dial never completes, like a black-holed server.
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	t.Cleanup(func() { net.DefaultResolver = previous })
+
+	started := time.Now()
+	if ac.Allow("slow-blocked.example", 30005) {
+		t.Fatal("Allow accepted a destination whose lookup never answers")
+	}
+	if elapsed := time.Since(started); elapsed > accessResolveTimeout+3*time.Second {
+		t.Fatalf("Allow took %v, want it bounded by %v", elapsed, accessResolveTimeout)
 	}
 }

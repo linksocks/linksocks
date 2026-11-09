@@ -429,6 +429,7 @@ func TestConfigUsesPinnedList(t *testing.T) {
 
 func TestECHHandshakeAgainstLocalServer(t *testing.T) {
 	resetECHState(t)
+	isolateConfigDir(t)
 	const publicName = "ech.test"
 	configList, key, err := echtest.ConfigAndKey(publicName)
 	if err != nil {
@@ -461,6 +462,7 @@ func TestECHHandshakeAgainstLocalServer(t *testing.T) {
 // *tls.ECHRejectionError so the caller can retry without ECH.
 func TestECHRejectionIsReported(t *testing.T) {
 	resetECHState(t)
+	isolateConfigDir(t)
 	configList, _, err := echtest.ConfigAndKey("ech.test")
 	if err != nil {
 		t.Fatal(err)

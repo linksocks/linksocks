@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // PortSpec is a single port or a [start, end] port range. It marshals to JSON
@@ -180,6 +181,11 @@ func (a *AccessControl) Empty() bool {
 	return a == nil || len(a.rules) == 0
 }
 
+// accessResolveTimeout bounds the lookup that decides whether a domain target
+// is inside the allowed ranges. A slow or black-holed resolver must not keep a
+// SOCKS client waiting: the destination is rejected instead.
+const accessResolveTimeout = 3 * time.Second
+
 // Allow reports whether a destination host:port is permitted. A destination
 // matches when one rule allows both the address and the port. Domain names are
 // resolved and must match one of the allowed ranges; unresolvable domains are
@@ -192,9 +198,17 @@ func (a *AccessControl) Allow(host string, port int) bool {
 	if ip := net.ParseIP(host); ip != nil {
 		ips = []net.IP{ip}
 	} else {
-		var err error
-		ips, err = net.LookupIP(host)
+		ctx, cancel := context.WithTimeout(context.Background(), accessResolveTimeout)
+		defer cancel()
+		resolved, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 		if err != nil {
+			return false
+		}
+		ips = make([]net.IP, 0, len(resolved))
+		for _, addr := range resolved {
+			ips = append(ips, addr.IP)
+		}
+		if len(ips) == 0 {
 			return false
 		}
 	}

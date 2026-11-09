@@ -44,7 +44,9 @@ func socks5Connect(t *testing.T, proxyAddr string, host string, port int) byte {
 		t.Fatalf("dial socks proxy: %v", err)
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	// The server resolves domain targets under a 3s bound before replying, so
+	// the read deadline leaves room for that plus a loaded CI runner.
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
 		t.Fatalf("write socks greeting: %v", err)
@@ -138,7 +140,9 @@ func socks5ConnectEcho(t *testing.T, proxyAddr string, host string, port int, pa
 		t.Fatalf("dial socks proxy: %v", err)
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	// The server resolves domain targets under a 3s bound before replying, so
+	// the read deadline leaves room for that plus a loaded CI runner.
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
 		t.Fatalf("write socks greeting: %v", err)
