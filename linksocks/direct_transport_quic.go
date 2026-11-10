@@ -11,14 +11,58 @@ import (
 
 type clientRelayWriter struct {
 	c *LinkSocksClient
+
+	mu sync.Mutex
+	// link pins this writer to one relay link. One writer carries one
+	// channel's frames, and a channel's sealed stream must arrive in order:
+	// choosing a link per write spreads one channel over several links, and
+	// the peer merges frames by channel id in arrival order, which breaks the
+	// Noise nonce chain (a handshake frame that overtakes another makes the
+	// peer read the wrong message). The pin is dropped when a write fails so
+	// the next frame picks a live link and resumes there.
+	link *WSConn
 }
 
 func newClientRelayWriter(c *LinkSocksClient) MessageWriter {
 	return &clientRelayWriter{c: c}
 }
 
-func (w *clientRelayWriter) WriteMessage(msg BaseMessage) error {
+// pinnedLink returns the link this writer is pinned to, pinning the next live
+// link when nothing is pinned, the pinned link is gone, or a write failed.
+func (w *clientRelayWriter) pinnedLink() *WSConn {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.link != nil && w.c.hasWebSocket(w.link) {
+		return w.link
+	}
 	ws := w.c.getNextWebSocket()
+	w.link = ws
+	return ws
+}
+
+// peekLink reports the pinned link without pinning a new one; used for logging
+// and version reporting, which must not change routing.
+func (w *clientRelayWriter) peekLink() *WSConn {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.link != nil && w.c.hasWebSocket(w.link) {
+		return w.link
+	}
+	return w.c.getNextWebSocket()
+}
+
+// releaseLink drops the pin after a failed write so the retry can pick a live
+// link instead of hammering the dead one.
+func (w *clientRelayWriter) releaseLink(ws *WSConn) {
+	w.mu.Lock()
+	if w.link == ws {
+		w.link = nil
+	}
+	w.mu.Unlock()
+}
+
+func (w *clientRelayWriter) WriteMessage(msg BaseMessage) error {
+	ws := w.pinnedLink()
 	if ws == nil {
 		return &transportDownError{cause: errors.New("relay writer: no websocket")}
 	}
@@ -29,9 +73,11 @@ func (w *clientRelayWriter) WriteMessage(msg BaseMessage) error {
 		if chID, ok := relayChannelID(msg); ok {
 			if ch, ok := w.c.relay.logicalChannel(chID); ok && ch.canResume() && ch.suspended() {
 				if err := ws.WriteMessage(ChannelOpenMessage{ChannelID: chID, Resume: true}); err != nil {
+					w.releaseLink(ws)
 					return &transportDownError{cause: err}
 				}
 				if err := ws.WriteMessage(msg); err != nil {
+					w.releaseLink(ws)
 					return &transportDownError{cause: err}
 				}
 				ch.resume()
@@ -45,9 +91,11 @@ func (w *clientRelayWriter) WriteMessage(msg BaseMessage) error {
 			req := ch.requestMessage()
 			req.Resume = true
 			if err := ws.WriteMessage(req); err != nil {
+				w.releaseLink(ws)
 				return &transportDownError{cause: err}
 			}
 			if err := ws.WriteMessage(msg); err != nil {
+				w.releaseLink(ws)
 				return &transportDownError{cause: err}
 			}
 			ch.resume()
@@ -58,7 +106,9 @@ func (w *clientRelayWriter) WriteMessage(msg BaseMessage) error {
 		// A write that fails while the link is shutting down (connection is
 		// closed but not yet removed from the pool) is a transport failure,
 		// not a channel failure: mark it so writeWithTransportGrace keeps
-		// retrying until the link recovers or the grace window expires.
+		// retrying until the link recovers or the grace window expires. The
+		// pin is dropped so the retry moves to a live link.
+		w.releaseLink(ws)
 		return &transportDownError{cause: err}
 	}
 	return nil
@@ -79,14 +129,14 @@ func relayChannelID(msg BaseMessage) (uuid.UUID, bool) {
 // ProtocolVersion reports the protocol generation negotiated with the relay,
 // or 0 when no link is available yet.
 func (w *clientRelayWriter) ProtocolVersion() byte {
-	if ws := w.c.getNextWebSocket(); ws != nil {
+	if ws := w.peekLink(); ws != nil {
 		return ws.ProtocolVersion()
 	}
 	return 0
 }
 
 func (w *clientRelayWriter) Label() string {
-	ws := w.c.getNextWebSocket()
+	ws := w.peekLink()
 	if ws == nil {
 		return "relay"
 	}

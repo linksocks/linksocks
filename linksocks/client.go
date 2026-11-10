@@ -2384,6 +2384,21 @@ func (c *LinkSocksClient) Connect(ctx context.Context) error {
 }
 
 // getNextWebSocket returns the next available WebSocket connection in round-robin fashion
+// hasWebSocket reports whether a link is still in the pool of live links.
+func (c *LinkSocksClient) hasWebSocket(target *WSConn) bool {
+	if target == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, ws := range c.websockets {
+		if ws == target {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *LinkSocksClient) getNextWebSocket() *WSConn {
 	c.mu.Lock()
 	defer c.mu.Unlock()
