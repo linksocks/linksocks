@@ -252,9 +252,25 @@ func runWebOnce(ctx context.Context, opt WebOption, state *webState, token *stri
 
 	go c.pingLoop(runCtx)
 
+	// Closing the socket unblocks ReadMessage when the caller stops the
+	// provider: the loop itself never observes the context, and a relay that
+	// keeps sending would otherwise keep refreshing the read deadline forever.
+	stopped := make(chan struct{})
+	defer close(stopped)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = ws.Close()
+		case <-stopped:
+		}
+	}()
+
 	for {
 		_, data, err := ws.ReadMessage()
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return err
 		}
 		_ = ws.SetReadDeadline(time.Now().Add(webReadTimeout))

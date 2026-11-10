@@ -304,3 +304,66 @@ func TestWebProviderServesCustomErrorPage(t *testing.T) {
 		t.Errorf("custom page kept a placeholder: %s", page)
 	}
 }
+
+// Cancelling the context must stop a connected provider promptly, even while
+// the relay keeps sending messages that refresh the read deadline.
+func TestRunWebStopsOnContextCancel(t *testing.T) {
+	release := make(chan struct{})
+	relay := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		conn, err := (&websocket.Upgrader{}).Upgrade(response, request, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		write := func(message linksocks.BaseMessage) error {
+			frame, err := linksocks.PackMessage(message)
+			if err != nil {
+				return err
+			}
+			return conn.WriteMessage(websocket.BinaryMessage, frame)
+		}
+		if err := write(linksocks.AuthResponseMessage{Success: true}); err != nil {
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		if err := write(linksocks.WebRegisterResponseMessage{Success: true, Host: "site.example.com", URL: "https://site.example.com"}); err != nil {
+			return
+		}
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-release:
+				return
+			case <-ticker.C:
+				if err := write(linksocks.LogMessage{Level: linksocks.LogLevelInfo, Msg: "keepalive"}); err != nil {
+					return
+				}
+			}
+		}
+	}))
+	defer relay.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- linksocks.RunWeb(ctx, linksocks.WebOption{
+			URL:      relay.URL,
+			Token:    "test-token",
+			Backends: []string{"http://127.0.0.1:1"},
+			Logger:   zerolog.Nop(),
+		})
+	}()
+
+	time.Sleep(600 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("RunWeb did not stop after the context was cancelled")
+	}
+}
