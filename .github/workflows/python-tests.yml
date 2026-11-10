@@ -35,7 +35,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Ubuntu 26 (current ubuntu-latest) no longer ships Python 3.9, so
+          # the oldest supported interpreter stays on the 24.04 image.
+          - os: ubuntu-24.04
             python: "3.9"
           - os: ubuntu-latest
             python: "3.13"
