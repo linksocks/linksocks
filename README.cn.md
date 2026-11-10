@@ -118,14 +118,20 @@ linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
 linksocks web -u wss://l.zetx.tech -t ls_xxx \
   --domain-prefix blog \
   -l http://127.0.0.1:8080 -l http://127.0.0.1:8081
+
+# 本地服务无响应时，向访客展示你自己的页面
+linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080 --error-page ./error.html
 ```
 
 参数概览：`-t/--token`、`-u/--url`、`-l/--local`（可重复）、`-p/--domain-prefix`、
-`--insecure`（跳过 https 源站证书校验）、`-R/--no-reconnect`、`-d/--debug`。
+`--error-page`、`--insecure`（跳过 https 源站证书校验）、`-R/--no-reconnect`、`-d/--debug`。
 
 `--domain-prefix blog` 会把站点发布到 `blog.<WEB_ZONE>`：域名由中继选择，Provider
 无法自行指定域名。永久域名授权、轮换规则和强制临时域名模式见
 [网站发布指南](https://linksocks.github.io/zh/guide/quick-start)，指南里也有公共中继的实测过程。
+
+请求无法到达本地服务时，访客看到的是为其编写的页面而不是内部错误字符串；
+`--error-page` 可换成你自己的 HTML（支持 `{{status}}`、`{{title}}`、`{{message}}` 占位符）。
 
 服务端（Cloudflare Worker、D1 数据库、管理后台与配额）说明见 linksocks.js 仓库。
 

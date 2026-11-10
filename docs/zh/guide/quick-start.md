@@ -173,7 +173,7 @@ linksocks web -u wss://l.zetx.tech -t ls_xxx \
 ```
 
 参数：`-t/--token`、`-u/--url`、`-l/--local`（可重复）、`-p/--domain-prefix`、
-`--insecure`、`-R/--no-reconnect`、`-d/--debug`。
+`--error-page`、`--insecure`、`-R/--no-reconnect`、`-d/--debug`。
 
 `--domain-prefix blog` 会把站点发布到 `blog.<WEB_ZONE>`：域名由中继选择，Provider
 无法自行指定域名。该前缀需要账号的**永久域名授权**，需要在 linksocks.js 管理后台为
@@ -206,6 +206,35 @@ $ curl -sS -o /dev/null -w '%{http_code}\n' https://2prxq5bk.team1.cc.cd/not-fou
 
 终端保持运行时隧道一直有效，`Ctrl+C` 结束。临时域名按配置的有效期过期（默认 6 小时），
 Provider 在线期间会自动轮换。
+
+### 失败页面
+
+当请求无法到达本地服务时，访客看到的是为其编写的页面，而不是内部错误字符串：
+状态码、一句简短说明，以及"该站点通过 LinkSocks 发布"的提示。文案随状态码变化：
+本地服务无响应时为 `502`，站点请求数达到上限时为 `503`，请求体超限时为 `413`。
+
+用 `--error-page`（或环境变量 `LINKSOCKS_WEB_ERROR_PAGE`）换成你自己的页面：
+
+```bash
+linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080 --error-page ./error.html
+```
+
+```html
+<!-- error.html -->
+<!doctype html>
+<html lang="zh-CN">
+  <head><title>{{title}}</title></head>
+  <body>
+    <h1>{{title}}</h1>
+    <p>{{message}}</p>
+    <p>状态 {{status}} · 联系 support@example.com</p>
+  </body>
+</html>
+```
+
+文件在启动时读取一次，路径错误会立刻报错，而不是等到第一次失败。`{{status}}`、
+`{{title}}`、`{{message}}` 会被替换，其余内容原样输出；不带占位符的页面原样提供。
+请求失败的具体原因只记录在 Provider 日志里，不会展示给访客。
 
 ## 在 Cloudflare Workers 上部署服务器
 

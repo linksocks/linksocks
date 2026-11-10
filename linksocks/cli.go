@@ -106,6 +106,7 @@ func (cli *CLI) initCommands() {
 	webCmd.Flags().StringP("domain-prefix", "p", "", "Domain prefix for a custom host under the relay's WEB_ZONE (e.g. blog for blog.team1.cc.cd)")
 	webCmd.Flags().String("ech", ECHAuto, "Encrypted Client Hello for the relay connection (auto|off)")
 	webCmd.Flags().String("ech-config", "", "Pinned ECH config list for the relay connection as base64 (or @file); replaces DNS discovery")
+	webCmd.Flags().String("error-page", "", "HTML file served to visitors when a request fails (may use {{status}}, {{title}} and {{message}})")
 	webCmd.Flags().Bool("insecure", false, "Skip TLS certificate verification for https backends")
 	webCmd.Flags().BoolP("no-reconnect", "R", false, "Stop when the server disconnects")
 	webCmd.Flags().CountP("debug", "d", "Show debug logs (use -dd for trace logs)")

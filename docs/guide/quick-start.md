@@ -172,7 +172,7 @@ linksocks web -u wss://l.zetx.tech -t ls_xxx \
 ```
 
 Flags: `-t/--token`, `-u/--url`, `-l/--local` (repeatable), `-p/--domain-prefix`,
-`--insecure`, `-R/--no-reconnect`, `-d/--debug`.
+`--error-page`, `--insecure`, `-R/--no-reconnect`, `-d/--debug`.
 
 `--domain-prefix blog` publishes the site at `blog.<WEB_ZONE>`; the relay picks
 the zone, so a provider never names a domain itself. The prefix requires the
@@ -208,6 +208,39 @@ $ curl -sS -o /dev/null -w '%{http_code}\n' https://2prxq5bk.team1.cc.cd/not-fou
 
 Stop with `Ctrl+C`. Temporary URLs expire after the configured lifetime (6 hours
 by default) and rotate automatically while the provider stays connected.
+
+### Failure page
+
+When a request cannot reach your local service, visitors see a page built for
+them rather than an internal error string: the status, a short explanation and
+a line saying the site is published through LinkSocks. The wording comes from
+the status: `502` when the local service does not answer, `503` when the site is
+at its request limit, `413` when a body exceeds the limit.
+
+Serve your own page with `--error-page` (or `LINKSOCKS_WEB_ERROR_PAGE`):
+
+```bash
+linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080 --error-page ./error.html
+```
+
+```html
+<!-- error.html -->
+<!doctype html>
+<html lang="en">
+  <head><title>{{title}}</title></head>
+  <body>
+    <h1>{{title}}</h1>
+    <p>{{message}}</p>
+    <p>Status {{status}} · support@example.com</p>
+  </body>
+</html>
+```
+
+The file is read once at startup, so a broken path fails immediately instead of
+at the first failure. `{{status}}`, `{{title}}` and `{{message}}` are filled in;
+everything else is served as written, and a page without placeholders is served
+untouched. The reason a request failed is logged on the provider, never shown to
+the visitor.
 
 ## Server on Cloudflare Workers
 

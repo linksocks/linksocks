@@ -23,6 +23,10 @@ class Web:
     to ``backends``. Pass ``domain_prefix`` to publish under a fixed label of
     your own (for example ``blog`` for ``blog.<WEB_ZONE>``) when the relay
     grants the account a permanent hostname.
+
+    Pass ``error_page`` with a path to an HTML file to replace the page
+    visitors see when a request fails. The file may use ``{{status}}``,
+    ``{{title}}`` and ``{{message}}`` placeholders.
     """
 
     def __init__(
@@ -32,6 +36,7 @@ class Web:
         url: str = "ws://localhost:8765",
         token: str = "",
         domain_prefix: Optional[str] = None,
+        error_page: Optional[str] = None,
         insecure: bool = False,
         no_reconnect: bool = False,
         reconnect_delay: Optional[DurationLike] = None,
@@ -47,6 +52,7 @@ class Web:
             "url": url,
             "token": token,
             "host_prefix": domain_prefix or "",
+            "error_page": error_page or "",
             "backends": list(backends),
             "insecure": bool(insecure),
             "no_reconnect": bool(no_reconnect),

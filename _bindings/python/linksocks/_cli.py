@@ -282,6 +282,7 @@ def client(
 @click.option("--url", "-u", default="ws://localhost:8765", help="LinkSocks.js server address")
 @click.option("--local", "-l", "locals", multiple=True, required=True, help="Local backend URL, repeatable (e.g. http://127.0.0.1:8080)")
 @click.option("--domain-prefix", "-p", default=None, help="Domain prefix for a custom host under the relay's WEB_ZONE (e.g. blog)")
+@click.option("--error-page", default=None, help="HTML file served to visitors when a request fails (env: LINKSOCKS_WEB_ERROR_PAGE)")
 @click.option("--insecure", is_flag=True, default=False, help="Skip TLS certificate verification for https backends")
 @click.option("--no-reconnect", "-R", is_flag=True, default=False, help="Stop when the server disconnects")
 @click.option("--debug", "-d", count=True, help="Debug logging (-d for debug, -dd for trace)")
@@ -290,6 +291,7 @@ def web(
     url: str,
     locals: tuple,
     domain_prefix: Optional[str],
+    error_page: Optional[str],
     insecure: bool,
     no_reconnect: bool,
     debug: int,
@@ -314,6 +316,7 @@ def web(
             url=url,
             token=actual_token or "",
             domain_prefix=domain_prefix,
+            error_page=error_page or os.environ.get("LINKSOCKS_WEB_ERROR_PAGE") or None,
             insecure=insecure,
             no_reconnect=no_reconnect,
         )

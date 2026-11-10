@@ -8,12 +8,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,7 +38,11 @@ type WebOption struct {
 	// (default) or ECHOff.
 	ECH string
 	// ECHConfig pins the ECH config list, replacing DNS discovery.
-	ECHConfig      []byte
+	ECHConfig []byte
+	// ErrorPage is a path to an HTML file served to visitors when a request
+	// fails. The file may use {{status}}, {{title}} and {{message}}
+	// placeholders. Empty selects the built-in page.
+	ErrorPage      string
 	Insecure       bool
 	NoReconnect    bool
 	ReconnectDelay time.Duration
@@ -44,6 +50,9 @@ type WebOption struct {
 	// OnRegistered is called after a successful registration with the host the
 	// relay assigned, and again whenever the hostname rotates. It must not block.
 	OnRegistered func(host string)
+
+	// errorPageHTML is the loaded template; nil means the built-in page.
+	errorPageHTML []byte
 }
 
 type webState struct {
@@ -133,6 +142,13 @@ func RunWeb(ctx context.Context, opt WebOption) error {
 		return fmt.Errorf("invalid domain prefix %q: use a single DNS label such as \"blog\", not a full domain", opt.HostPrefix)
 	}
 	opt.HostPrefix = prefix
+	if opt.ErrorPage != "" {
+		content, err := os.ReadFile(opt.ErrorPage)
+		if err != nil {
+			return fmt.Errorf("read error page %q: %w", opt.ErrorPage, err)
+		}
+		opt.errorPageHTML = content
+	}
 
 	state := &webState{requestedPrefix: opt.HostPrefix}
 	token := opt.Token
@@ -512,7 +528,7 @@ func (c *webConn) handleWebRequest(msg WebRequestMessage) {
 	c.pendingMu.Lock()
 	if len(c.pending) >= webConcurrentLimit {
 		c.pendingMu.Unlock()
-		c.writeError(msg.ChannelID, http.StatusServiceUnavailable, "too many concurrent uploads")
+		c.writeError(msg.ChannelID, http.StatusServiceUnavailable)
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -527,7 +543,7 @@ func (c *webConn) startWebSocket(request WebRequestMessage) {
 	if _, exists := c.webSockets[request.ChannelID]; exists {
 		c.webSocketsMu.Unlock()
 		cancel()
-		c.writeError(request.ChannelID, http.StatusConflict, "duplicate WebSocket channel")
+		c.writeError(request.ChannelID, http.StatusConflict)
 		return
 	}
 	c.webSockets[request.ChannelID] = channel
@@ -541,17 +557,20 @@ func (c *webConn) serveWebSocket(ctx context.Context, request WebRequestMessage,
 	case c.sem <- struct{}{}:
 		defer func() { <-c.sem }()
 	default:
-		c.writeError(request.ChannelID, http.StatusServiceUnavailable, "too many concurrent requests")
+		c.writeError(request.ChannelID, http.StatusServiceUnavailable)
 		return
 	}
-	target, err := buildBackendURL(c.pickBackend(), request.Path)
+	backend := c.pickBackend()
+	target, err := buildBackendURL(backend, request.Path)
 	if err != nil {
-		c.writeError(request.ChannelID, http.StatusBadGateway, "invalid backend URL")
+		c.log.Warn().Err(err).Str("backend", backend).Msg("Invalid backend URL")
+		c.writeError(request.ChannelID, http.StatusBadGateway)
 		return
 	}
 	parsed, err := url.Parse(target)
 	if err != nil {
-		c.writeError(request.ChannelID, http.StatusBadGateway, "invalid backend URL")
+		c.log.Warn().Err(err).Str("url", target).Msg("Invalid backend URL")
+		c.writeError(request.ChannelID, http.StatusBadGateway)
 		return
 	}
 	if parsed.Scheme == "https" {
@@ -591,7 +610,8 @@ func (c *webConn) serveWebSocket(ctx context.Context, request WebRequestMessage,
 			_ = response.Body.Close()
 		}
 		if ctx.Err() == nil {
-			c.writeError(request.ChannelID, http.StatusBadGateway, "WebSocket backend request failed")
+			c.log.Warn().Err(err).Str("url", parsed.String()).Msg("WebSocket backend request failed")
+			c.writeError(request.ChannelID, http.StatusBadGateway)
 		}
 		return
 	}
@@ -693,7 +713,7 @@ func (c *webConn) handleWebRequestBody(msg WebDataMessage) {
 		delete(c.pending, msg.ChannelID)
 		c.pendingMu.Unlock()
 		pending.cancel()
-		c.writeError(msg.ChannelID, http.StatusRequestEntityTooLarge, "request body too large")
+		c.writeError(msg.ChannelID, http.StatusRequestEntityTooLarge)
 		return
 	}
 	if len(msg.Data) > 0 {
@@ -728,14 +748,15 @@ func (c *webConn) serveWebRequest(ctx context.Context, req WebRequestMessage, bo
 	case c.sem <- struct{}{}:
 		defer func() { <-c.sem }()
 	default:
-		c.writeError(req.ChannelID, http.StatusServiceUnavailable, "too many concurrent requests")
+		c.writeError(req.ChannelID, http.StatusServiceUnavailable)
 		return
 	}
 
 	backend := c.pickBackend()
 	target, err := buildBackendURL(backend, req.Path)
 	if err != nil {
-		c.writeError(req.ChannelID, http.StatusBadGateway, err.Error())
+		c.log.Warn().Err(err).Str("backend", backend).Msg("Invalid backend URL")
+		c.writeError(req.ChannelID, http.StatusBadGateway)
 		return
 	}
 
@@ -745,7 +766,8 @@ func (c *webConn) serveWebRequest(ctx context.Context, req WebRequestMessage, bo
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, req.Method, target, reader)
 	if err != nil {
-		c.writeError(req.ChannelID, http.StatusBadGateway, err.Error())
+		c.log.Warn().Err(err).Str("url", target).Msg("Invalid backend request")
+		c.writeError(req.ChannelID, http.StatusBadGateway)
 		return
 	}
 	for _, header := range req.Headers {
@@ -768,7 +790,7 @@ func (c *webConn) serveWebRequest(ctx context.Context, req WebRequestMessage, bo
 	if err != nil {
 		if ctx.Err() == nil {
 			c.log.Warn().Err(err).Str("channel_id", req.ChannelID.String()).Str("url", target).Msg("Backend request failed")
-			c.writeError(req.ChannelID, http.StatusBadGateway, "backend request failed")
+			c.writeError(req.ChannelID, http.StatusBadGateway)
 		}
 		return
 	}
@@ -825,11 +847,14 @@ func (c *webConn) serveWebRequest(ctx context.Context, req WebRequestMessage, bo
 	}
 }
 
-func (c *webConn) writeError(channelID uuid.UUID, status int, message string) {
-	body := []byte(message)
+// writeError answers a failed request with the error page. The reason for the
+// failure stays in the operator's log; visitors get a page written for them.
+func (c *webConn) writeError(channelID uuid.UUID, status int) {
+	body := renderWebErrorPage(c.opt.errorPageHTML, status)
 	headers := [][2]string{
-		{"Content-Type", "text/plain; charset=utf-8"},
+		{"Content-Type", "text/html; charset=utf-8"},
 		{"Content-Length", fmt.Sprintf("%d", len(body))},
+		{"Cache-Control", "no-store"},
 	}
 	_ = c.send(WebResponseMessage{
 		ChannelID:  channelID,
@@ -839,6 +864,73 @@ func (c *webConn) writeError(channelID uuid.UUID, status int, message string) {
 	})
 	_ = c.send(WebDataMessage{ChannelID: channelID, Data: body})
 	_ = c.send(WebDataMessage{ChannelID: channelID, End: true})
+}
+
+// defaultWebErrorPage is served when the operator did not provide one. It is
+// self-contained: a published site should not fetch anything to explain a
+// failure.
+const defaultWebErrorPage = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}}</title>
+<style>
+:root{color-scheme:light dark;--ink:#101114;--muted:#5b6170;--bg:#fafafb;--card:#fff;--line:#e6e7ec}
+@media (prefers-color-scheme:dark){:root{--ink:#f2f3f5;--muted:#a1a7b3;--bg:#0e0f12;--card:#15171b;--line:#26292f}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;min-height:100dvh;display:grid;place-items:center;padding:32px 20px;background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+main{width:100%;max-width:440px;padding:34px 28px;border:1px solid var(--line);border-radius:16px;background:var(--card);text-align:center}
+.code{font-size:42px;font-weight:600;letter-spacing:-.04em;line-height:1}
+h1{margin:10px 0 0;font-size:19px;font-weight:600}
+p{margin:12px 0 0;color:var(--muted)}
+small{display:block;margin-top:20px;color:var(--muted);font-size:12.5px}
+</style>
+</head>
+<body>
+<main>
+<div class="code">{{status}}</div>
+<h1>{{title}}</h1>
+<p>{{message}}</p>
+<small>Published through LinkSocks.</small>
+</main>
+</body>
+</html>
+`
+
+// renderWebErrorPage fills the placeholders of the operator's page, falling
+// back to the built-in one.
+func renderWebErrorPage(custom []byte, status int) []byte {
+	page := string(custom)
+	if page == "" {
+		page = defaultWebErrorPage
+	}
+	title, message := webErrorText(status)
+	page = strings.ReplaceAll(page, "{{status}}", strconv.Itoa(status))
+	page = strings.ReplaceAll(page, "{{title}}", html.EscapeString(title))
+	page = strings.ReplaceAll(page, "{{message}}", html.EscapeString(message))
+	return []byte(page)
+}
+
+// webErrorText describes a failed request in words a visitor can act on.
+func webErrorText(status int) (title, message string) {
+	switch status {
+	case http.StatusBadGateway:
+		return "Site temporarily unavailable",
+			"The server behind this site did not answer the request. If you are the owner, check that the local service is running and reachable."
+	case http.StatusServiceUnavailable:
+		return "Site busy",
+			"The site is handling as many requests as it can right now. Wait a moment and try again."
+	case http.StatusRequestEntityTooLarge:
+		return "Request too large",
+			"The request was larger than this site accepts. Try again with a smaller body."
+	case http.StatusConflict:
+		return "Request could not be completed",
+			"The request conflicted with another one on this connection. Reload the page and try again."
+	default:
+		return "Request failed",
+			"The request could not be completed. Try again in a moment."
+	}
 }
 
 func (c *webConn) pickBackend() string {
@@ -961,6 +1053,8 @@ func (cli *CLI) runWeb(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	errorPage, _ := cmd.Flags().GetString("error-page")
+	errorPage = resolveStringFlagEnv(cmd, "error-page", "LINKSOCKS_WEB_ERROR_PAGE", errorPage)
 	locals, _ := cmd.Flags().GetStringArray("local")
 	insecure, _ := cmd.Flags().GetBool("insecure")
 	noReconnect, _ := cmd.Flags().GetBool("no-reconnect")
@@ -999,6 +1093,7 @@ func (cli *CLI) runWeb(cmd *cobra.Command, args []string) error {
 		Str("server", serverURL).
 		Strs("backends", backends).
 		Str("domain_prefix", hostPrefix).
+		Str("error_page", errorPage).
 		Bool("insecure", insecure).
 		Msg("Starting LinkSocks web provider")
 
@@ -1008,6 +1103,7 @@ func (cli *CLI) runWeb(cmd *cobra.Command, args []string) error {
 		HostPrefix:  hostPrefix,
 		ECH:         echMode,
 		ECHConfig:   echConfig,
+		ErrorPage:   errorPage,
 		Backends:    backends,
 		Insecure:    insecure,
 		NoReconnect: noReconnect,

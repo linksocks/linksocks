@@ -25,6 +25,7 @@ Web(
     url: str = "ws://localhost:8765",
     token: str = "",
     domain_prefix: Optional[str] = None,
+    error_page: Optional[str] = None,
     insecure: bool = False,
     no_reconnect: bool = False,
     reconnect_delay: Optional[DurationLike] = None,
@@ -38,6 +39,7 @@ Web(
 | `url` | `str` | `"ws://localhost:8765"` | linksocks.js 服务地址 |
 | `token` | `str` | `""` | 控制台 Provider token |
 | `domain_prefix` | `str \| None` | `None` | 中继 `WEB_ZONE` 下的自定义前缀，例如 `blog` 对应 `blog.<WEB_ZONE>` |
+| `error_page` | `str \| None` | `None` | 请求失败时向访客展示的 HTML 文件路径；可使用 `{{status}}`、`{{title}}`、`{{message}}` |
 | `insecure` | `bool` | `False` | 跳过 HTTPS 源站的证书校验 |
 | `no_reconnect` | `bool` | `False` | 中继断开后停止运行 |
 | `reconnect_delay` | `DurationLike` | `None` | 重连间隔 |

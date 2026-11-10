@@ -28,6 +28,7 @@ Web(
     url: str = "ws://localhost:8765",
     token: str = "",
     domain_prefix: Optional[str] = None,
+    error_page: Optional[str] = None,
     insecure: bool = False,
     no_reconnect: bool = False,
     reconnect_delay: Optional[DurationLike] = None,
@@ -41,6 +42,7 @@ Web(
 | `url` | `str` | `"ws://localhost:8765"` | linksocks.js server URL |
 | `token` | `str` | `""` | Dashboard provider token |
 | `domain_prefix` | `str \| None` | `None` | Label of your own under the relay's `WEB_ZONE`, e.g. `blog` for `blog.<WEB_ZONE>` |
+| `error_page` | `str \| None` | `None` | Path to an HTML file served to visitors when a request fails; may use `{{status}}`, `{{title}}` and `{{message}}` |
 | `insecure` | `bool` | `False` | Skip TLS verification for HTTPS backends |
 | `no_reconnect` | `bool` | `False` | Stop when the relay disconnects |
 | `reconnect_delay` | `DurationLike` | `None` | Delay between reconnect attempts |

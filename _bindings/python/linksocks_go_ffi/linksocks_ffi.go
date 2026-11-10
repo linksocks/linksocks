@@ -860,6 +860,7 @@ func linksocks_web_new(cfgJSON *C.char, out *C.uint64_t) *C.char {
 		URL              string   `json:"url"`
 		Token            string   `json:"token"`
 		HostPrefix       string   `json:"host_prefix"`
+		ErrorPage        string   `json:"error_page"`
 		Backends         []string `json:"backends"`
 		Insecure         bool     `json:"insecure"`
 		NoReconnect      bool     `json:"no_reconnect"`
@@ -886,6 +887,7 @@ func linksocks_web_new(cfgJSON *C.char, out *C.uint64_t) *C.char {
 			URL:            cfg.URL,
 			Token:          cfg.Token,
 			HostPrefix:     cfg.HostPrefix,
+			ErrorPage:      cfg.ErrorPage,
 			Backends:       cfg.Backends,
 			Insecure:       cfg.Insecure,
 			NoReconnect:    cfg.NoReconnect,

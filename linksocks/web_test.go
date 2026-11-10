@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -162,5 +163,50 @@ func TestWebMessageVersionMustMeetFeatureMinimum(t *testing.T) {
 		if !errors.As(err, &nonRetriable) || !strings.Contains(err.Error(), "required minimum") {
 			t.Errorf("%s: error = %v, want Web minimum error", message.GetType(), err)
 		}
+	}
+}
+
+func TestRenderWebErrorPageFillsPlaceholders(t *testing.T) {
+	page := string(renderWebErrorPage(nil, http.StatusBadGateway))
+	for _, want := range []string{"502", "Site temporarily unavailable", "did not answer", "<!doctype html>"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("built-in page does not contain %q", want)
+		}
+	}
+	if strings.Contains(page, "{{") {
+		t.Errorf("built-in page kept a placeholder: %s", page)
+	}
+
+	custom := renderWebErrorPage([]byte("<p>{{title}}|{{message}}|{{status}}</p>"), http.StatusServiceUnavailable)
+	if got, want := string(custom), "<p>Site busy|The site is handling as many requests as it can right now. Wait a moment and try again.|503</p>"; got != want {
+		t.Errorf("custom page = %q, want %q", got, want)
+	}
+
+	// A page without placeholders is served untouched.
+	raw := renderWebErrorPage([]byte("<p>maintenance</p>"), http.StatusBadGateway)
+	if string(raw) != "<p>maintenance</p>" {
+		t.Errorf("plain page = %q", raw)
+	}
+}
+
+// A status without wording of its own still gets a page a visitor can read.
+func TestWebErrorTextFallsBackToGenericWording(t *testing.T) {
+	title, message := webErrorText(http.StatusTeapot)
+	if title == "" || message == "" {
+		t.Fatalf("generic wording is empty: %q %q", title, message)
+	}
+	page := string(renderWebErrorPage(nil, http.StatusTeapot))
+	if !strings.Contains(page, "418") || !strings.Contains(page, title) || !strings.Contains(page, message) {
+		t.Errorf("generic page misses status or wording: %s", page)
+	}
+}
+
+func TestRunWebRejectsUnreadableErrorPage(t *testing.T) {
+	err := RunWeb(context.Background(), WebOption{
+		Backends:  []string{"http://127.0.0.1:8080"},
+		ErrorPage: filepath.Join(t.TempDir(), "missing.html"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "error page") {
+		t.Fatalf("RunWeb error = %v, want error page read failure", err)
 	}
 }

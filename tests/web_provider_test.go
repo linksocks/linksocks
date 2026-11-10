@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -141,4 +145,162 @@ func TestWebProviderWebSocketProxy(t *testing.T) {
 		t.Fatalf("origin: %v", err)
 	}
 	<-clientResult
+}
+
+// runWebProviderOnce drives one request through a fake relay and returns the
+// response the provider produced for it.
+func runWebProviderOnce(t *testing.T, opt linksocks.WebOption, request linksocks.WebRequestMessage) (linksocks.WebResponseMessage, []byte) {
+	t.Helper()
+	type result struct {
+		head linksocks.WebResponseMessage
+		body []byte
+	}
+	results := make(chan result, 1)
+	relay := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{}).Upgrade(response, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		write := func(message linksocks.BaseMessage) error {
+			frame, err := linksocks.PackMessage(message)
+			if err != nil {
+				return err
+			}
+			return conn.WriteMessage(websocket.BinaryMessage, frame)
+		}
+		read := func() (linksocks.BaseMessage, error) {
+			_, frame, err := conn.ReadMessage()
+			if err != nil {
+				return nil, err
+			}
+			return linksocks.ParseMessage(frame)
+		}
+		if err := write(linksocks.AuthResponseMessage{Success: true}); err != nil {
+			return
+		}
+		if _, err := read(); err != nil {
+			return
+		}
+		if err := write(linksocks.WebRegisterResponseMessage{Success: true, Host: "site.example.com", URL: "https://site.example.com"}); err != nil {
+			return
+		}
+		if err := write(request); err != nil {
+			return
+		}
+		message, err := read()
+		if err != nil {
+			return
+		}
+		head, ok := message.(linksocks.WebResponseMessage)
+		if !ok {
+			return
+		}
+		var body []byte
+		for {
+			message, err := read()
+			if err != nil {
+				return
+			}
+			data, ok := message.(linksocks.WebDataMessage)
+			if !ok {
+				return
+			}
+			body = append(body, data.Data...)
+			if data.End {
+				break
+			}
+		}
+		results <- result{head: head, body: body}
+	}))
+	defer relay.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	opt.URL = relay.URL
+	opt.Token = "test-token"
+	opt.NoReconnect = true
+	go func() {
+		_ = linksocks.RunWeb(ctx, opt)
+	}()
+
+	select {
+	case got := <-results:
+		return got.head, got.body
+	case <-time.After(8 * time.Second):
+		t.Fatal("timed out waiting for the provider response")
+		return linksocks.WebResponseMessage{}, nil
+	}
+}
+
+// closedAddress returns a loopback address nothing listens on.
+func closedAddress(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	_ = listener.Close()
+	return "http://" + address
+}
+
+// A backend that does not answer must reach the visitor as a page written for
+// them, not as an internal error string.
+func TestWebProviderServesDefaultErrorPage(t *testing.T) {
+	head, body := runWebProviderOnce(t,
+		linksocks.WebOption{Backends: []string{closedAddress(t)}},
+		linksocks.WebRequestMessage{ChannelID: uuid.New(), Method: "GET", Path: "/down"},
+	)
+	if head.Status != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body: %s", head.Status, body)
+	}
+	contentType := ""
+	for _, header := range head.Headers {
+		if strings.EqualFold(header[0], "Content-Type") {
+			contentType = header[1]
+		}
+	}
+	if !strings.Contains(contentType, "text/html") {
+		t.Fatalf("Content-Type = %q, want text/html", contentType)
+	}
+	page := string(body)
+	for _, want := range []string{"502", "Site temporarily unavailable", "did not answer"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("error page does not mention %q: %s", want, page)
+		}
+	}
+	if strings.Contains(page, "{{") {
+		t.Errorf("error page kept a placeholder: %s", page)
+	}
+	if strings.Contains(page, "connect") || strings.Contains(page, "refused") {
+		t.Errorf("error page leaks the internal reason: %s", page)
+	}
+}
+
+// Operators can serve their own page; placeholders are filled in.
+func TestWebProviderServesCustomErrorPage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "error.html")
+	custom := "<html><body><h1>{{title}}</h1><p>{{message}}</p><p>code {{status}} · contact ops@example.com</p></body></html>"
+	if err := os.WriteFile(path, []byte(custom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	head, body := runWebProviderOnce(t,
+		linksocks.WebOption{Backends: []string{closedAddress(t)}, ErrorPage: path},
+		linksocks.WebRequestMessage{ChannelID: uuid.New(), Method: "GET", Path: "/down"},
+	)
+	if head.Status != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body: %s", head.Status, body)
+	}
+	page := string(body)
+	for _, want := range []string{"contact ops@example.com", "Site temporarily unavailable", "code 502"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("custom page does not contain %q: %s", want, page)
+		}
+	}
+	if strings.Contains(page, "{{") {
+		t.Errorf("custom page kept a placeholder: %s", page)
+	}
 }

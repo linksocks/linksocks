@@ -142,17 +142,24 @@ linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080
 linksocks web -u wss://l.zetx.tech -t ls_xxx \
   --domain-prefix blog \
   -l http://127.0.0.1:8080 -l http://127.0.0.1:8081
+
+# Your own page for visitors when the local service does not answer
+linksocks web -u wss://l.zetx.tech -l http://127.0.0.1:8080 --error-page ./error.html
 ```
 
 Flag summary: `-t/--token`, `-u/--url`, `-l/--local` (repeatable),
-`-p/--domain-prefix`, `--insecure` (skip TLS verification for https origins),
-`-R/--no-reconnect`, `-d/--debug`.
+`-p/--domain-prefix`, `--error-page`, `--insecure` (skip TLS verification for
+https origins), `-R/--no-reconnect`, `-d/--debug`.
 
 `--domain-prefix blog` publishes the site at `blog.<WEB_ZONE>`: the relay picks
 the zone, so a provider never names a domain itself. The prefix stays up as long
 as its provider does; the [web publishing guide](https://linksocks.github.io/guide/quick-start)
 covers the hostname grant, rotation and forced temporary mode, together with a
 real run against the public relay.
+
+A request that cannot reach your local service answers with a page written for
+visitors, not an internal error string, and `--error-page` replaces it with your
+own HTML (`{{status}}`, `{{title}}` and `{{message}}` are filled in).
 
 The server side (Cloudflare Worker, D1 database, admin console and quotas) is
 documented in the linksocks.js repository.
