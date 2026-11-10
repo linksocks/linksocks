@@ -58,28 +58,39 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release list --limit 100 --json tagName,isDraft \
-            --jq '.[] | select(.isDraft) | .tagName' | while read -r tag; do
-            [ -n "$tag" ] || continue
-            if ! git ls-remote --tags origin "refs/tags/$tag" | grep -q .; then
-              echo "Deleting draft release $tag: its tag no longer exists"
-              gh release delete "$tag" --yes
-            fi
-          done
+          # Drafts are only visible through the REST API: the CLI's release
+          # list and the releases-by-tag endpoint both hide them.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.draft) | [.id, .tag_name] | @tsv' |
+            while IFS=$'\t' read -r id tag; do
+              [ -n "$tag" ] || continue
+              if ! git ls-remote --tags origin "refs/tags/$tag" | grep -q .; then
+                echo "Deleting draft release $id: its tag $tag no longer exists"
+                gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+              fi
+            done
 
       # The action looks releases up by tag, and that endpoint never returns a
       # draft, so a draft created by an earlier run for the same tag was left
-      # untouched. Find the draft by id and patch it, or create it once.
+      # untouched. Look the drafts up through the REST API instead, keep the
+      # newest one for this tag, patch its notes, and drop older duplicates.
       - name: Create or update the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.tag_info.outputs.tag_name }}"
-          RELEASE_ID=$(gh release list --limit 100 --json id,tagName,isDraft \
-            --jq ".[] | select(.isDraft and .tagName == \"$TAG\") | .id" | head -1)
-          if [ -n "$RELEASE_ID" ]; then
-            echo "Updating draft release $RELEASE_ID for $TAG"
-            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+          IDS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id" | sort -n)
+          KEEP=$(echo "$IDS" | tail -1)
+          for id in $IDS; do
+            if [ "$id" != "$KEEP" ]; then
+              echo "Deleting duplicate draft release $id for $TAG"
+              gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+            fi
+          done
+          if [ -n "$KEEP" ]; then
+            echo "Updating draft release $KEEP for $TAG"
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$KEEP" \
               -f name="Release $TAG" \
               -f body="$(cat changelog.md)" > /dev/null
           else
