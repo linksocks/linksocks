@@ -67,12 +67,23 @@ jobs:
             fi
           done
 
-      - name: Create Draft Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ steps.tag_info.outputs.tag_name }}
-          name: Release ${{ steps.tag_info.outputs.tag_name }}
-          body: ${{ steps.changelog.outputs.CHANGELOG }}
-          draft: true
-          prerelease: false
-          generate_release_notes: true
+      # The action looks releases up by tag, and that endpoint never returns a
+      # draft, so a draft created by an earlier run for the same tag was left
+      # untouched. Find the draft by id and patch it, or create it once.
+      - name: Create or update the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.tag_info.outputs.tag_name }}"
+          RELEASE_ID=$(gh release list --limit 100 --json id,tagName,isDraft \
+            --jq ".[] | select(.isDraft and .tagName == \"$TAG\") | .id" | head -1)
+          if [ -n "$RELEASE_ID" ]; then
+            echo "Updating draft release $RELEASE_ID for $TAG"
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+              -f name="Release $TAG" \
+              -f body="$(cat changelog.md)" > /dev/null
+          else
+            echo "Creating draft release for $TAG"
+            gh release create "$TAG" --draft --title "Release $TAG" --notes-file changelog.md \
+              --generate-notes > /dev/null
+          fi
