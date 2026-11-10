@@ -25,7 +25,7 @@ on:
 jobs:
   smoke:
     name: ${{ matrix.channel }} (py=${{ inputs.python_version || 'default' }})
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     strategy:
       fail-fast: false

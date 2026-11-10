@@ -258,7 +258,10 @@ jobs:
         include:
           - os: macos-15-intel
             arch: x64
-          - os: macos-14
+          # GitHub retired the macOS 14 arm64 image; macos-15 is the oldest
+          # arm64 image it still offers, and GitHub cancels a job whose runner
+          # configuration is gone before any step runs.
+          - os: macos-15
             arch: arm64
 
     steps:
