@@ -12,13 +12,19 @@ import (
 	"strings"
 )
 
+// defaultIdentityPath is where the machine key lives when --identity is not
+// given.
+func defaultIdentityPath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "zone.key"
+	}
+	return filepath.Join(dir, "linksocks", "zone.key")
+}
+
 func loadIdentity(path string) (ed25519.PrivateKey, error) {
 	if path == "" {
-		dir, err := os.UserConfigDir()
-		if err != nil {
-			return nil, err
-		}
-		path = filepath.Join(dir, "linksocks", "zone.key")
+		path = defaultIdentityPath()
 	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {

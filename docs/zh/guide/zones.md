@@ -114,8 +114,14 @@ UDP 广播、WOL 魔术包、组播和原始以太网帧都能在成员之间传
 | `--interface` | `--vlan` 使用的 TAP 网卡名称，默认 `lz0` |
 | `--no-env-proxy`、`-E` | 忽略环境变量中的代理设置 |
 | `--ech` | 连接协调服务时的 Encrypted Client Hello，默认 `auto` |
+| `--debug`、`-d` | 输出调试日志；`-dd` 追加 trace 日志（流、数据报、防火墙丢弃、协调服务心跳） |
 
 这些子命令均在 `linksocks` 下运行。`--url` 接受 HTTP(S) 和 WebSocket 地址，
+加入后日志会记录：加入过程与分配到的地址、之后的对端数量变化、SOCKS5 监听，
+以及 VLAN 模式下的网卡。加 `-d` 可以看到流量为何通或不通——流已建立、被拒绝
+及其原因（被 Zone 防火墙拦截、对端不在线、本机服务不可达）——加 `-dd` 则记录
+数据报、防火墙丢弃等逐帧细节。
+
 连接远端协调服务时使用 HTTPS。`--name`、`--socks-port`、`--vlan` 和 `--interface`
 只用于 `join`，表中其他参数为各 Zone 子命令共用。
 

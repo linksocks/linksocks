@@ -4,19 +4,36 @@ package zone
 
 import (
 	"fmt"
-	"github.com/rs/zerolog"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/rs/zerolog"
 
 	"github.com/google/uuid"
 	"github.com/linksocks/linksocks/internal/ech"
 	"github.com/spf13/cobra"
 )
+
+// newLogger formats zone logs like the rest of the CLI: timestamped console
+// lines, INFO by default, -d for debug and -dd for trace.
+func newLogger(out io.Writer, debug int) zerolog.Logger {
+	level := zerolog.InfoLevel
+	switch {
+	case debug == 1:
+		level = zerolog.DebugLevel
+	case debug >= 2:
+		level = zerolog.TraceLevel
+	}
+	writer := zerolog.ConsoleWriter{Out: zerolog.SyncWriter(out), TimeFormat: time.RFC3339}
+	return zerolog.New(writer).Level(level).With().Timestamp().Logger()
+}
 
 // NewCommand builds the zone CLI and its join, leave and list subcommands.
 func NewCommand() *cobra.Command {
@@ -27,9 +44,7 @@ func NewCommand() *cobra.Command {
 	cmd.PersistentFlags().BoolVarP(&opt.noProxy, "no-env-proxy", "E", false, "Connect without environment proxy settings")
 	cmd.PersistentFlags().StringVar(&opt.ech, "ech", "auto", "Encrypted Client Hello for the coordinator connection (auto|off)")
 	cmd.PersistentFlags().StringVar(&opt.echConfigRaw, "ech-config", "", "Pinned ECH config list for the coordinator connection as base64 (or @file)")
-
-	// Warnings (for example a rejected ECH offer) go to the command's output.
-	opt.logger = zerolog.New(cmd.OutOrStdout()).Level(zerolog.WarnLevel)
+	cmd.PersistentFlags().CountVarP(&opt.debug, "debug", "d", "Show debug logs (use -dd for trace logs)")
 	join := &cobra.Command{Use: "join <zone-id>", Short: "Connect this machine to a zone", Args: cobra.ExactArgs(1)}
 	join.Flags().StringVar(&opt.name, "name", "", "Machine name (default: hostname)")
 	join.Flags().StringVar(&opt.iface, "interface", "", "TAP interface name for --vlan (default: lz0)")
@@ -88,6 +103,7 @@ func prepareOptions(opt *options, command *cobra.Command, id string) error {
 	}
 	opt.id = id
 	opt.out = command.OutOrStdout()
+	opt.logger = newLogger(opt.out, opt.debug)
 	if opt.echConfigRaw != "" {
 		parsed, err := ech.ParseConfigList(opt.echConfigRaw)
 		if err != nil {

@@ -140,11 +140,19 @@ name and use non-overlapping networks.
 | `--interface` | TAP interface name for `--vlan`; default `lz0` |
 | `--no-env-proxy`, `-E` | Ignore environment proxy settings |
 | `--ech` | Encrypted Client Hello for the coordinator connection; default `auto` |
+| `--debug`, `-d` | Show debug logs; `-dd` adds trace logs (streams, datagrams, firewall drops, coordinator pings) |
 
 Run these subcommands under `linksocks`. `--url` accepts HTTP(S) and WebSocket
 URLs. Use HTTPS for a remote coordinator. The `--name`, `--socks-port`,
 `--vlan` and `--interface` options belong to `join`; the other listed options
 are shared by all zone commands.
+
+A joined machine logs what it does: joining and the assigned address, later
+peer-count changes, the SOCKS5 listener and, in VLAN mode, the interface. Add
+`-d` to see why traffic flows or not — an opened stream, a refused one with its
+reason (blocked by the zone firewall, the peer is offline, the local service is
+unreachable) — and `-dd` for per-frame detail such as datagrams and firewall
+drops.
 
 ## Manage a Zone
 

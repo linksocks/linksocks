@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +37,7 @@ type options struct {
 	ech          string
 	echConfigRaw string
 	echConfig    []byte
+	debug        int
 	logger       zerolog.Logger
 	out          io.Writer
 }
@@ -57,6 +59,7 @@ type connection struct {
 	udpClients  map[udpClientKey]*udpClient
 	udpServices map[udpServiceKey]*udpService
 
+	log  zerolog.Logger
 	ctx  context.Context
 	done chan struct{}
 }
@@ -197,6 +200,7 @@ func connect(ctx context.Context, opt options, identity ed25519.PrivateKey, acti
 		streams:     newStreamTable(),
 		udpClients:  make(map[udpClientKey]*udpClient),
 		udpServices: make(map[udpServiceKey]*udpService),
+		log:         opt.logger,
 		done:        make(chan struct{}),
 	}
 	if action == "leave" && message.Type == "left" {
@@ -215,6 +219,7 @@ func connect(ctx context.Context, opt options, identity ed25519.PrivateKey, acti
 		return nil, terminalError{err}
 	}
 	conn.welcome = message.Settings.Welcome
+	conn.log.Debug().Str("url", u.String()).Msg("Coordinator link established")
 	_ = ws.SetReadDeadline(time.Time{})
 	return conn, nil
 }
@@ -250,10 +255,16 @@ func (c *connection) sendPlain(message []byte) error {
 }
 
 func run(ctx context.Context, opt options) error {
+	identityPath := opt.identity
+	if identityPath == "" {
+		identityPath = defaultIdentityPath()
+	}
+	opt.logger.Debug().Str("path", identityPath).Msg("Machine identity loaded")
 	identity, err := loadIdentity(opt.identity)
 	if err != nil {
 		return err
 	}
+	opt.logger.Info().Str("zone_id", opt.id).Str("url", opt.url).Str("name", opt.name).Msg("Joining zone")
 	delay := time.Second
 	for ctx.Err() == nil {
 		conn, err := connect(ctx, opt, identity, "join")
@@ -266,18 +277,18 @@ func run(ctx context.Context, opt options) error {
 			return nil
 		}
 		if err == nil || websocket.IsCloseError(err, 4001) {
-			fmt.Fprintf(opt.out, "Left zone %s.\n", opt.id)
+			opt.logger.Info().Str("zone_id", opt.id).Msg("Left zone")
 			return nil
 		}
 		if websocket.IsCloseError(err, 4003) {
-			fmt.Fprintf(opt.out, "Removed from the zone.\n")
+			opt.logger.Warn().Str("zone_id", opt.id).Msg("Removed from the zone by an operator")
 			return terminalError{errors.New("removed from the zone")}
 		}
 		var terminal terminalError
 		if errors.As(err, &terminal) || websocket.IsCloseError(err, 1008) {
 			return err
 		}
-		fmt.Fprintf(opt.out, "Zone connection lost: %v. Reconnecting in %s.\n", err, delay)
+		opt.logger.Warn().Err(err).Str("retry_in", delay.String()).Msg("Zone connection lost")
 		select {
 		case <-ctx.Done():
 			return nil
@@ -300,7 +311,7 @@ func (c *connection) serve(ctx context.Context, opt options) error {
 		}
 		tap = device
 	} else if opt.ifaceSet {
-		fmt.Fprintln(opt.out, "Note: --interface applies to --vlan mode; proxy mode does not create an interface.")
+		opt.logger.Warn().Msg("--interface applies to --vlan mode; proxy mode does not create an interface")
 	}
 	var server *socksServer
 	// --vlan replaces proxy mode; the SOCKS listener only starts there when
@@ -319,21 +330,24 @@ func (c *connection) serve(ctx context.Context, opt options) error {
 		go server.serve()
 	}
 
-	zoneName := c.initial.Zone.Name + " (" + opt.id
-	if visibility := c.initial.Zone.Visibility; visibility != "" {
-		zoneName += ", " + visibility
-	}
-	zoneName += ")"
-	where := ""
+	joined := opt.logger.Info().
+		Str("zone", c.initial.Zone.Name).
+		Str("zone_id", opt.id).
+		Str("visibility", c.initial.Zone.Visibility).
+		Str("ip", c.initial.Self).
+		Int("peers_online", len(c.initial.Peers))
 	if tap != nil {
-		where = " on " + tap.Name()
+		joined = joined.Str("iface", tap.Name())
 	}
-	fmt.Fprintf(opt.out, "Joined %s as %s%s; %d peer(s) online.\n", zoneName, c.initial.Self, where, len(c.initial.Peers))
+	joined.Msg("Joined zone")
+	if tap != nil {
+		opt.logger.Info().Str("iface", tap.Name()).Msg("Zone interface ready")
+	}
 	if c.welcome != "" {
-		fmt.Fprintf(opt.out, "Welcome: %s\n", c.welcome)
+		opt.logger.Info().Str("text", c.welcome).Msg("Zone welcome")
 	}
 	if server != nil {
-		fmt.Fprintf(opt.out, "SOCKS5 proxy listening on %s\n", server.addr())
+		opt.logger.Info().Str("addr", server.addr()).Msg("SOCKS5 proxy listening")
 	}
 
 	child, cancel := context.WithCancel(ctx)
@@ -379,6 +393,7 @@ func (c *connection) serve(ctx context.Context, opt options) error {
 				c.ws.Close()
 				return
 			case <-ticker.C:
+				c.log.Trace().Msg("Coordinator ping")
 				if c.writeJSON(map[string]string{"type": "ping"}) != nil {
 					c.ws.Close()
 					return
@@ -447,6 +462,7 @@ func (c *connection) serve(ctx context.Context, opt options) error {
 					continue
 				}
 				if !c.ruleAllowed(ethernetFlow(frame)) {
+					c.log.Trace().Msg("Frame dropped by the zone firewall")
 					continue
 				}
 				if tap != nil {
@@ -461,6 +477,7 @@ func (c *connection) serve(ctx context.Context, opt options) error {
 				if err != nil {
 					continue
 				}
+				c.log.Trace().Str("peer", datagram.src.String()).Str("port", strconv.Itoa(int(datagram.dstPort))).Int("bytes", len(datagram.payload)).Msg("Datagram received")
 				c.deliverDatagram(datagram)
 			}
 			continue
@@ -480,11 +497,11 @@ func (c *connection) serve(ctx context.Context, opt options) error {
 			c.dropStaleStreams()
 			if len(message.Peers) != peersOnline {
 				peersOnline = len(message.Peers)
-				fmt.Fprintf(opt.out, "Zone peers online: %d.\n", peersOnline)
+				opt.logger.Info().Int("peers_online", peersOnline).Msg("Zone peers changed")
 			}
 		case "error":
 			if message.Error != "" {
-				fmt.Fprintln(opt.out, message.Error)
+				opt.logger.Warn().Str("reason", message.Error).Msg("Zone error")
 			}
 		case "left":
 			return nil
@@ -501,11 +518,18 @@ func (c *connection) applySettings(s settings, opt options) error {
 		return err
 	}
 	c.settingsMu.Lock()
-	changed := s.Welcome != c.welcome
+	welcomeChanged := s.Welcome != c.welcome
+	rulesChanged := rules.defaultAllow != c.rules.defaultAllow || !slices.Equal(rules.rules, c.rules.rules)
 	c.rules, c.welcome = rules, s.Welcome
 	c.settingsMu.Unlock()
-	if changed && s.Welcome != "" {
-		fmt.Fprintf(opt.out, "Welcome: %s\n", s.Welcome)
+	if rulesChanged {
+		opt.logger.Info().
+			Int("rules", len(rules.rules)).
+			Str("default_action", defaultActionLabel(rules.defaultAllow)).
+			Msg("Zone firewall updated")
+	}
+	if welcomeChanged && s.Welcome != "" {
+		opt.logger.Info().Str("text", s.Welcome).Msg("Zone welcome")
 	}
 	return nil
 }
@@ -554,13 +578,22 @@ func (c *connection) handleStream(message []byte) {
 		s.enqueue(payload)
 	case opClose:
 		if s := c.streams.get(id); s != nil {
+			c.log.Trace().Uint32("stream", id).Msg("Peer closed stream")
 			s.remoteClose()
 		}
 	case opReset:
 		if s := c.streams.get(id); s != nil {
+			c.log.Trace().Uint32("stream", id).Msg("Peer reset stream")
 			s.abort()
 		}
 	}
+}
+
+func defaultActionLabel(allow bool) string {
+	if allow {
+		return "allow"
+	}
+	return "deny"
 }
 
 // handleOpen terminates an inbound stream on 127.0.0.1 after the member's own
@@ -580,6 +613,7 @@ func (c *connection) handleOpen(id uint32, fields []byte) {
 		return
 	}
 	if !c.ruleAllowed(flow{src: src, dst: dst, proto: "tcp", dstPort: port, dstPortKnown: true}) {
+		c.log.Warn().Str("peer", src.String()).Str("port", strconv.Itoa(int(port))).Msg("Inbound stream refused: blocked by the zone firewall")
 		_ = c.sendPlain(refuseMessage(id, refuseNotAllowed, "not allowed"))
 		return
 	}
@@ -587,6 +621,7 @@ func (c *connection) handleOpen(id uint32, fields []byte) {
 	target := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port)))
 	conn, err := dialer.DialContext(c.ctx, "tcp", target)
 	if err != nil {
+		c.log.Debug().Str("peer", src.String()).Str("port", strconv.Itoa(int(port))).Err(err).Msg("Inbound stream refused: local service unreachable")
 		_ = c.sendPlain(refuseMessage(id, refuseFailed, "connection failed"))
 		return
 	}
@@ -596,6 +631,7 @@ func (c *connection) handleOpen(id uint32, fields []byte) {
 		_ = c.sendPlain(resetMessage(id, 1))
 		return
 	}
+	c.log.Debug().Str("peer", src.String()).Str("port", strconv.Itoa(int(port))).Uint32("stream", stream.id).Msg("Inbound stream accepted")
 	if err := c.sendPlain(acceptMessage(id)); err != nil {
 		stream.abort()
 		return
@@ -606,9 +642,11 @@ func (c *connection) handleOpen(id uint32, fields []byte) {
 func (c *connection) openStream(ctx context.Context, dst netip.Addr, port uint16) (*zoneStream, error) {
 	peer := c.cipher.peerAddr(dst)
 	if peer == nil {
+		c.log.Debug().Str("dst", dst.String()).Str("port", strconv.Itoa(int(port))).Msg("Stream refused: destination is not an online member")
 		return nil, errUnreachable
 	}
 	if !c.ruleAllowed(flow{src: c.cipher.self, dst: dst, proto: "tcp", dstPort: port, dstPortKnown: true}) {
+		c.log.Debug().Str("dst", dst.String()).Str("port", strconv.Itoa(int(port))).Msg("Stream refused: blocked by the zone firewall")
 		return nil, errNotAllowed
 	}
 	stream := c.streams.allocate(c, peer, true)
@@ -619,6 +657,7 @@ func (c *connection) openStream(ctx context.Context, dst netip.Addr, port uint16
 	select {
 	case code := <-stream.ready:
 		if code == 0 {
+			c.log.Debug().Str("peer", peer.addr().String()).Str("port", strconv.Itoa(int(port))).Uint32("stream", stream.id).Msg("Outbound stream opened")
 			return stream, nil
 		}
 		c.streams.discard(stream)

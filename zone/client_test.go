@@ -17,6 +17,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -121,8 +122,12 @@ func (b *syncBuffer) Write(data []byte) (int, error) {
 func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.bb.String()
+	// Log lines are coloured, and the escape codes split field names from
+	// their values, so assertions match against the plain text.
+	return ansiPattern.ReplaceAllString(b.bb.String(), "")
 }
+
+var ansiPattern = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 // fakeZoneSession is the server side of one membership: it speaks the
 // coordinator protocol and then the zone protocol with the client.
@@ -259,7 +264,9 @@ func startFakeZoneClient(t *testing.T, initial settings, socksPort int) *fakeZon
 	}
 	_ = ws.SetReadDeadline(time.Time{})
 	out := &syncBuffer{}
-	go func() { _ = conn.serve(ctx, options{socksPort: socksPort, out: out, noProxy: true}) }()
+	go func() {
+		_ = conn.serve(ctx, options{socksPort: socksPort, out: out, logger: newLogger(out, 0), noProxy: true})
+	}()
 	session := &fakeZoneSession{
 		t: t, ws: ws, cipher: cipher, out: out, cancel: cancel,
 		client: netip.MustParseAddr(selfIP), peer: netip.MustParseAddr(peerIP),
@@ -353,8 +360,8 @@ func startUDPEcho(t *testing.T) int {
 func TestServeAcceptsInboundStream(t *testing.T) {
 	echoPort, _ := startTCPEcho(t)
 	session := startFakeZoneClient(t, settings{DefaultAction: "allow", Welcome: "hello zone"}, 0)
-	session.waitFor("Joined fake zone")
-	session.waitFor("Welcome: hello zone")
+	session.waitFor("Joined zone")
+	session.waitFor(`text="hello zone"`)
 
 	const id = 0x2a2a2a2a
 	session.write(openMessage(id, session.peer, session.client, uint16(echoPort)))
@@ -385,7 +392,7 @@ func TestServeAcceptsInboundStream(t *testing.T) {
 func TestServeDeniesInboundStreamByRules(t *testing.T) {
 	echoPort, dials := startTCPEcho(t)
 	session := startFakeZoneClient(t, settings{DefaultAction: "deny"}, 0)
-	session.waitFor("Joined fake zone")
+	session.waitFor("Joined zone")
 	const blocked = 0x32323232
 	session.write(openMessage(blocked, session.peer, session.client, uint16(echoPort)))
 	refuse := session.expect("REFUSE", func(message []byte) bool {
@@ -405,7 +412,7 @@ func TestServeDeniesInboundStreamByRules(t *testing.T) {
 func TestServeDeliversInboundDatagram(t *testing.T) {
 	echoPort := startUDPEcho(t)
 	session := startFakeZoneClient(t, settings{DefaultAction: "allow"}, 0)
-	session.waitFor("Joined fake zone")
+	session.waitFor("Joined zone")
 	message, err := session.cipher.sealDatagram(session.client, 40000, uint16(echoPort), []byte("datagram"))
 	if err != nil {
 		t.Fatal(err)
@@ -426,7 +433,7 @@ func TestServeDeliversInboundDatagram(t *testing.T) {
 func TestServeDropsInboundDatagramByRules(t *testing.T) {
 	echoPort := startUDPEcho(t)
 	session := startFakeZoneClient(t, settings{DefaultAction: "deny"}, 0)
-	session.waitFor("Joined fake zone")
+	session.waitFor("Joined zone")
 	message, err := session.cipher.sealDatagram(session.client, 40000, uint16(echoPort), []byte("datagram"))
 	if err != nil {
 		t.Fatal(err)
@@ -440,9 +447,9 @@ func TestServeDropsInboundDatagramByRules(t *testing.T) {
 
 func TestServeSettingsUpdateTakesEffect(t *testing.T) {
 	session := startFakeZoneClient(t, settings{DefaultAction: "deny"}, 0)
-	session.waitFor("Joined fake zone")
+	session.waitFor("Joined zone")
 	session.update(settings{DefaultAction: "allow", Welcome: "welcome back"})
-	session.waitFor("Welcome: welcome back")
+	session.waitFor(`text="welcome back"`)
 	echoPort, dials := startTCPEcho(t)
 	const id = 0x45454545
 	session.write(openMessage(id, session.peer, session.client, uint16(echoPort)))
@@ -450,15 +457,28 @@ func TestServeSettingsUpdateTakesEffect(t *testing.T) {
 		op, got, _, err := streamOp(message)
 		return err == nil && op == opAccept && got == id
 	})
-	if dials() == 0 {
-		t.Fatal("client did not dial after the rules update allowed it")
+	// The echo server counts acceptances in its own goroutine, so poll
+	// instead of checking the instant the ACCEPT frame arrives.
+	waitForDial(t, dials, "client did not dial after the rules update allowed it")
+}
+
+// waitForDial polls until the echo server accepted at least one connection.
+func waitForDial(t *testing.T, dials func() int, failure string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if dials() > 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
+	t.Fatal(failure)
 }
 
 func TestServeSOCKSConnectToMember(t *testing.T) {
 	proxyPort := freePort(t)
 	session := startFakeZoneClient(t, settings{DefaultAction: "allow"}, proxyPort)
-	session.waitFor(fmt.Sprintf("SOCKS5 proxy listening on 127.0.0.1:%d", proxyPort))
+	session.waitFor(fmt.Sprintf("SOCKS5 proxy listening addr=127.0.0.1:%d", proxyPort))
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort))
 	if err != nil {
 		t.Fatal(err)
@@ -514,7 +534,7 @@ func TestServeSOCKSConnectToMember(t *testing.T) {
 func TestServeSOCKSDatagramRoundTrip(t *testing.T) {
 	proxyPort := freePort(t)
 	session := startFakeZoneClient(t, settings{DefaultAction: "allow"}, proxyPort)
-	session.waitFor(fmt.Sprintf("SOCKS5 proxy listening on 127.0.0.1:%d", proxyPort))
+	session.waitFor(fmt.Sprintf("SOCKS5 proxy listening addr=127.0.0.1:%d", proxyPort))
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort))
 	if err != nil {
 		t.Fatal(err)
@@ -582,7 +602,7 @@ func TestRunStopsWhenRemovedFromZone(t *testing.T) {
 	out := &syncBuffer{}
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, options{url: url, id: id, identity: keyPath, name: "client", noProxy: true, out: out})
+		done <- run(ctx, options{url: url, id: id, identity: keyPath, name: "client", noProxy: true, out: out, logger: newLogger(out, 0)})
 	}()
 	ws := <-wsCh
 	if err := ws.WriteJSON(map[string]string{"type": "challenge", "challenge": strings.Repeat("ab", 32)}); err != nil {
@@ -602,10 +622,10 @@ func TestRunStopsWhenRemovedFromZone(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for !strings.Contains(out.String(), "Joined fake zone") && time.Now().Before(deadline) {
+	for !strings.Contains(out.String(), "Joined zone") && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !strings.Contains(out.String(), "Joined fake zone") {
+	if !strings.Contains(out.String(), "Joined zone") {
 		t.Fatalf("client never joined: %s", out.String())
 	}
 	if err := ws.WriteJSON(map[string]string{"type": "error", "error": "Removed from the zone by its owner"}); err != nil {
@@ -621,7 +641,7 @@ func TestRunStopsWhenRemovedFromZone(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("run kept reconnecting after the kick")
 	}
-	if !strings.Contains(out.String(), "Removed from the zone by its owner") || !strings.Contains(out.String(), "Removed from the zone.") {
+	if !strings.Contains(out.String(), "Removed from the zone by its owner") || !strings.Contains(out.String(), "Removed from the zone by an operator") {
 		t.Fatalf("missing kick output: %s", out.String())
 	}
 }
