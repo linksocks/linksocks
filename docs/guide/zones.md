@@ -92,10 +92,10 @@ hostname shown in the member list.
 ### Proxy Mode (Default)
 
 `linksocks zone join <zone-id>` starts a local SOCKS5 proxy on
-`127.0.0.1:1080` and prints its address:
+`127.0.0.1:6080` and prints its address:
 
 ```text
-SOCKS5 proxy listening on 127.0.0.1:1080
+SOCKS5 proxy listening on 127.0.0.1:6080
 ```
 
 Change the port with `--socks-port`; `--socks-port 0` disables the listener.
@@ -103,8 +103,8 @@ Applications address members by virtual IP or by name and should let the proxy
 resolve names:
 
 ```bash
-curl --socks5-hostname 127.0.0.1:1080 http://10.88.0.2:8080/
-curl --socks5-hostname 127.0.0.1:1080 http://machine-b:8080/
+curl --socks5-hostname 127.0.0.1:6080 http://10.88.0.2:8080/
+curl --socks5-hostname 127.0.0.1:6080 http://machine-b:8080/
 ```
 
 Proxy mode carries TCP and UDP (SOCKS5 UDP ASSOCIATE). A connection to a
@@ -125,6 +125,28 @@ SOCKS5 listener.
 When joining several zones on one machine, give each join a distinct interface
 name and use non-overlapping networks.
 
+### Windows and macOS
+
+`--vlan` needs a layer-2 (Ethernet) virtual adapter. LinkSocks creates one on
+Linux; on Windows and macOS, join without `--vlan` and use the SOCKS5 proxy —
+it needs no driver and no administrator rights, and it reaches members by
+address or by name.
+
+Layer 2 on those systems has a cost: the zone protocol treats each member's
+adapter MAC as its identity on the segment (it filters inbound frames by it),
+so an adapter whose MAC the client cannot pin cannot carry the traffic.
+
+- **Windows** would need an L2 driver such as OpenVPN's TAP-Windows6, plus an
+  administrator step to install it and to set the adapter's MAC to the
+  machine's member MAC; or a future IP-packet mode over Wintun, which drops
+  ARP, broadcast and non-IP traffic but needs no MAC configuration.
+- **macOS** only offers L3 tunnels (utun), so the same IP-packet mode would be
+  the path there; today the proxy is the way.
+
+Inside WSL2 (which is Linux) `--vlan` works for programs running in WSL. Windows
+programs still cannot join that segment: point them at a proxy instead, which
+WSL2 forwards on `127.0.0.1`.
+
 ### Command Reference
 
 | Command or option | Use |
@@ -135,7 +157,7 @@ name and use non-overlapping networks.
 | `--url`, `-u` | Coordinator website; defaults to `https://l.zetx.tech` |
 | `--identity` | Path to the local machine key; use the same file for join and leave |
 | `--name` | Machine name for join; defaults to the hostname |
-| `--socks-port` | Local SOCKS5 proxy port, default `1080`; `0` disables the listener; with `--vlan` the proxy starts only when the flag is given |
+| `--socks-port` | Local SOCKS5 proxy port, default `6080`; `0` disables the listener; with `--vlan` the proxy starts only when the flag is given |
 | `--vlan` | Create an L2 TAP interface instead of using proxy mode (Linux, root) |
 | `--interface` | TAP interface name for `--vlan`; default `lz0` |
 | `--no-env-proxy`, `-E` | Ignore environment proxy settings |

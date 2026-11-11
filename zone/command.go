@@ -48,7 +48,7 @@ func NewCommand() *cobra.Command {
 	join := &cobra.Command{Use: "join <zone-id>", Short: "Connect this machine to a zone", Args: cobra.ExactArgs(1)}
 	join.Flags().StringVar(&opt.name, "name", "", "Machine name (default: hostname)")
 	join.Flags().StringVar(&opt.iface, "interface", "", "TAP interface name for --vlan (default: lz0)")
-	join.Flags().IntVar(&opt.socksPort, "socks-port", 1080, "Local SOCKS5 proxy port (0 disables the listener; proxy mode only unless set with --vlan)")
+	join.Flags().IntVar(&opt.socksPort, "socks-port", 6080, "Local SOCKS5 proxy port (0 disables the listener; proxy mode only unless set with --vlan)")
 	join.Flags().BoolVar(&opt.vlan, "vlan", false, "Create an L2 TAP interface instead of using proxy mode (Linux, root)")
 	join.RunE = func(command *cobra.Command, args []string) error {
 		if err := prepareOptions(&opt, command, args[0]); err != nil {

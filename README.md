@@ -180,10 +180,10 @@ linksocks zone join <zone-id>
 ```
 
 Each machine prints the address it received and starts a local SOCKS5 proxy on
-`127.0.0.1:1080`; members are then reachable by address or by name:
+`127.0.0.1:6080`; members are then reachable by address or by name:
 
 ```bash
-curl --socks5-hostname 127.0.0.1:1080 http://machine-b:8080
+curl --socks5-hostname 127.0.0.1:6080 http://machine-b:8080
 ```
 
 `zone join` talks to the public coordinator `https://l.zetx.tech` unless `-u`

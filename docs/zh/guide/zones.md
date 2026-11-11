@@ -71,19 +71,19 @@ TCP、UDP、广播（UDP 广播、WOL 魔术包）、组播和原始以太网帧
 
 ### 代理模式（默认）
 
-`linksocks zone join <zone-id>` 会在本机 `127.0.0.1:1080` 启动 SOCKS5 代理，
+`linksocks zone join <zone-id>` 会在本机 `127.0.0.1:6080` 启动 SOCKS5 代理，
 并输出代理地址：
 
 ```text
-SOCKS5 proxy listening on 127.0.0.1:1080
+SOCKS5 proxy listening on 127.0.0.1:6080
 ```
 
 用 `--socks-port` 修改端口；`--socks-port 0` 关闭监听。应用通过虚拟 IP 或成员名
 寻址，并应让代理解析名称：
 
 ```bash
-curl --socks5-hostname 127.0.0.1:1080 http://10.88.0.2:8080/
-curl --socks5-hostname 127.0.0.1:1080 http://machine-b:8080/
+curl --socks5-hostname 127.0.0.1:6080 http://10.88.0.2:8080/
+curl --socks5-hostname 127.0.0.1:6080 http://machine-b:8080/
 ```
 
 代理模式支持 TCP 和 UDP（SOCKS5 UDP ASSOCIATE）。连接成员虚拟 IP 的流量会到达
@@ -99,6 +99,23 @@ UDP 广播、WOL 魔术包、组播和原始以太网帧都能在成员之间传
 
 在同一台机器加入多个 Zone 时，每个加入进程应使用不同网卡名称，且各网段不能重叠。
 
+### Windows 和 macOS
+
+`--vlan` 需要一块二层（以太网）虚拟网卡。LinkSocks 只在 Linux 上创建它；
+Windows 和 macOS 上请不加 `--vlan`，使用 SOCKS5 代理——不需要驱动，也不需要
+管理员权限，可以按虚拟 IP 或成员名访问成员。
+
+在这两个系统上做二层是有代价的：Zone 协议把每台成员的网卡 MAC 当作它在网段里的
+身份（接收时按它过滤），因此客户端无法掌控其 MAC 的网卡无法承载这些流量。
+
+- **Windows**：需要 TAP-Windows6 这类二层驱动，并以管理员权限安装、把网卡 MAC
+  设为本机的成员 MAC；或者等一个基于 Wintun 的 IP 包模式——它放弃 ARP、广播和
+  非 IP 协议，但无需配置 MAC。
+- **macOS**：系统只提供三层隧道（utun），同样要等 IP 包模式；目前只能用代理。
+
+在 WSL2 里（它本身就是 Linux）`--vlan` 对 WSL 内运行的程序有效。Windows 程序
+仍然无法加入该网段：请让它们使用代理，WSL2 会把监听在 `127.0.0.1` 的代理转发出来。
+
 ### 命令和参数
 
 | 命令或参数 | 用途 |
@@ -109,7 +126,7 @@ UDP 广播、WOL 魔术包、组播和原始以太网帧都能在成员之间传
 | `--url`、`-u` | 协调服务网站地址，默认为 `https://l.zetx.tech` |
 | `--identity` | 本地机器密钥路径；加入和退出必须使用同一文件 |
 | `--name` | 加入时显示的机器名称，默认使用主机名 |
-| `--socks-port` | 本机 SOCKS5 代理端口，默认 `1080`；`0` 关闭监听；配合 `--vlan` 时只有显式指定才启动代理 |
+| `--socks-port` | 本机 SOCKS5 代理端口，默认 `6080`；`0` 关闭监听；配合 `--vlan` 时只有显式指定才启动代理 |
 | `--vlan` | 不使用代理模式，改为创建二层 TAP 网卡（Linux，需要 root） |
 | `--interface` | `--vlan` 使用的 TAP 网卡名称，默认 `lz0` |
 | `--no-env-proxy`、`-E` | 忽略环境变量中的代理设置 |

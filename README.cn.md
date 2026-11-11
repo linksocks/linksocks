@@ -149,11 +149,11 @@ linksocks zone join <zone-id>
 linksocks zone join <zone-id>
 ```
 
-每台机器会打印分配到的地址，并在本机 `127.0.0.1:1080` 启动 SOCKS5 代理；之后可以
+每台机器会打印分配到的地址，并在本机 `127.0.0.1:6080` 启动 SOCKS5 代理；之后可以
 用虚拟地址或成员名访问其他成员：
 
 ```bash
-curl --socks5-hostname 127.0.0.1:1080 http://machine-b:8080
+curl --socks5-hostname 127.0.0.1:6080 http://machine-b:8080
 ```
 
 `zone join` 默认使用公共协调服务 `https://l.zetx.tech`，可用 `-u` 指定其他地址。
