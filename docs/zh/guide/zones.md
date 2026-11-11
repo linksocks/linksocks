@@ -17,14 +17,14 @@ Zone 默认为私有。私有 Zone 不会出现在任何列表中，只有拿到
 - 使用包含 `zone` 命令的 LinkSocks CLI。此功能没有 Python 库 API，安装 Python
   绑定不会提供 `Zone` 类。
 - 默认加入模式只需在本机运行 SOCKS5 代理，不需要特殊权限。可选的 `--vlan`
-  模式会创建 TAP 网卡，需要 root 或管理员权限，目前仅在 Linux 上可用。
+  模式需要一块二层 TAP 网卡：Linux 依赖 `/dev/net/tun` 与 `ip` 命令，Windows
+  需要 TAP-Windows6 适配器；两者都需要 root 或管理员权限。
 - Zone 网段不能与任何成员已有的局域网、VPN、容器网络或其他路由重叠。
-  客户端会检查网卡地址；Linux 还会检查所有 IPv4 路由表，默认路由除外。
-- 代理模式支持 Linux、macOS 和 Windows。`--vlan` 需要 Linux，并依赖
-  `/dev/net/tun` 和 `ip` 命令。
+  客户端在所有平台都会检查网卡地址，Linux 还会检查所有 IPv4 路由表，默认路由除外。
+- 代理模式支持 Linux、macOS 和 Windows。
 
-Linux 已使用真实 TAP 网卡和代理模式完成端到端验证。Windows 和 macOS 可以编译，
-尚未在对应系统上验证。
+Linux 已使用真实 TAP 网卡和代理模式完成端到端验证。Windows 的 TAP 路径可编译但
+尚未在 Windows 机器上验证；macOS 只支持代理模式。
 
 代理模式传输 TCP 流和 UDP 数据报（SOCKS5 UDP ASSOCIATE），不创建网卡，
 因此不支持 ICMP 等其他 IP 协议。`--vlan` 传输完整的以太网帧：ARP、ICMP/ping、
@@ -101,20 +101,34 @@ UDP 广播、WOL 魔术包、组播和原始以太网帧都能在成员之间传
 
 ### Windows 和 macOS
 
-`--vlan` 需要一块二层（以太网）虚拟网卡。LinkSocks 只在 Linux 上创建它；
-Windows 和 macOS 上请不加 `--vlan`，使用 SOCKS5 代理——不需要驱动，也不需要
-管理员权限，可以按虚拟 IP 或成员名访问成员。
+`--vlan` 需要一块二层（以太网）虚拟网卡：Zone 协议把每台成员的网卡 MAC 当作它在
+网段里的身份，并按它过滤入站帧。Linux 自带这种网卡；Windows 需要装驱动；macOS
+根本不支持二层。
 
-在这两个系统上做二层是有代价的：Zone 协议把每台成员的网卡 MAC 当作它在网段里的
-身份（接收时按它过滤），因此客户端无法掌控其 MAC 的网卡无法承载这些流量。
+**Windows（TAP-Windows6）**：安装 TAP-Windows6 驱动，为每个 Zone 添加一块适配器，
+然后在管理员终端里用 `--vlan` 加入：
 
-- **Windows**：需要 TAP-Windows6 这类二层驱动，并以管理员权限安装、把网卡 MAC
-  设为本机的成员 MAC；或者等一个基于 Wintun 的 IP 包模式——它放弃 ARP、广播和
-  非 IP 协议，但无需配置 MAC。
-- **macOS**：系统只提供三层隧道（utun），同样要等 IP 包模式；目前只能用代理。
+```powershell
+# 一次性：从 https://build.openvpn.net/downloads/releases/ 安装 tap-windows6
+# （安装程序会添加一块适配器）。每多一个 Zone，就在安装程序里再选一次
+# "Add a new TAP virtual ethernet adapter"，或运行 addtap.bat。
 
-在 WSL2 里（它本身就是 Linux）`--vlan` 对 WSL 内运行的程序有效。Windows 程序
-仍然无法加入该网段：请让它们使用代理，WSL2 会把监听在 `127.0.0.1` 的代理转发出来。
+# 从管理员 PowerShell 或命令提示符加入
+linksocks zone join <zone-id> --vlan
+# 有多块适配器时，用名称指定
+linksocks zone join <zone-id> --vlan --interface "Local Area Connection 2"
+```
+
+不指定 `--interface` 时使用找到的第一块 TAP-Windows6 适配器。客户端会把它的 MAC
+固定为本机的成员 MAC（Windows 在适配器重启后才生效，客户端会自动重启它）、启用
+适配器并设置成员地址。这些操作都需要管理员权限，和 Linux 需要 root 一样；没有
+管理员权限时会直接报错退出，而不是半途而废。
+
+**macOS** 只提供三层隧道（utun），因此没有 `--vlan`：不加该参数、使用 SOCKS5
+代理即可，代理能按虚拟 IP 或成员名访问成员。
+
+**WSL2** 本身就是 Linux，`--vlan` 对 WSL 内运行的程序有效。Windows 程序仍然无法
+加入该网段：请让它们使用代理，WSL2 会把监听在 `127.0.0.1` 的代理转发出来。
 
 ### 命令和参数
 
@@ -127,8 +141,8 @@ Windows 和 macOS 上请不加 `--vlan`，使用 SOCKS5 代理——不需要驱
 | `--identity` | 本地机器密钥路径；加入和退出必须使用同一文件 |
 | `--name` | 加入时显示的机器名称，默认使用主机名 |
 | `--socks-port` | 本机 SOCKS5 代理端口，默认 `6080`；`0` 关闭监听；配合 `--vlan` 时只有显式指定才启动代理 |
-| `--vlan` | 不使用代理模式，改为创建二层 TAP 网卡（Linux，需要 root） |
-| `--interface` | `--vlan` 使用的 TAP 网卡名称，默认 `lz0` |
+| `--vlan` | 不使用代理模式，改为使用二层 TAP 网卡（Linux 的 `/dev/net/tun` 或 Windows 的 TAP-Windows6；需要 root 或管理员权限） |
+| `--interface` | `--vlan` 使用的 TAP 网卡名称；Linux 默认 `lz0`，Windows 默认使用第一块 TAP-Windows6 适配器 |
 | `--no-env-proxy`、`-E` | 忽略环境变量中的代理设置 |
 | `--ech` | 连接协调服务时的 Encrypted Client Hello，默认 `auto` |
 | `--debug`、`-d` | 输出调试日志；`-dd` 追加 trace 日志（流、数据报、防火墙丢弃、协调服务心跳） |

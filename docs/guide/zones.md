@@ -22,17 +22,19 @@ no combined list. Zone IDs are lowercase UUIDs.
 - Use a LinkSocks CLI build that includes `zone`. There is no Python library
   API; installing the Python bindings does not provide a `Zone` class.
 - The default join mode runs a local SOCKS5 proxy and needs no special
-  privileges. The optional `--vlan` mode creates a TAP interface, needs root
-  or administrator privileges, and is currently available on Linux only.
+  privileges. The optional `--vlan` mode needs an L2 TAP interface and works on
+  Linux (with `/dev/net/tun` and the `ip` command) and on Windows (with a
+  TAP-Windows6 adapter); both need root or administrator privileges.
 - Choose a zone network that does not overlap any machine's existing LAN, VPN,
-  container networks or other routes. The client checks interface addresses;
-  Linux also checks all IPv4 routing tables, excluding default routes.
-- Proxy mode runs on Linux, macOS and Windows. `--vlan` needs Linux with
-  `/dev/net/tun` and the `ip` command.
+  container networks or other routes. The client checks interface addresses on
+  every platform, and all IPv4 routing tables on Linux, excluding default
+  routes.
+- Proxy mode runs on Linux, macOS and Windows.
 
 Linux has been verified end to end with real TAP interfaces and with the proxy
-mode. Windows and macOS builds compile, but have not been verified on those
-systems.
+mode. The Windows TAP path and the macOS proxy path compile; macOS cannot run
+`--vlan` (it only offers L3 tunnels) and the Windows TAP path has not been
+verified on a Windows machine yet.
 
 Proxy mode carries TCP streams and UDP datagrams (SOCKS5 UDP ASSOCIATE) and
 creates no interface, so ICMP and other IP protocols are unavailable. `--vlan`
@@ -127,24 +129,36 @@ name and use non-overlapping networks.
 
 ### Windows and macOS
 
-`--vlan` needs a layer-2 (Ethernet) virtual adapter. LinkSocks creates one on
-Linux; on Windows and macOS, join without `--vlan` and use the SOCKS5 proxy —
-it needs no driver and no administrator rights, and it reaches members by
-address or by name.
+`--vlan` needs a layer-2 (Ethernet) virtual adapter, because the zone protocol
+treats each member's adapter MAC as its identity on the segment and filters
+inbound frames by it. That adapter exists on Linux out of the box; Windows needs
+a driver, and macOS cannot do layer 2 at all.
 
-Layer 2 on those systems has a cost: the zone protocol treats each member's
-adapter MAC as its identity on the segment (it filters inbound frames by it),
-so an adapter whose MAC the client cannot pin cannot carry the traffic.
+**Windows (TAP-Windows6).** Install the TAP-Windows6 driver and add one adapter
+per zone, then join with `--vlan` from an elevated shell:
 
-- **Windows** would need an L2 driver such as OpenVPN's TAP-Windows6, plus an
-  administrator step to install it and to set the adapter's MAC to the
-  machine's member MAC; or a future IP-packet mode over Wintun, which drops
-  ARP, broadcast and non-IP traffic but needs no MAC configuration.
-- **macOS** only offers L3 tunnels (utun), so the same IP-packet mode would be
-  the path there; today the proxy is the way.
+```powershell
+# One-time: install tap-windows6 from https://build.openvpn.net/downloads/releases/
+# (the installer adds an adapter). Repeat "Add a new TAP virtual ethernet
+# adapter" in the installer, or run addtap.bat, for each extra zone.
 
-Inside WSL2 (which is Linux) `--vlan` works for programs running in WSL. Windows
-programs still cannot join that segment: point them at a proxy instead, which
+# Join from an elevated PowerShell or Command Prompt
+linksocks zone join <zone-id> --vlan
+# Several adapters: name the one to use
+linksocks zone join <zone-id> --vlan --interface "Local Area Connection 2"
+```
+
+The client picks the first TAP-Windows6 adapter when `--interface` is omitted,
+pins its MAC to the machine's member MAC (Windows applies that on adapter
+restart, which the client performs), enables the adapter, and sets the member
+address. All of it needs administrator rights, just as Linux needs root.
+Without an elevated shell it stops with that message instead of half-working.
+
+**macOS** only offers L3 tunnels (utun), so `--vlan` is not available: join
+without it and use the SOCKS5 proxy, which reaches members by address or name.
+
+**WSL2** is Linux, so `--vlan` works there for programs running inside WSL.
+Windows programs still cannot join that segment: point them at a proxy, which
 WSL2 forwards on `127.0.0.1`.
 
 ### Command Reference
@@ -158,8 +172,8 @@ WSL2 forwards on `127.0.0.1`.
 | `--identity` | Path to the local machine key; use the same file for join and leave |
 | `--name` | Machine name for join; defaults to the hostname |
 | `--socks-port` | Local SOCKS5 proxy port, default `6080`; `0` disables the listener; with `--vlan` the proxy starts only when the flag is given |
-| `--vlan` | Create an L2 TAP interface instead of using proxy mode (Linux, root) |
-| `--interface` | TAP interface name for `--vlan`; default `lz0` |
+| `--vlan` | Use an L2 TAP interface instead of proxy mode (Linux with `/dev/net/tun`, or Windows with TAP-Windows6; root or administrator) |
+| `--interface` | TAP interface name for `--vlan`; default `lz0` on Linux, the first TAP-Windows6 adapter on Windows |
 | `--no-env-proxy`, `-E` | Ignore environment proxy settings |
 | `--ech` | Encrypted Client Hello for the coordinator connection; default `auto` |
 | `--debug`, `-d` | Show debug logs; `-dd` adds trace logs (streams, datagrams, firewall drops, coordinator pings) |
@@ -261,7 +275,7 @@ Ethernet addresses in the frames it forwards.
 | Message or symptom | What to check |
 |---|---|
 | `administrator privileges required` | `--vlan` needs root; run the join in an elevated terminal and check that `/dev/net/tun` exists |
-| `zone --vlan currently requires Linux` | VLAN mode is Linux-only; use proxy mode on other systems |
+| `zone --vlan needs a layer-2 virtual adapter` | VLAN mode needs Linux or a TAP-Windows6 adapter on Windows; macOS uses proxy mode |
 | `configure zone interface` | Check that the platform's network commands are available and allowed |
 | `Note: --interface applies to --vlan mode` | Drop `--interface` in proxy mode, or add `--vlan` if you want a TAP interface |
 | `overlaps` | Choose a zone whose CIDR does not overlap the reported interface or route |

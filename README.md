@@ -34,7 +34,7 @@ Proxy channels are end-to-end encrypted (protocol generation 2): the provider an
 7. Robust code driven by comprehensive tests.
 8. Command-line usage, API server, and library integration.
 9. Serverless relay server supported by Cloudflare Worker.
-10. Zone networks with virtual IPv4 addresses: a local SOCKS5 proxy by default, or an L2 TAP interface on Linux with `--vlan`.
+10. Zone networks with virtual IPv4 addresses: a local SOCKS5 proxy by default, or an L2 TAP interface with `--vlan` (Linux, or Windows with TAP-Windows6).
 11. Encrypted Client Hello by default: relay connections hide the target hostname from the TLS ClientHello, which keeps working on networks that reset hostnames by SNI. The config comes from DNS (system resolver, then DNS-over-HTTPS), from the relay's own `/api/ech` endpoint, or from `--ech-config` when lookups are blocked; nothing is written to disk.
 
 ## Potential Applications
@@ -187,8 +187,10 @@ curl --socks5-hostname 127.0.0.1:6080 http://machine-b:8080
 ```
 
 `zone join` talks to the public coordinator `https://l.zetx.tech` unless `-u`
-says otherwise. On Linux, `--vlan` (root) joins with an L2 TAP interface
-instead, adding ARP, ICMP, broadcast, multicast and Wake-on-LAN. `linksocks zone
+says otherwise. `--vlan` joins with an L2 TAP interface instead, adding ARP,
+ICMP, broadcast, multicast and Wake-on-LAN; it needs an existing TAP interface,
+so Linux needs root for `/dev/net/tun` and Windows needs a TAP-Windows6 adapter
+plus an administrator shell. macOS joins through the proxy. `linksocks zone
 leave` releases the address at once and `linksocks zone list` shows public
 zones.
 

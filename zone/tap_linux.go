@@ -5,9 +5,7 @@ package zone
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -78,49 +76,4 @@ func openTAP(ctx context.Context, name string, prefix netip.Prefix, ip netip.Add
 		}
 	}
 	return device, nil
-}
-
-func checkNetworkOverlap(prefix netip.Prefix) error {
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return err
-	}
-	for _, iface := range interfaces {
-		addresses, err := iface.Addrs()
-		if err != nil {
-			return err
-		}
-		for _, address := range addresses {
-			other, err := netip.ParsePrefix(address.String())
-			if err == nil && other.Addr().Is4() && prefix.Overlaps(other) {
-				return fmt.Errorf("zone network %s overlaps %s on interface %s", prefix, other, iface.Name)
-			}
-		}
-	}
-	output, err := exec.Command("ip", "-j", "-4", "route", "show", "table", "all").Output()
-	if err != nil {
-		return fmt.Errorf("inspect IPv4 routes: %w", err)
-	}
-	var routes []struct {
-		Destination string `json:"dst"`
-		Device      string `json:"dev"`
-	}
-	if err := json.Unmarshal(output, &routes); err != nil {
-		return fmt.Errorf("inspect IPv4 routes: %w", err)
-	}
-	for _, route := range routes {
-		if route.Destination == "default" || route.Destination == "" {
-			continue
-		}
-		other, err := netip.ParsePrefix(route.Destination)
-		if err != nil {
-			if address, parseErr := netip.ParseAddr(route.Destination); parseErr == nil {
-				other = netip.PrefixFrom(address, 32)
-			}
-		}
-		if other.IsValid() && prefix.Overlaps(other) {
-			return fmt.Errorf("zone network %s overlaps route %s on %s", prefix, other, route.Device)
-		}
-	}
-	return nil
 }

@@ -29,7 +29,7 @@ LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCK
 6. 本地代理身份验证（SOCKS5 用户名密码与 HTTP Basic）
 7. 支持 SOCKS5 上的 IPv6
 8. 支持 SOCKS5 上的 UDP
-9. Zone 虚拟 IPv4 网络：默认在本机运行 SOCKS5 代理，Linux 下可用 `--vlan` 创建二层 TAP 网卡
+9. Zone 虚拟 IPv4 网络：默认在本机运行 SOCKS5 代理，`--vlan` 可改用二层 TAP 网卡（Linux，或装有 TAP-Windows6 的 Windows）
 10. 默认启用 Encrypted Client Hello：TLS ClientHello 中不再暴露目标主机名，在按 SNI 重置域名的网络中仍能连通。配置来源包括 DNS（系统解析器，其次 DNS-over-HTTPS）、中继自身的 `/api/ech` 端点，查询被封锁时可用 `--ech-config` 指定；不写入磁盘
 
 ## 潜在应用场景
@@ -157,9 +157,10 @@ curl --socks5-hostname 127.0.0.1:6080 http://machine-b:8080
 ```
 
 `zone join` 默认使用公共协调服务 `https://l.zetx.tech`，可用 `-u` 指定其他地址。
-Linux 下 `--vlan`（需要 root）会改用二层 TAP 网卡加入，额外支持 ARP、ICMP、广播、
-组播和 WOL。`linksocks zone leave` 立即释放地址，`linksocks zone list` 列出公开
-Zone。
+`--vlan` 会改用二层 TAP 网卡加入，额外支持 ARP、ICMP、广播、组播和 WOL；它需要
+一块已存在的 TAP 网卡：Linux 用 root 打开 `/dev/net/tun`，Windows 需要 TAP-Windows6
+适配器并以管理员权限运行。macOS 使用代理模式。`linksocks zone leave` 立即释放地址，
+`linksocks zone list` 列出公开 Zone。
 
 新建 Zone 默认为私有，只有拿到 Zone ID 的机器才能加入。所有者和管理员可以在同一个
 `/zones` 页面管理成员、防火墙规则、欢迎语和踢人。平台要求、身份密钥等细节和真实
