@@ -1708,6 +1708,19 @@ func (s *LinkSocksServer) handleCommonDispatcherMessage(msg BaseMessage, ws *WSC
 			s.forwardDirectMessageFromClient(clientID, m)
 		}
 
+	case DirectSealedMessage:
+		// Sealed signaling: forward the envelope by role like the plaintext
+		// announcements. The relay cannot read the candidates inside it.
+		if s.directEnable {
+			s.mu.Lock()
+			if meta := s.clientMeta[clientID]; meta != nil {
+				meta.SupportsDirect = true
+				meta.UpdatedAt = time.Now()
+			}
+			s.mu.Unlock()
+			s.forwardDirectMessageFromClient(clientID, m)
+		}
+
 	case ChannelMigrateMessage:
 		s.forwardChannelControl(m.ChannelID, ws, m)
 

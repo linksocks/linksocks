@@ -4,7 +4,7 @@ LinkSocks uses a custom binary message protocol over WebSocket. This page detail
 
 ### Protocol Version
 
-Current Go and linksocks.js protocol version: `0x04` (major 0, minor 4) for the legacy generation, and `0x20` (major 2, minor 0) for the end-to-end encrypted generation.
+Current Go and linksocks.js protocol version: `0x04` (major 0, minor 4) for the legacy generation, and `0x21` (major 2, minor 1) for the end-to-end encrypted generation.
 The high four bits encode the major version; the low four bits encode the minor version.
 Messages of an unsupported major version are rejected, while minor mismatches are allowed with a warning.
 The connection does not negotiate a shared version: each side declares the generation it speaks and never downgrades silently.
@@ -15,7 +15,8 @@ Feature minimums are distinct from the current protocol version:
 - Channel migration: `0x02`, checked against the direct peer's advertised version.
 - Web proxy: `0x03`, checked against the Worker response; registration must also succeed.
 - WebSocket proxying over the web tunnel: `0x04`, required for `websocket_frame` and for WebSocket upgrade requests.
-- Sealed channels: generation 2 (`0x20`), required for `channel_open` and `sealed`.
+- Sealed channels: generation 2 (`0x20` or newer), required for `channel_open` and `sealed`.
+- Sealed direct signaling: generation 2 minor 1 (`0x21`), required for `direct_sealed`.
 
 Adding a message type requires a minor version bump. Before bumping the major version for an existing message format change that breaks old parsers, ask the project owner for approval.
 
@@ -35,9 +36,10 @@ the relay is the sender.
 
 Additional rules of the generation-2 protocol:
 
-- Clients declare the generation in the connection query string (`version=0x20`); the relay stamps its own replies with the generation of the connection.
+- Clients declare the generation in the connection query string (`version=0x21`); the relay stamps its own replies with the generation of the connection.
 - A connection must not change generation mid-stream; the relay closes the connection if it does.
-- Protocol V2 disables direct mode (its own tunnel is already encrypted), web publishing keeps using the legacy generation because the relay terminates HTTP, and encrypted channels do not survive relay-side channel migration.
+- Direct mode works on generation 2: peers first announce their session id and X25519 key in a key-only `direct_capabilities` frame, then exchange candidates, rendezvous and probing status inside `direct_sealed` envelopes encrypted with the ECDH-derived key. The relay routes those envelopes by role without seeing peer addresses. Once the peers agree on a path, the channel's data runs over QUIC authenticated by the same key, so the relay never carries it. If a generation-2 direct path breaks, the connection closes rather than resuming in plaintext over the relay, and the next request starts a fresh encrypted channel.
+- Web publishing keeps using the legacy generation because the relay terminates HTTP, and encrypted channels do not survive relay-side channel migration.
 - Provider-side dial access control still applies: with `--access-rule` on the provider (or `client -r`), the dial side checks destinations after decryption. Server-side connector-token rules cannot be enforced on encrypted traffic, so a generation-2 connector is refused when its token carries rules.
 - Both peers must support generation 2; a generation-2 peer never pairs with a legacy peer for channel traffic, and `--protocol-version v1` keeps a client on the legacy generation for old relays.
 

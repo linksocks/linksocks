@@ -16,6 +16,14 @@ type fallbackWriterProvider interface {
 	Fallback() MessageWriter
 }
 
+// relayFallbackRefuser marks a transport that must not be replaced by the
+// plaintext relay writer when it fails. A protocol V2 direct channel reserves
+// the relay writer for fresh channels that run the Noise handshake; resuming an
+// existing one there would move its payload out of the end-to-end encryption.
+type relayFallbackRefuser interface {
+	RefuseRelayFallback() bool
+}
+
 const (
 	channelPathRelay  channelPath = "relay"
 	channelPathDirect channelPath = "direct"
@@ -126,6 +134,10 @@ func (c *logicalChannel) switchToFallback(reason string) error {
 	if c.closed {
 		c.mu.Unlock()
 		return errors.New("logical channel: closed")
+	}
+	if refuser, ok := c.writer.(relayFallbackRefuser); ok && refuser.RefuseRelayFallback() {
+		c.mu.Unlock()
+		return errors.New("logical channel: relay fallback disabled for this transport")
 	}
 	if c.fallback == nil {
 		c.mu.Unlock()

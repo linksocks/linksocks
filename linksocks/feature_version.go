@@ -23,14 +23,14 @@ func protocolSupportsFeature(version, minimum byte) bool {
 // with a peer of the given version. Version zero is how legacy direct peers
 // omit the capability field.
 //
-// Direct mode is disabled for protocol V2: rendezvous messages would expose
-// peer IP candidates to the relay, and V2 keeps every address inside the
-// end-to-end encrypted channel instead.
+// Both generations support direct mode. V2 peers seal the candidate exchange
+// with a key derived from the two X25519 public keys, so the relay forwards the
+// envelopes without learning peer addresses; V1 peers exchange it in plaintext.
 func protocolAllowsDirectPeer(version byte) bool {
-	if protocolMajor(version) == protocolMajor(ProtocolVersionV2) {
-		return false
+	if version == 0 {
+		return true
 	}
-	return version == 0 || protocolSupportsFeature(version, MinVersionDirect)
+	return protocolSupportsFeature(version, MinVersionDirect)
 }
 
 // protocolSupportsMigration reports whether channel migration may be used with

@@ -75,6 +75,9 @@ DirectRendezvousMessage:
 DirectStatusMessage:
 	Version(1) + Type(1) + DataLen(4) + JSON{...}
 
+DirectSealedMessage:
+	Version(1) + Type(1) + DataLen(4) + JSON{...}
+
 ChannelBindMessage:
 	Version(1) + Type(1) + DataLen(4) + JSON{...}
 
@@ -118,9 +121,11 @@ const (
 	// Noise-encrypted channels: peers open channels with ChannelOpenMessage, run
 	// a Noise_XX handshake directly between them through the relay, and exchange
 	// every subsequent payload as SealedMessage ciphertext. The relay only routes
-	// frames by channel ID. V2 clients MUST NOT fall back to V1 peers or relays.
+	// frames by channel ID, and direct-mode signaling is sealed the same way so
+	// peer addresses never reach it in plaintext. V2 clients MUST NOT fall back
+	// to V1 peers or relays.
 	ProtocolVersionV1 = byte(0x04)
-	ProtocolVersionV2 = byte(0x20)
+	ProtocolVersionV2 = byte(0x21)
 
 	// ProtocolVersion is the generation stamped on frames sent by this build.
 	ProtocolVersion = ProtocolVersionV2
@@ -153,6 +158,7 @@ const (
 	BinaryTypeWebSocketFrame      = byte(0x19)
 	BinaryTypeChannelOpen         = byte(0x1A)
 	BinaryTypeSealed              = byte(0x1B)
+	BinaryTypeDirectSealed        = byte(0x1C)
 	BinaryProtocolTCP             = byte(0x01)
 	BinaryProtocolUDP             = byte(0x02)
 
@@ -188,6 +194,7 @@ const (
 	TypeWebSocketFrame      = "websocket_frame"
 	TypeChannelOpen         = "channel_open"
 	TypeSealed              = "sealed"
+	TypeDirectSealed        = "direct_sealed"
 	TypeUnknown             = "unknown"
 	// Compression flags
 	DataCompressionNone = byte(0x00)
@@ -406,10 +413,29 @@ type DirectCapabilitiesMessage struct {
 	Discoveries     []string          `json:"discoveries,omitempty"`
 	PublicKey       []byte            `json:"public_key,omitempty"`
 	ProtocolVersion byte              `json:"protocol_version,omitempty"`
+	// Sealed signals that this message is only a key announcement: candidates
+	// and every later signaling message travel inside DirectSealedMessage.
+	Sealed bool `json:"sealed,omitempty"`
 }
 
 func (m DirectCapabilitiesMessage) GetType() string {
 	return TypeDirectCapabilities
+}
+
+// DirectSealedMessage carries one direct-mode signaling message encrypted with
+// a key both peers derive from their X25519 handshake. The relay forwards it by
+// role like the plaintext Direct* messages, but it can only see the session
+// identifiers: candidate addresses, probing results and the rendezvous stay
+// inside Payload.
+type DirectSealedMessage struct {
+	SenderSessionID    uuid.UUID `json:"sender_session_id"`
+	RecipientSessionID uuid.UUID `json:"recipient_session_id"`
+	Nonce              []byte    `json:"nonce"`
+	Payload            []byte    `json:"payload"`
+}
+
+func (m DirectSealedMessage) GetType() string {
+	return TypeDirectSealed
 }
 
 type DirectRendezvousMessage struct {
@@ -904,6 +930,9 @@ func PackMessageWithVersion(msg BaseMessage, version byte) ([]byte, error) {
 		buf = append(buf, jsonData...)
 		return buf, nil
 
+	case DirectSealedMessage:
+		return packJSONMessage(buf, BinaryTypeDirectSealed, m, "direct sealed")
+
 	case ChannelBindMessage:
 		return packJSONMessage(buf, BinaryTypeChannelBind, m, "channel bind")
 
@@ -1372,6 +1401,13 @@ func parseMessageBody(msgType byte, payload []byte) (BaseMessage, error) {
 		var msg DirectStatusMessage
 		if err := json.Unmarshal(jsonData, &msg); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal direct status message: %w", err)
+		}
+		return msg, nil
+
+	case BinaryTypeDirectSealed:
+		var msg DirectSealedMessage
+		if err := unmarshalJSONMessage(payload, "direct sealed", &msg); err != nil {
+			return nil, err
 		}
 		return msg, nil
 

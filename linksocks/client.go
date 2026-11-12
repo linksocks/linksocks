@@ -142,6 +142,16 @@ type LinkSocksClient struct {
 	directRemoteCandidates      []DirectCandidate
 	directRemoteProtocolVersion byte
 	remoteProtocolVersion       byte
+	// directPeerSealed records that the peer announced its signaling key and
+	// expects the candidate/rendezvous exchange sealed.
+	directPeerSealed     bool
+	directSignalingKey   []byte
+	directSignalingSess  uuid.UUID
+	directDiscoveryLabel string
+	// directHelloSent is the peer session this side last announced its key
+	// to. Responding to every announcement would make two peers bounce
+	// key announcements back and forth forever.
+	directHelloSent uuid.UUID
 	// directProbePeer is the observed UDP endpoint of the peer that responded
 	// to the last successful direct probe. It is used to pick a single QUIC dial
 	// target and avoid creating multiple concurrent QUIC connections that may
@@ -913,16 +923,11 @@ func clientProtocolVersion(opt *ClientOption) byte {
 	return opt.ProtocolVersion
 }
 
-// clientDirectMode resolves the direct-mode option. Direct mode is disabled on
-// V2: its rendezvous signaling would expose peer addresses in plaintext, so V2
-// sessions always run relay-only.
+// clientDirectMode resolves the direct-mode option. Direct mode is available on
+// every protocol generation: on V2 the relay still routes the signaling, but
+// the candidate exchange travels sealed (see direct_signaling.go), so direct
+// mode never hands peer addresses to the relay in plaintext.
 func clientDirectMode(opt *ClientOption) DirectMode {
-	if protocolMajor(clientProtocolVersion(opt)) == protocolMajor(ProtocolVersionV2) {
-		if opt.DirectMode != DirectModeRelayOnly {
-			opt.Logger.Info().Msg("Protocol V2 is end-to-end encrypted; direct mode is disabled")
-		}
-		return DirectModeRelayOnly
-	}
 	return opt.DirectMode
 }
 
@@ -1267,13 +1272,331 @@ func directSelectQUICDialCandidates(localSession uuid.UUID, pairSession uuid.UUI
 	return rcands
 }
 
+// directSignalingMaterial returns the AEAD key and session identifiers needed
+// to seal or open signaling with the current peer. It reports false until both
+// sides have announced their X25519 keys and session ids.
+func (c *LinkSocksClient) directSignalingMaterial() (key []byte, pairSession, localSession, remoteSession uuid.UUID, ok bool) {
+	c.directMu.Lock()
+	defer c.directMu.Unlock()
+
+	localSession = c.directLocalSessionID
+	remoteSession = c.directRemoteSessionID
+	if c.directLocalKeyPair == nil || len(c.directRemotePublicKey) != 32 || localSession == uuid.Nil || remoteSession == uuid.Nil {
+		return nil, uuid.Nil, localSession, remoteSession, false
+	}
+	pairSession = minUUID(localSession, remoteSession)
+	if len(c.directSignalingKey) == directSignalingKeyLen && c.directSignalingSess == pairSession {
+		return c.directSignalingKey, pairSession, localSession, remoteSession, true
+	}
+	derived, err := deriveDirectSignalingKey(pairSession, c.directLocalKeyPair.priv, c.directRemotePublicKey)
+	if err != nil {
+		return nil, pairSession, localSession, remoteSession, false
+	}
+	c.directSignalingKey = derived
+	c.directSignalingSess = pairSession
+	return derived, pairSession, localSession, remoteSession, true
+}
+
+// sendDirectHello announces this side's session id and X25519 key. It carries
+// no addresses, so a V2 peer can route it without learning how to reach us; it
+// is the bootstrap for the sealed exchange.
+func (c *LinkSocksClient) sendDirectHello(peerSession uuid.UUID) {
+	c.directMu.Lock()
+	if peerSession != uuid.Nil && c.directHelloSent == peerSession {
+		c.directMu.Unlock()
+		return
+	}
+	if peerSession != uuid.Nil {
+		c.directHelloSent = peerSession
+	}
+	msg := DirectCapabilitiesMessage{
+		SessionID:       c.directLocalSessionID,
+		PublicKey:       append([]byte(nil), c.directLocalPublicKey...),
+		ProtocolVersion: c.protocolVersion,
+		Sealed:          true,
+	}
+	c.directMu.Unlock()
+	if len(msg.PublicKey) == 0 {
+		return
+	}
+	ws := c.getNextWebSocket()
+	if ws == nil {
+		return
+	}
+	c.relay.logMessage(msg, "send", ws.Label())
+	if err := ws.WriteMessage(msg); err != nil {
+		c.log.Debug().Err(err).Msg("Failed to send direct key announcement")
+	}
+}
+
+// sendDirectCandidates publishes the local candidate list. V2 peers receive it
+// sealed; a peer that did not announce a key keeps the legacy plaintext path.
+func (c *LinkSocksClient) sendDirectCandidates() {
+	c.directMu.Lock()
+	msg := DirectCapabilitiesMessage{
+		SessionID:       c.directLocalSessionID,
+		Candidates:      append([]DirectCandidate(nil), c.directLocalCandidates...),
+		Discoveries:     []string{c.directDiscoveryLabel},
+		PublicKey:       append([]byte(nil), c.directLocalPublicKey...),
+		ProtocolVersion: c.protocolVersion,
+	}
+	c.directMu.Unlock()
+	if len(msg.Discoveries) == 1 && msg.Discoveries[0] == "" {
+		msg.Discoveries = nil
+	}
+	if err := c.sendDirectMessage(msg); err != nil {
+		c.log.Debug().Err(err).Msg("Failed to send direct capabilities")
+	}
+}
+
+// sendDirectMessage writes one signaling message to the paired peer. When the
+// peer asked for sealed signaling the message is encrypted first; if that was
+// requested but the key material is not ready yet, the message is dropped
+// rather than sent in the clear.
 func (c *LinkSocksClient) sendDirectMessage(msg BaseMessage) error {
+	c.directMu.Lock()
+	sealRequired := c.directPeerSealed || protocolMajor(c.protocolVersion) == protocolMajor(ProtocolVersionV2)
+	c.directMu.Unlock()
+
+	// Sealing is opt-in per peer: a V2 peer announces its key first, and only
+	// then does this side switch the exchange to ciphertext. Legacy peers keep
+	// the plaintext exchange they understand.
+	if sealRequired {
+		key, pairSession, localSession, remoteSession, ok := c.directSignalingMaterial()
+		if !ok {
+			return errors.New("direct signaling: no key available yet, refusing to send in the clear")
+		}
+		sealed, err := sealDirectSignaling(key, pairSession, localSession, remoteSession, msg)
+		if err != nil {
+			return err
+		}
+		msg = sealed
+	}
+
 	ws := c.getNextWebSocket()
 	if ws == nil {
 		return errors.New("direct: not connected")
 	}
 	c.relay.logMessage(msg, "send", ws.Label())
 	return ws.WriteMessage(msg)
+}
+
+// directSignalingReady reports whether sealed signaling can be produced now.
+func (c *LinkSocksClient) directSignalingReady() bool {
+	_, _, _, _, ok := c.directSignalingMaterial()
+	return ok
+}
+
+// handleDirectCapabilities records a peer's announcement. A V2 peer first sends
+// a key-only announcement (Sealed) and expects the candidate list sealed; a V1
+// peer sends candidates in the clear and gets a plaintext rendezvous back.
+func (c *LinkSocksClient) handleDirectCapabilities(m DirectCapabilitiesMessage) {
+	if !protocolAllowsDirectPeer(m.ProtocolVersion) {
+		c.log.Warn().Str("peer_version", protocolVersionDebugString(m.ProtocolVersion)).Msg("Direct peer protocol version is unsupported")
+		return
+	}
+	peerChanged := false
+	c.directMu.Lock()
+	if c.directRemoteSessionID != uuid.Nil && c.directRemoteSessionID != m.SessionID {
+		peerChanged = true
+	}
+	if !peerChanged && len(c.directRemotePublicKey) > 0 && len(m.PublicKey) > 0 && !bytes.Equal(c.directRemotePublicKey, m.PublicKey) {
+		peerChanged = true
+	}
+	if peerChanged {
+		c.directResetPeerStateLocked()
+	}
+	c.directRemoteSessionID = m.SessionID
+	if !m.Sealed {
+		c.directRemoteCandidates = append([]DirectCandidate(nil), m.Candidates...)
+	}
+	c.directRemoteProtocolVersion = m.ProtocolVersion
+	if len(m.PublicKey) > 0 {
+		c.directRemotePublicKey = append([]byte(nil), m.PublicKey...)
+	}
+	if m.Sealed {
+		c.directPeerSealed = true
+	}
+	localReady := c.directLocalReady
+	localCandidates := append([]DirectCandidate(nil), c.directLocalCandidates...)
+	localPub := append([]byte(nil), c.directLocalPublicKey...)
+	localSession := c.directLocalSessionID
+	sealed := c.directPeerSealed
+	if !localReady {
+		c.directPendingRendezvous[m.SessionID] = struct{}{}
+	}
+	c.directMu.Unlock()
+	if peerChanged {
+		c.directResetPeerTransport()
+	}
+
+	c.log.Debug().
+		Str("session_id", m.SessionID.String()).
+		Int("candidates", len(m.Candidates)).
+		Bool("sealed", m.Sealed).
+		Msg("Received direct capabilities")
+
+	if m.Sealed {
+		// Key announcement: answer with our key (once per peer) and, when our
+		// candidates are ready, with the sealed list. This reply must not
+		// depend on local discovery: a peer with no candidates still needs to
+		// complete the key exchange.
+		c.sendDirectHello(m.SessionID)
+		if localReady {
+			c.sendDirectCandidates()
+		}
+		c.directNotify()
+		return
+	}
+	if !localReady {
+		return
+	}
+	if !sealed {
+		// Legacy peer: keep the plaintext rendezvous reply it expects.
+		rendezvous := DirectRendezvousMessage{SessionID: m.SessionID, RemoteSessionID: localSession, Candidates: localCandidates, PublicKey: localPub, ProtocolVersion: c.protocolVersion}
+		if err := c.sendDirectMessage(rendezvous); err != nil {
+			c.log.Debug().Err(err).Msg("Failed to send direct rendezvous")
+		}
+	}
+	c.directNotify()
+}
+
+// handleDirectRendezvous records the peer's candidate list (the reply to our
+// capabilities announcement).
+func (c *LinkSocksClient) handleDirectRendezvous(m DirectRendezvousMessage) {
+	if !protocolAllowsDirectPeer(m.ProtocolVersion) {
+		c.log.Warn().Str("peer_version", protocolVersionDebugString(m.ProtocolVersion)).Msg("Direct peer protocol version is unsupported")
+		return
+	}
+	peerChanged := false
+	c.directMu.Lock()
+	if m.SessionID == c.directLocalSessionID {
+		if m.RemoteSessionID != uuid.Nil && c.directRemoteSessionID != uuid.Nil && c.directRemoteSessionID != m.RemoteSessionID {
+			peerChanged = true
+		}
+		if !peerChanged && len(c.directRemotePublicKey) > 0 && len(m.PublicKey) > 0 && !bytes.Equal(c.directRemotePublicKey, m.PublicKey) {
+			peerChanged = true
+		}
+		if peerChanged {
+			c.directResetPeerStateLocked()
+		}
+		if m.RemoteSessionID != uuid.Nil {
+			c.directRemoteSessionID = m.RemoteSessionID
+		}
+		c.directRemoteCandidates = append([]DirectCandidate(nil), m.Candidates...)
+		c.directRemoteProtocolVersion = m.ProtocolVersion
+		if len(m.PublicKey) > 0 {
+			c.directRemotePublicKey = append([]byte(nil), m.PublicKey...)
+		}
+	}
+	c.directMu.Unlock()
+	if peerChanged {
+		c.directResetPeerTransport()
+	}
+	c.log.Debug().Str("session_id", m.SessionID.String()).Int("candidates", len(m.Candidates)).Msg("Received direct rendezvous")
+	c.directNotify()
+}
+
+// handleDirectStatus applies the peer's probing result for the current session.
+func (c *LinkSocksClient) handleDirectStatus(ctx context.Context, m DirectStatusMessage) {
+	status := strings.ToLower(strings.TrimSpace(m.Status))
+	reason := strings.TrimSpace(m.Metrics.Reason)
+	e := c.log.Debug().
+		Str("session_id", m.SessionID.String()).
+		Str("status", status)
+	if reason != "" {
+		e = e.Str("reason", reason)
+	}
+	e.Msg("Received direct status")
+
+	// DirectStatus session_id is the pair session id. Use it to seed the local
+	// pairing state only when it matches the current peer identity/generation.
+	if m.SessionID != uuid.Nil {
+		applyStatus := true
+		currentSession := uuid.Nil
+		c.directMu.Lock()
+		applyStatus = c.directShouldApplyStatusSessionLocked(m.SessionID)
+		currentSession = c.directPairSessionID
+		c.directMu.Unlock()
+		if !applyStatus {
+			c.log.Debug().
+				Str("current_session_id", currentSession.String()).
+				Str("stale_session_id", m.SessionID.String()).
+				Msg("Ignoring stale direct status session id")
+			return
+		}
+	}
+
+	now := time.Now()
+	switch status {
+	case "probing":
+		// Peer status is debug-only; local probe outcome drives user-visible logs.
+
+	case "degraded":
+		c.directMu.Lock()
+		until := now.Add(30 * time.Second)
+		if until.After(c.directDegradedUntil) {
+			c.directDegradedUntil = until
+		}
+		c.directMu.Unlock()
+
+	case "failed":
+		c.directMu.Lock()
+		c.directPeerReady = false
+		until := now.Add(30 * time.Second)
+		if until.After(c.directDegradedUntil) {
+			c.directDegradedUntil = until
+		}
+		c.directMu.Unlock()
+
+		if c.directMode == DirectModeDirectOnly {
+			c.directMu.Lock()
+			c.directRefuseSocks = true
+			action := c.directOnlyAction
+			c.directMu.Unlock()
+			if action == DirectOnlyActionExit {
+				c.log.Error().Msg("Direct-only mode: exiting due to direct failure")
+				c.reportError(fmt.Errorf("direct-only: peer reported failed"))
+				c.Close()
+			}
+		}
+
+	case "ready":
+		c.directMu.Lock()
+		c.directPeerReady = true
+		c.directPeerStatusSession = m.SessionID
+		c.directMu.Unlock()
+		c.directMarkRecovered(now)
+		c.startDirectQUICAgent(ctx)
+
+	default:
+		// Ignore unknown status.
+	}
+	c.directNotify()
+}
+
+// handleDirectSealed authenticates and dispatches one sealed signaling envelope.
+func (c *LinkSocksClient) handleDirectSealed(ctx context.Context, m DirectSealedMessage) {
+	key, pairSession, localSession, remoteSession, ok := c.directSignalingMaterial()
+	if !ok || m.SenderSessionID != remoteSession {
+		c.log.Debug().Str("sender_session_id", m.SenderSessionID.String()).Msg("Dropped sealed direct signaling without key material")
+		return
+	}
+	msg, err := openDirectSignaling(key, pairSession, localSession, m)
+	if err != nil {
+		c.log.Debug().Err(err).Str("sender_session_id", m.SenderSessionID.String()).Msg("Dropped sealed direct signaling")
+		return
+	}
+	switch inner := msg.(type) {
+	case DirectCapabilitiesMessage:
+		c.handleDirectCapabilities(inner)
+	case DirectRendezvousMessage:
+		c.handleDirectRendezvous(inner)
+	case DirectStatusMessage:
+		c.handleDirectStatus(ctx, inner)
+	default:
+		c.log.Debug().Str("type", msg.GetType()).Msg("Dropped unexpected sealed direct signaling")
+	}
 }
 
 func (c *LinkSocksClient) directAgent(ctx context.Context) {
@@ -1329,6 +1652,13 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 	c.directLocalKeyPair = kp
 	c.directLocalPublicKey = append([]byte(nil), kp.pub...)
 	c.directMu.Unlock()
+
+	// Announce the key before discovery: the announcement carries no
+	// addresses, and a peer needs it to set up the sealed exchange even when
+	// candidate discovery is slow or fails.
+	if protocolMajor(c.protocolVersion) == protocolMajor(ProtocolVersionV2) {
+		c.sendDirectHello(uuid.Nil)
+	}
 
 	var listenConfig net.ListenConfig
 	packetConn, err := listenConfig.ListenPacket(ctx, "udp", ":0")
@@ -1521,7 +1851,17 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 
 		capMsg := DirectCapabilitiesMessage{SessionID: localSession, Candidates: cands, Discoveries: []string{discLabel}, PublicKey: localPub}
 		capMsg.ProtocolVersion = c.protocolVersion
-		if err := c.sendDirectMessage(capMsg); err != nil {
+		c.directMu.Lock()
+		c.directDiscoveryLabel = discLabel
+		c.directMu.Unlock()
+		if protocolMajor(c.protocolVersion) == protocolMajor(ProtocolVersionV2) {
+			// V2: announce the key (no addresses) and let the sealed exchange
+			// carry the candidates once both public keys are known.
+			c.sendDirectHello(uuid.Nil)
+			if c.directSignalingReady() {
+				c.sendDirectCandidates()
+			}
+		} else if err := c.sendDirectMessage(capMsg); err != nil {
 			c.log.Debug().Err(err).Msg("Failed to send direct capabilities")
 		}
 		for _, sid := range pending {
@@ -2128,6 +2468,10 @@ func (c *LinkSocksClient) directResetPeerStateLocked() {
 	c.directRemoteCandidates = nil
 	c.directRemoteProtocolVersion = 0
 	c.directRemotePublicKey = nil
+	c.directPeerSealed = false
+	c.directSignalingKey = nil
+	c.directSignalingSess = uuid.Nil
+	c.directHelloSent = uuid.Nil
 	c.directProbePeer = nil
 	c.directPairSessionID = uuid.Nil
 	c.directPairSessionKey = nil
@@ -2819,155 +3163,16 @@ func (c *LinkSocksClient) messageDispatcher(ctx context.Context, ws *WSConn) err
 
 			switch m := msg.(type) {
 			case DirectCapabilitiesMessage:
-				if !protocolAllowsDirectPeer(m.ProtocolVersion) {
-					c.log.Warn().Str("peer_version", protocolVersionDebugString(m.ProtocolVersion)).Msg("Direct peer protocol version is unsupported")
-					continue
-				}
-				peerChanged := false
-				c.directMu.Lock()
-				if c.directRemoteSessionID != uuid.Nil && c.directRemoteSessionID != m.SessionID {
-					peerChanged = true
-				}
-				if !peerChanged && len(c.directRemotePublicKey) > 0 && len(m.PublicKey) > 0 && !bytes.Equal(c.directRemotePublicKey, m.PublicKey) {
-					peerChanged = true
-				}
-				if peerChanged {
-					c.directResetPeerStateLocked()
-				}
-				c.directRemoteSessionID = m.SessionID
-				c.directRemoteCandidates = append([]DirectCandidate(nil), m.Candidates...)
-				c.directRemoteProtocolVersion = m.ProtocolVersion
-				if len(m.PublicKey) > 0 {
-					c.directRemotePublicKey = append([]byte(nil), m.PublicKey...)
-				}
-				localReady := c.directLocalReady
-				localCandidates := append([]DirectCandidate(nil), c.directLocalCandidates...)
-				localPub := append([]byte(nil), c.directLocalPublicKey...)
-				localSession := c.directLocalSessionID
-				if !localReady {
-					c.directPendingRendezvous[m.SessionID] = struct{}{}
-				}
-				c.directMu.Unlock()
-				if peerChanged {
-					c.directResetPeerTransport()
-				}
-
-				c.log.Debug().Str("session_id", m.SessionID.String()).Int("candidates", len(m.Candidates)).Msg("Received direct capabilities")
-				if localReady {
-					rendezvous := DirectRendezvousMessage{SessionID: m.SessionID, RemoteSessionID: localSession, Candidates: localCandidates, PublicKey: localPub, ProtocolVersion: ProtocolVersion}
-					c.relay.logMessage(rendezvous, "send", ws.Label())
-					_ = ws.WriteMessage(rendezvous)
-				}
-				c.directNotify()
+				c.handleDirectCapabilities(m)
 
 			case DirectRendezvousMessage:
-				if !protocolAllowsDirectPeer(m.ProtocolVersion) {
-					c.log.Warn().Str("peer_version", protocolVersionDebugString(m.ProtocolVersion)).Msg("Direct peer protocol version is unsupported")
-					continue
-				}
-				peerChanged := false
-				c.directMu.Lock()
-				if m.SessionID == c.directLocalSessionID {
-					if m.RemoteSessionID != uuid.Nil && c.directRemoteSessionID != uuid.Nil && c.directRemoteSessionID != m.RemoteSessionID {
-						peerChanged = true
-					}
-					if !peerChanged && len(c.directRemotePublicKey) > 0 && len(m.PublicKey) > 0 && !bytes.Equal(c.directRemotePublicKey, m.PublicKey) {
-						peerChanged = true
-					}
-					if peerChanged {
-						c.directResetPeerStateLocked()
-					}
-					if m.RemoteSessionID != uuid.Nil {
-						c.directRemoteSessionID = m.RemoteSessionID
-					}
-					c.directRemoteCandidates = append([]DirectCandidate(nil), m.Candidates...)
-					c.directRemoteProtocolVersion = m.ProtocolVersion
-					if len(m.PublicKey) > 0 {
-						c.directRemotePublicKey = append([]byte(nil), m.PublicKey...)
-					}
-				}
-				c.directMu.Unlock()
-				if peerChanged {
-					c.directResetPeerTransport()
-				}
-				c.log.Debug().Str("session_id", m.SessionID.String()).Int("candidates", len(m.Candidates)).Msg("Received direct rendezvous")
-				c.directNotify()
+				c.handleDirectRendezvous(m)
+
+			case DirectSealedMessage:
+				c.handleDirectSealed(ctx, m)
 
 			case DirectStatusMessage:
-				status := strings.ToLower(strings.TrimSpace(m.Status))
-				reason := strings.TrimSpace(m.Metrics.Reason)
-				e := c.log.Debug().
-					Str("session_id", m.SessionID.String()).
-					Str("status", status)
-				if reason != "" {
-					e = e.Str("reason", reason)
-				}
-				e.Msg("Received direct status")
-
-				// DirectStatus session_id is the pair session id. Use it to seed the local
-				// pairing state only when it matches the current peer identity/generation.
-				if m.SessionID != uuid.Nil {
-					applyStatus := true
-					currentSession := uuid.Nil
-					c.directMu.Lock()
-					applyStatus = c.directShouldApplyStatusSessionLocked(m.SessionID)
-					currentSession = c.directPairSessionID
-					c.directMu.Unlock()
-					if !applyStatus {
-						c.log.Debug().
-							Str("current_session_id", currentSession.String()).
-							Str("stale_session_id", m.SessionID.String()).
-							Msg("Ignoring stale direct status session id")
-						continue
-					}
-				}
-
-				now := time.Now()
-				switch status {
-				case "probing":
-					// Peer status is debug-only; local probe outcome drives user-visible logs.
-
-				case "degraded":
-					c.directMu.Lock()
-					until := now.Add(30 * time.Second)
-					if until.After(c.directDegradedUntil) {
-						c.directDegradedUntil = until
-					}
-					c.directMu.Unlock()
-
-				case "failed":
-					c.directMu.Lock()
-					c.directPeerReady = false
-					until := now.Add(30 * time.Second)
-					if until.After(c.directDegradedUntil) {
-						c.directDegradedUntil = until
-					}
-					c.directMu.Unlock()
-
-					if c.directMode == DirectModeDirectOnly {
-						c.directMu.Lock()
-						c.directRefuseSocks = true
-						action := c.directOnlyAction
-						c.directMu.Unlock()
-						if action == DirectOnlyActionExit {
-							c.log.Error().Msg("Direct-only mode: exiting due to direct failure")
-							c.reportError(fmt.Errorf("direct-only: peer reported failed"))
-							c.Close()
-						}
-					}
-
-				case "ready":
-					c.directMu.Lock()
-					c.directPeerReady = true
-					c.directPeerStatusSession = m.SessionID
-					c.directMu.Unlock()
-					c.directMarkRecovered(now)
-					c.startDirectQUICAgent(ctx)
-
-				default:
-					// Ignore unknown status.
-				}
-				c.directNotify()
+				c.handleDirectStatus(ctx, m)
 
 			case UnknownMessage:
 				c.log.Trace().Int("binary_type", int(m.BinaryType)).Msg("Dropped unknown binary message")

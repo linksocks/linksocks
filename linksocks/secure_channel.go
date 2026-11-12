@@ -748,6 +748,12 @@ func (r *Relay) openChannelTransport(channelID uuid.UUID, queue chan BaseMessage
 	if r.secure == nil {
 		return ws, nil
 	}
+	// A direct QUIC link already carries an encrypted peer-to-peer transport;
+	// wrapping it in the relay Noise layer would ask it to speak a protocol it
+	// does not implement, and the relay never sees those frames anyway.
+	if dl, ok := ws.(interface{ DirectLink() bool }); ok && dl.DirectLink() {
+		return ws, nil
+	}
 	if vr, ok := ws.(interface{ ProtocolVersion() byte }); ok {
 		peerVersion := vr.ProtocolVersion()
 		if protocolMajor(peerVersion) != protocolMajor(ProtocolVersionV2) {

@@ -177,6 +177,24 @@ func (w *directQUICChannelWriter) Label() string {
 	return w.label
 }
 
+// DirectLink marks this writer as an already encrypted peer-to-peer transport:
+// the relay-side Noise layer must hand it through untouched.
+func (w *directQUICChannelWriter) DirectLink() bool { return true }
+
+// RefuseRelayFallback blocks the plaintext relay fallback for protocol V2
+// channels. The relay writer carries no Noise session for this channel, so
+// switching to it would drop the end-to-end guarantee; the connection is closed
+// instead and the next request starts fresh over the relay.
+func (w *directQUICChannelWriter) RefuseRelayFallback() bool {
+	if w.c == nil {
+		return false
+	}
+	w.c.directMu.Lock()
+	version := w.c.directRemoteProtocolVersion
+	w.c.directMu.Unlock()
+	return protocolMajor(version) == protocolMajor(ProtocolVersionV2)
+}
+
 func (w *directQUICChannelWriter) Fallback() MessageWriter {
 	if w.c == nil {
 		return nil

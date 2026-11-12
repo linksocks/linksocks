@@ -47,7 +47,7 @@ After connecting, the server will expose a SOCKS5 port for other services to con
 - **WAF compatible**: Works through Web Application Firewalls like Cloudflare
 - **CDN support**: Can be deployed behind CDNs for enhanced security
 - **SSL/TLS support**: Secure transmission with WSS protocol
-- **End-to-end encrypted channels**: With protocol generation 2 (the default), a connector and a provider seal their channel with a Noise `XX` handshake, so the relay forwards ciphertext it cannot read. Destination addresses, payloads and peer-issued errors stay between the two peers. The relay still sees the pairing, channel IDs, traffic volume and timing, and relay-generated messages, website publishing, and direct mode keep their own transport rules. See [Message Protocol](/guide/message-protocol) for the exact boundary.
+- **End-to-end encrypted channels**: With protocol generation 2 (the default), a connector and a provider seal their channel with a Noise `XX` handshake, so the relay forwards ciphertext it cannot read. Destination addresses, payloads and peer-issued errors stay between the two peers. The relay still sees the pairing, channel IDs, traffic volume and timing. Direct mode keeps working on generation 2: the peer addresses are exchanged inside sealed `direct_sealed` envelopes, so the relay routes them without reading them, and the established path carries the channel over key-authenticated QUIC. Relay-generated messages and website publishing keep their own transport rules. See [Message Protocol](/guide/message-protocol) for the exact boundary.
 
 ### Dynamic Client Management
 

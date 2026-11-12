@@ -57,6 +57,18 @@ func TestGetRemoteProtocolVersion(t *testing.T) {
 	}
 }
 
+func TestV2PreservesDirectMode(t *testing.T) {
+	for _, mode := range []DirectMode{DirectModeAuto, DirectModeDirectOnly, DirectModeRelayOnly} {
+		t.Run(string(mode), func(t *testing.T) {
+			opt := DefaultClientOption().WithLogger(zerolog.Nop()).WithDirectMode(mode)
+			opt.ProtocolVersion = ProtocolVersionV2
+			if got := clientDirectMode(opt); got != mode {
+				t.Fatalf("V2 direct mode = %q, want %q", got, mode)
+			}
+		})
+	}
+}
+
 func TestDirectPeerAdvertisedVersion(t *testing.T) {
 	for _, test := range []struct {
 		name     string

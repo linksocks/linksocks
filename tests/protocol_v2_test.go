@@ -95,10 +95,10 @@ func TestProtocolV2MessageRoundTrip(t *testing.T) {
 	openWithResume := linksocks.ChannelOpenMessage{ChannelID: id, Resume: true}
 	frame, err := linksocks.PackMessage(openWithResume)
 	require.NoError(t, err)
-	require.Equal(t, byte(0x20), frame[0], "V2 frames are stamped with protocol generation 2")
+	require.Equal(t, linksocks.ProtocolVersionV2, frame[0], "V2 frames are stamped with protocol generation 2")
 	msg, version, err := linksocks.ParseMessageWithVersion(frame)
 	require.NoError(t, err)
-	require.Equal(t, byte(0x20), version)
+	require.Equal(t, linksocks.ProtocolVersionV2, version)
 	open, ok := msg.(linksocks.ChannelOpenMessage)
 	require.True(t, ok)
 	require.Equal(t, id, open.ChannelID)
