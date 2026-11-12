@@ -60,14 +60,14 @@
 
 ## 客户端 / Provider / Connector
 
-三者共用同一套客户端逻辑，差别主要在默认角色与常用参数：
+三者共用同一套客户端逻辑，用哪条命令表示你在扮演哪个角色：
 
-| 命令 | 等价关系 | 典型用途 |
-|------|----------|----------|
+| 命令 | 角色 | 典型用途 |
+|------|------|----------|
 | `linksocks client` | 正向代理客户端 | 本机开混合本地代理，经 server 出网 |
-| `linksocks client -r` | 反向 / 中继中的 provider | 本机网络对外提供出站 |
-| `linksocks provider` | `client -r` 的快捷命令 | 同上 |
-| `linksocks connector` | 面向 connector token 的客户端别名 | 本机开混合本地代理，经指定 provider 出网 |
+| `linksocks client -r` | 反向 / 中继部署中的 provider | 本机网络对外提供出站 |
+| `linksocks provider` | 为其他机器提供网络出口 | 经中继把本机网络作为出口 |
+| `linksocks connector` | 通向 provider 出口的 SOCKS5 入口 | 本机开混合本地代理，经指定 provider 出网 |
 
 ### 关键参数
 

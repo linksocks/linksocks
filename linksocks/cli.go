@@ -45,10 +45,19 @@ func (cli *CLI) Execute() error {
 func (cli *CLI) initCommands() {
 	// Root command
 	cli.rootCmd = &cobra.Command{
-		Use:          "linksocks",
-		Short:        "SOCKS5 over WebSocket proxy tool",
-		Long:         "LinkSocks relays SOCKS5 and HTTP proxy traffic, publishes local sites, and connects machines in shared virtual networks.",
-		Example:      strings.TrimSpace("linksocks server -t my_token\nlinksocks client -t my_token -u ws://localhost:8765 -p 9870\n\nlinksocks server -t my_token -r -p 9870\nlinksocks provider -t my_token -u ws://localhost:8765\n\nlinksocks server -t provider_token -c connector_token -r -p 9870\nlinksocks connector -t connector_token -u ws://localhost:8765 -p 1180"),
+		Use:   "linksocks",
+		Short: "SOCKS5 over WebSocket proxy tool",
+		Long:  "LinkSocks relays SOCKS5 and HTTP proxy traffic, publishes local sites, and connects machines in shared virtual networks.",
+		Example: strings.TrimLeft(`
+  # Offer this machine's network as an exit, and use it from another machine
+  linksocks provider -t my_token -u wss://l.zetx.tech
+  linksocks connector -t my_token -u wss://l.zetx.tech -p 1080
+
+  # Publish a local website
+  linksocks web -t my_token -u wss://l.zetx.tech -l http://127.0.0.1:8080
+
+  # Join machines into a shared virtual network
+  linksocks zone join <zone-id>`, "\n"),
 		SilenceUsage: true,
 	}
 
@@ -72,7 +81,7 @@ func (cli *CLI) initCommands() {
 	// Connector command (alias for client)
 	connectorCmd := &cobra.Command{
 		Use:          "connector",
-		Short:        "Alias for client command",
+		Short:        "Start a SOCKS5 entry that sends traffic out through the server or another machine",
 		RunE:         cli.runClient,
 		SilenceUsage: true,
 	}
@@ -80,7 +89,7 @@ func (cli *CLI) initCommands() {
 	// Provider command (alias for client -r)
 	providerCmd := &cobra.Command{
 		Use:          "provider",
-		Short:        "Alias for client -r command",
+		Short:        "Share this machine's network as an exit for other machines",
 		RunE:         cli.runProvider,
 		SilenceUsage: true,
 	}
@@ -88,7 +97,7 @@ func (cli *CLI) initCommands() {
 	// Server command
 	serverCmd := &cobra.Command{
 		Use:          "server",
-		Short:        "Start SOCKS5 over WebSocket proxy server",
+		Short:        "Start the service others connect to: a relay, a SOCKS5 entry or a network exit",
 		RunE:         cli.runServer,
 		SilenceUsage: true,
 	}
@@ -96,12 +105,12 @@ func (cli *CLI) initCommands() {
 	// Web command
 	webCmd := &cobra.Command{
 		Use:          "web",
-		Short:        "Expose a local HTTP(S) website through a LinkSocks.js web relay",
+		Short:        "Expose a local HTTP(S) website through a linksocks.js web relay",
 		RunE:         cli.runWeb,
 		SilenceUsage: true,
 	}
-	webCmd.Flags().StringP("token", "t", "", "Provider token from the LinkSocks.js dashboard (default: anonymous)")
-	webCmd.Flags().StringP("url", "u", "ws://localhost:8765", "LinkSocks.js server address")
+	webCmd.Flags().StringP("token", "t", "", "Provider token from the linksocks.js dashboard (default: anonymous)")
+	webCmd.Flags().StringP("url", "u", "ws://localhost:8765", "linksocks.js server address")
 	webCmd.Flags().StringArrayP("local", "l", nil, "Local backend URL, repeatable (e.g. http://127.0.0.1:8080)")
 	webCmd.Flags().StringP("domain-prefix", "p", "", "Domain prefix for a custom host under the relay's WEB_ZONE (e.g. blog for blog.team1.cc.cd)")
 	webCmd.Flags().String("ech", ECHAuto, "Encrypted Client Hello for the relay connection (auto|off)")
@@ -192,24 +201,25 @@ func (cli *CLI) initCommands() {
 		},
 	})
 	cli.configureCommandHelp(providerCmd, cliHelpConfig{
-		Overview:   "Provider is a shortcut for client -r. Use it when this machine should provide outbound network access for a reverse proxy deployment.",
+		Overview:   "Provider shares this machine's outbound network: other machines send their traffic out through it, over the relay. Run it where the connections should be made.",
 		KeyFlags:   []string{"token", "url"},
 		OtherFlags: []string{"connector-token", "no-reconnect", "retry-auth", "fast-open", "upstream-proxy", "no-env-proxy", "ech", "ech-config", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "protocol-version", "threads", "debug", "help"},
 		Examples: []string{
-			"# Basic provider\nlinksocks provider -t my_token -u ws://localhost:8765",
-			"# Provider with autonomy\nlinksocks provider -t my_token -c my_connector -u ws://localhost:8765",
+			"# Offer this machine's network as an exit\nlinksocks provider -t my_token -u wss://l.zetx.tech",
+			"# Register this provider's own connector token\nlinksocks provider -t provider_token -c connector_token -u wss://l.zetx.tech",
 		},
 	})
 	cli.configureCommandHelp(connectorCmd, cliHelpConfig{
-		Overview:   "Connector is an alias for client and is commonly used with a connector token to expose a local SOCKS5 port that reaches a reverse provider.",
+		Overview:   "Connector opens a local SOCKS5 and HTTP proxy port for traffic that leaves through the server, a relay's provider, or another machine. Add a connector token when it has to pair with one specific provider.",
 		KeyFlags:   []string{"token", "url", "socks-port", "socks-host"},
 		OtherFlags: []string{"socks-username", "socks-password", "socks-no-wait", "no-reconnect", "retry-auth", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "ech", "ech-config", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "protocol-version", "debug", "help"},
 		Examples: []string{
-			"# Connector side of agent mode\nlinksocks connector -t connector_token -u ws://localhost:8765 -p 1180",
+			"# Send traffic out through the relay\nlinksocks connector -t my_token -u wss://l.zetx.tech -p 1080",
+			"# Pair with one specific provider\nlinksocks connector -t connector_token -u wss://l.zetx.tech -p 1080",
 		},
 	})
 	cli.configureCommandHelp(serverCmd, cliHelpConfig{
-		Overview:   "Use server to run the WebSocket relay. Add -r when the SOCKS5 listener should live on the server side for reverse or agent deployments.",
+		Overview:   "Server starts the service other commands connect to: with a token it is the network exit for forward-proxy clients, and with -r it is the relay for providers, hosting the SOCKS5 entry in reverse and agent deployments.",
 		KeyFlags:   []string{"token", "ws-host", "ws-port", "reverse", "socks-port", "socks-host"},
 		OtherFlags: []string{"connector-token", "connector-autonomy", "socks-username", "socks-password", "socks-nowait", "api-key", "buffer-size", "upstream-proxy", "fast-open", "connector-wait-provider", "direct-enable", "direct-rendezvous-udp", "direct-rendezvous-host", "direct-rendezvous-port", "access-rule", "debug", "help"},
 		Examples: []string{

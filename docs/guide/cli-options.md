@@ -66,14 +66,14 @@ The local listen port is hybrid: it accepts SOCKS5 and HTTP proxy clients on the
 
 ## Client, Provider, and Connector
 
-These three share the same client implementation. The difference is the default role and the flags you usually set:
+These three share the same client implementation; the command you pick says which role you are running:
 
-| Command | Equivalent to | Typical use |
-|---------|---------------|-------------|
+| Command | Role | Typical use |
+|---------|------|-------------|
 | `linksocks client` | Forward proxy client | Local hybrid proxy, exit via server |
-| `linksocks client -r` | Provider in reverse / relay | Share this machine's outbound network |
-| `linksocks provider` | Shortcut for `client -r` | Same as above |
-| `linksocks connector` | Client alias for connector tokens | Local hybrid proxy, exit via a matched provider |
+| `linksocks client -r` | Provider in reverse or relay deployments | Share this machine's outbound network |
+| `linksocks provider` | Exit for other machines | Share this machine's outbound network over the relay |
+| `linksocks connector` | SOCKS5 entry for a provider's exit | Local hybrid proxy, exit via a matched provider |
 
 ### Key Flags
 
