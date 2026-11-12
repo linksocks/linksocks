@@ -280,7 +280,14 @@ func (c *LinkSocksClient) directMarkDegraded(now time.Time, d time.Duration, rea
 		if remoteSess != uuid.Nil {
 			e = e.Str("remote_session_id", remoteSess.String())
 		}
-		e.Msg("Direct connectivity degraded; falling back to relay")
+		if protocolMajor(c.protocolVersion) == protocolMajor(ProtocolVersionV2) {
+			// V2 channels are sealed end to end, so an established one cannot
+			// move to the plaintext relay writer; only new connections use the
+			// relay.
+			e.Msg("Direct connectivity degraded; established channels close and new connections use the relay")
+		} else {
+			e.Msg("Direct connectivity degraded; falling back to relay")
+		}
 	}
 	_ = c.sendDirectMessage(DirectStatusMessage{SessionID: sid, Status: "degraded", Metrics: DirectMetrics{Reason: reason}})
 }
