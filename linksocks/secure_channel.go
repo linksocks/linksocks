@@ -47,6 +47,20 @@ const (
 	// ChannelOpen that creates its session when a client spreads the two
 	// messages over different links.
 	sealedClaimWait = 750 * time.Millisecond
+	// secureWarmPoolSize is how many established channels a client keeps
+	// ready. A new proxy connection takes one of them, so the handshake that
+	// costs a round trip happens while the client is idle instead of while a
+	// request waits.
+	secureWarmPoolSize = 2
+	// secureWarmTTL bounds how long a prepared channel is offered to new
+	// connections. A stale entry (provider restarted, relay-side channel
+	// expired) must be discarded rather than handed to a request, so the
+	// window stays short.
+	secureWarmTTL = 10 * time.Second
+	// secureWarmConnectTimeout closes a responder that never receives the
+	// connect request which turns a prepared channel into a real one, so an
+	// unclaimed channel cannot hold relay and provider state forever.
+	secureWarmConnectTimeout = 60 * time.Second
 )
 
 var errSecureSessionClosed = errors.New("secure channel: session closed")
@@ -70,6 +84,37 @@ type secureHub struct {
 	// on another link is not misrouted.
 	waitersMu sync.Mutex
 	waiters   map[uuid.UUID][]chan struct{}
+
+	// warm holds established channels no connection has claimed yet, and
+	// warming single-flights the background refill that keeps it stocked.
+	warmMu  sync.Mutex
+	warm    []*warmChannel
+	warming bool
+}
+
+// warmChannel is one prepared channel: the session, the queue its decrypted
+// frames land in, and the link the relay bound it to.
+type warmChannel struct {
+	channelID uuid.UUID
+	queue     chan BaseMessage
+	session   *secureSession
+	link      *WSConn
+	createdAt time.Time
+}
+
+// usable reports whether a prepared channel can still be handed to a new
+// connection: inside its TTL, on a link that is still connected, and with its
+// session established and open.
+func (w *warmChannel) usable(c *LinkSocksClient, now time.Time) bool {
+	if now.Sub(w.createdAt) > secureWarmTTL {
+		return false
+	}
+	if w.link == nil || !c.hasWebSocket(w.link) {
+		return false
+	}
+	w.session.mu.Lock()
+	defer w.session.mu.Unlock()
+	return w.session.established && !w.session.closed
 }
 
 func newClientSecureHub(c *LinkSocksClient) *secureHub {
@@ -325,6 +370,10 @@ type secureSession struct {
 	errMu  sync.Mutex
 	failed error
 
+	// idleTimer closes a responder whose connect request never arrives; see
+	// secureWarmConnectTimeout. Only the session loop touches it.
+	idleTimer *time.Timer
+
 	mu          sync.Mutex
 	writeMu     sync.Mutex
 	hs          *noise.HandshakeState
@@ -535,6 +584,16 @@ func (s *secureSession) run() {
 	close(s.ready)
 	s.log.Trace().Msg("Secure channel established")
 
+	// A responder waits for the connect request that turns the channel into
+	// a real connection. Prepared channels can go unclaimed, so bound that
+	// wait instead of holding relay and provider state forever.
+	if !s.initiator {
+		s.idleTimer = time.AfterFunc(secureWarmConnectTimeout, func() {
+			s.fail(errors.New("secure channel: no connect request"))
+		})
+		defer s.idleTimer.Stop()
+	}
+
 	for {
 		ct, ok := s.receive()
 		if !ok {
@@ -556,6 +615,9 @@ func (s *secureSession) run() {
 		if err != nil {
 			s.fail(fmt.Errorf("secure channel payload parse: %w", err))
 			return
+		}
+		if s.idleTimer != nil {
+			s.idleTimer.Stop()
 		}
 		s.dispatch(msg)
 	}
@@ -774,4 +836,144 @@ func (r *Relay) openChannelTransport(channelID uuid.UUID, queue chan BaseMessage
 		return nil, err
 	}
 	return sess, nil
+}
+
+// openProxyChannel reserves a channel for a new proxy connection and returns
+// it with the queue its decrypted frames land in. A client-side relay hands
+// out a prepared channel when one is ready, which keeps the handshake out of
+// the connection path; otherwise the channel is opened the usual way. On
+// failure the reserved channel is torn down before returning.
+func (r *Relay) openProxyChannel(ws MessageWriter) (uuid.UUID, chan BaseMessage, MessageWriter, error) {
+	if r.secure != nil && r.secure.client != nil {
+		if channelID, queue, transport, ok := r.secure.claimWarm(); ok {
+			r.secure.scheduleWarm()
+			return channelID, queue, transport, nil
+		}
+	}
+
+	channelID := uuid.New()
+	queue := make(chan BaseMessage, 1000)
+	r.messageQueues.Store(channelID, queue)
+	r.flushOrphanData(channelID, queue)
+
+	transport, err := r.openChannelTransport(channelID, queue, ws)
+	if err != nil {
+		r.disconnectChannel(channelID)
+		return uuid.Nil, nil, nil, err
+	}
+	if r.secure != nil && r.secure.client != nil {
+		r.secure.scheduleWarm()
+	}
+	return channelID, queue, transport, nil
+}
+
+// claimWarm hands a prepared channel to a new proxy connection, discarding
+// entries that outlived their TTL, lost their link or closed their session.
+func (h *secureHub) claimWarm() (uuid.UUID, chan BaseMessage, MessageWriter, bool) {
+	c := h.client
+	if c == nil {
+		return uuid.Nil, nil, nil, false
+	}
+	now := time.Now()
+	for {
+		h.warmMu.Lock()
+		n := len(h.warm)
+		if n == 0 {
+			h.warmMu.Unlock()
+			return uuid.Nil, nil, nil, false
+		}
+		entry := h.warm[n-1]
+		h.warm = h.warm[:n-1]
+		h.warmMu.Unlock()
+
+		if entry.usable(c, now) {
+			h.log.Debug().Str("channel_id", entry.channelID.String()).Msg("Using prepared channel")
+			return entry.channelID, entry.queue, entry.session, true
+		}
+		h.log.Debug().Str("channel_id", entry.channelID.String()).Msg("Discarding stale prepared channel")
+		h.relay.disconnectChannel(entry.channelID)
+	}
+}
+
+// scheduleWarm tops the prepared-channel pool up in the background. It does
+// nothing for relays without a client side, for direct-only clients that
+// never use the relay, or while a refill is already running.
+func (h *secureHub) scheduleWarm() {
+	c := h.client
+	if c == nil || c.directMode == DirectModeDirectOnly {
+		return
+	}
+	h.warmMu.Lock()
+	if h.warming || len(h.warm) >= secureWarmPoolSize {
+		h.warmMu.Unlock()
+		return
+	}
+	h.warming = true
+	h.warmMu.Unlock()
+	go h.warmLoop()
+}
+
+func (h *secureHub) warmLoop() {
+	defer func() {
+		h.warmMu.Lock()
+		h.warming = false
+		h.warmMu.Unlock()
+	}()
+	for {
+		h.warmMu.Lock()
+		need := len(h.warm) < secureWarmPoolSize
+		h.warmMu.Unlock()
+		if !need || !h.warmOne() {
+			return
+		}
+	}
+}
+
+// warmOne prepares one channel: it binds it through the relay and completes
+// the handshake, leaving the session waiting for the connect request that a
+// real connection will send.
+func (h *secureHub) warmOne() bool {
+	c := h.client
+	if c == nil {
+		return false
+	}
+	select {
+	case <-h.relay.done:
+		return false
+	default:
+	}
+
+	writer := newClientRelayWriter(c)
+	link, ok := writer.(*clientRelayWriter)
+	if !ok {
+		return false
+	}
+	ws := link.peekLink()
+	if ws == nil || protocolMajor(ws.ProtocolVersion()) != protocolMajor(ProtocolVersionV2) {
+		return false
+	}
+
+	channelID := uuid.New()
+	queue := make(chan BaseMessage, 1000)
+	h.relay.messageQueues.Store(channelID, queue)
+	h.relay.flushOrphanData(channelID, queue)
+
+	sess, err := h.openChannel(writer, channelID, queue)
+	if err != nil {
+		h.relay.disconnectChannel(channelID)
+		h.log.Debug().Err(err).Str("channel_id", channelID.String()).Msg("Prepared channel warm-up failed")
+		return false
+	}
+
+	h.warmMu.Lock()
+	h.warm = append(h.warm, &warmChannel{
+		channelID: channelID,
+		queue:     queue,
+		session:   sess,
+		link:      ws,
+		createdAt: time.Now(),
+	})
+	h.warmMu.Unlock()
+	h.log.Debug().Str("channel_id", channelID.String()).Msg("Prepared channel ready")
+	return true
 }

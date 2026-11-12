@@ -375,23 +375,12 @@ func (r *Relay) handleHTTPConnect(ctx context.Context, ws MessageWriter, conn *b
 		return err
 	}
 
-	channelID := uuid.New()
-	r.log.Trace().
-		Str("channel_id", channelID.String()).
-		Str("address", targetHost).
-		Int("port", targetPort).
-		Msg("Starting HTTP CONNECT handling")
-
-	channelQueue := make(chan BaseMessage, 1000)
-	r.messageQueues.Store(channelID, channelQueue)
-	r.flushOrphanData(channelID, channelQueue)
-	defer r.disconnectChannel(channelID)
-
-	transport, err := r.openChannelTransport(channelID, channelQueue, ws)
+	channelID, channelQueue, transport, err := r.openProxyChannel(ws)
 	if err != nil {
 		_ = r.writeHTTPProxyError(conn, http.StatusBadGateway, "Failed to reach backend")
 		return fmt.Errorf("open channel transport: %w", err)
 	}
+	defer r.disconnectChannel(channelID)
 
 	connectRequest := ConnectMessage{
 		Protocol:  "tcp",
@@ -452,24 +441,12 @@ func (r *Relay) handleHTTPAbsoluteRequest(ctx context.Context, ws MessageWriter,
 		return err
 	}
 
-	channelID := uuid.New()
-	r.log.Trace().
-		Str("channel_id", channelID.String()).
-		Str("address", targetHost).
-		Int("port", targetPort).
-		Str("method", request.Method).
-		Msg("Starting absolute-form HTTP proxy handling")
-
-	channelQueue := make(chan BaseMessage, 1000)
-	r.messageQueues.Store(channelID, channelQueue)
-	r.flushOrphanData(channelID, channelQueue)
-	defer r.disconnectChannel(channelID)
-
-	transport, err := r.openChannelTransport(channelID, channelQueue, ws)
+	channelID, channelQueue, transport, err := r.openProxyChannel(ws)
 	if err != nil {
 		_ = r.writeHTTPProxyError(conn, http.StatusBadGateway, "Failed to reach backend")
 		return fmt.Errorf("open channel transport: %w", err)
 	}
+	defer r.disconnectChannel(channelID)
 
 	connectRequest := ConnectMessage{
 		Protocol:  "tcp",

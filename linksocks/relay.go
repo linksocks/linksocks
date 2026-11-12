@@ -1159,18 +1159,9 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws MessageWriter, socksC
 		return fmt.Errorf("unsupported address type: %d", atyp)
 	}
 
-	// Generate unique client ID and connect ID
-	channelID := uuid.New()
-	r.log.Trace().Str("channel_id", channelID.String()).Msg("Starting SOCKS request handling")
-
 	// Handle different commands
 	switch cmd {
 	case 0x01: // CONNECT
-		channelQueue := make(chan BaseMessage, 1000)
-		r.messageQueues.Store(channelID, channelQueue)
-		r.flushOrphanData(channelID, channelQueue)
-		defer r.disconnectChannel(channelID)
-
 		if err := r.checkEntryAccess(ctx, targetAddr, int(targetPort)); err != nil {
 			r.log.Warn().Str("address", targetAddr).Int("port", int(targetPort)).Msg("SOCKS CONNECT blocked by access control")
 			sendFailureAndClose(0x02) // connection not allowed by ruleset
@@ -1180,12 +1171,14 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws MessageWriter, socksC
 		// Protocol V2 opens the end-to-end encrypted channel before the
 		// connect request; the request itself (destination included) then
 		// travels sealed.
-		transport, err := r.openChannelTransport(channelID, channelQueue, ws)
+		channelID, channelQueue, transport, err := r.openProxyChannel(ws)
 		if err != nil {
-			r.log.Warn().Err(err).Str("channel_id", channelID.String()).Msg("Secure channel open failed")
+			r.log.Warn().Err(err).Msg("Secure channel open failed")
 			sendFailureAndClose(0x04) // host unreachable
 			return fmt.Errorf("open channel transport: %w", err)
 		}
+		defer r.disconnectChannel(channelID)
+		r.log.Trace().Str("channel_id", channelID.String()).Msg("Starting SOCKS request handling")
 
 		// Send connection request to server
 		requestData := ConnectMessage{
@@ -1303,20 +1296,15 @@ func (r *Relay) HandleSocksRequest(ctx context.Context, ws MessageWriter, socksC
 
 		localAddr := udpConn.LocalAddr().(*net.UDPAddr)
 
-		// Create temporary queue for connection response
-		connectQueue := make(chan BaseMessage, 1000)
-		r.messageQueues.Store(channelID, connectQueue)
-		r.flushOrphanData(channelID, connectQueue)
-		defer r.disconnectChannel(channelID)
-
 		// Protocol V2 opens the end-to-end encrypted channel first; the UDP
 		// associate request travels sealed like any other payload.
-		transport, err := r.openChannelTransport(channelID, connectQueue, ws)
+		channelID, connectQueue, transport, err := r.openProxyChannel(ws)
 		if err != nil {
-			r.log.Warn().Err(err).Str("channel_id", channelID.String()).Msg("Secure channel open failed")
+			r.log.Warn().Err(err).Msg("Secure channel open failed")
 			udpConn.Close()
 			return fmt.Errorf("open channel transport: %w", err)
 		}
+		defer r.disconnectChannel(channelID)
 
 		// Send UDP associate request to server
 		requestData := ConnectMessage{

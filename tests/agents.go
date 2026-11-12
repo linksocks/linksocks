@@ -83,6 +83,11 @@ type ProxyTestClientOption struct {
 	// signaling is a V1-generation feature.
 	ProtocolVersion byte
 
+	// LogSink, when set, receives the client's zerolog output instead of
+	// stdout; tests use it to assert on what the client observed. It is the
+	// client-side counterpart of ProxyTestServerOption.LogSink.
+	LogSink io.Writer
+
 	// Direct signaling options (optional; defaults keep relay-only behavior).
 	DirectMode                 linksocks.DirectMode
 	DirectDiscovery            linksocks.DirectDiscovery
@@ -215,7 +220,13 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 	}
 
 	var logger zerolog.Logger
-	if opt.LogLevel != 0 {
+	if opt.LogSink != nil {
+		level := opt.LogLevel
+		if level == 0 {
+			level = zerolog.TraceLevel
+		}
+		logger = zerolog.New(opt.LogSink).Level(level).With().Timestamp().Logger()
+	} else if opt.LogLevel != 0 {
 		logger = createPrefixedLoggerWithLevel(opt.LoggerPrefix, opt.LogLevel)
 	} else {
 		logger = createPrefixedLogger(opt.LoggerPrefix)
@@ -435,7 +446,13 @@ func reverseClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 	}
 
 	var logger zerolog.Logger
-	if opt.LogLevel != 0 {
+	if opt.LogSink != nil {
+		level := opt.LogLevel
+		if level == 0 {
+			level = zerolog.TraceLevel
+		}
+		logger = zerolog.New(opt.LogSink).Level(level).With().Timestamp().Logger()
+	} else if opt.LogLevel != 0 {
 		logger = createPrefixedLoggerWithLevel(opt.LoggerPrefix, opt.LogLevel)
 	} else {
 		logger = createPrefixedLogger(opt.LoggerPrefix)
