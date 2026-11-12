@@ -2,6 +2,19 @@ module github.com/linksocks/linksocks
 
 go 1.25.0
 
+// These versions were tagged by mistake during development and are superseded
+// by v1.14.0, which is the first release of that work. Module proxies cache
+// versions permanently, so deleting their tags was not enough: retract keeps
+// them out of resolution. Go reads retractions from the highest version only,
+// which is why they live in this cleanup release.
+retract (
+	v1.11.0 // superseded by v1.14.0 before release
+	v1.11.1 // accidentally tagged
+	v1.12.0 // accidentally tagged
+	v1.13.0 // accidentally tagged
+	v1.13.1 // accidentally tagged
+)
+
 require (
 	github.com/flynn/noise v1.1.0
 	github.com/google/uuid v1.6.0

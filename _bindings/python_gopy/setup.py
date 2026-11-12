@@ -329,7 +329,7 @@ if _editable_wheel is not None:
 
 setup(
     name="linksockslib",
-    version="1.11.0",
+    version="1.14.0",
     description="gopy backend package for linksocks",
     long_description="gopy backend package containing the linksockslib extension.",
     long_description_content_type="text/plain",
