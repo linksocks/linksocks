@@ -811,6 +811,21 @@ func (cli *CLI) initLogging(debug int) zerolog.Logger {
 	return zerolog.New(output).With().Timestamp().Logger()
 }
 
+// ReportError prints a command error on the console writer the commands use,
+// so a failed run ends with the same timestamped line format as its logs
+// instead of the standard library's date format.
+func ReportError(err error) {
+	if err == nil {
+		return
+	}
+	output := zerolog.ConsoleWriter{
+		Out:        zerolog.SyncWriter(os.Stderr),
+		TimeFormat: time.RFC3339,
+	}
+	logger := zerolog.New(output).With().Timestamp().Logger()
+	logger.Error().Msg(err.Error())
+}
+
 func (cli *CLI) applyEnvModeAlias() {
 	os.Args = resolveEnvModeCommand(os.Args, os.Getenv("LINKSOCKS_MODE"))
 }

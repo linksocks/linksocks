@@ -56,6 +56,13 @@ func NewCommand() *cobra.Command {
 		}
 		opt.ifaceSet = command.Flags().Changed("interface")
 		opt.socksPortSet = command.Flags().Changed("socks-port")
+		// Refuse what --vlan cannot do here before talking to the coordinator:
+		// a missing driver or elevation must not cost a join.
+		if opt.vlan {
+			if err := preflightVLAN(opt.iface); err != nil {
+				return err
+			}
+		}
 		ctx, stop := signal.NotifyContext(command.Context(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		return run(ctx, opt)

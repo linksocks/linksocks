@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"os"
 
 	"github.com/linksocks/linksocks/linksocks"
 )
@@ -10,6 +10,7 @@ func main() {
 	cli := linksocks.NewCLI()
 
 	if err := cli.Execute(); err != nil {
-		log.Fatal(err)
+		linksocks.ReportError(err)
+		os.Exit(1)
 	}
 }

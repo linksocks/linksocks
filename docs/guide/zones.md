@@ -134,25 +134,39 @@ treats each member's adapter MAC as its identity on the segment and filters
 inbound frames by it. That adapter exists on Linux out of the box; Windows needs
 a driver, and macOS cannot do layer 2 at all.
 
-**Windows (TAP-Windows6).** Install the TAP-Windows6 driver and add one adapter
-per zone, then join with `--vlan` from an elevated shell:
+**Windows (TAP-Windows6).** Three steps, once per machine:
+
+1. **Install the driver.** Download the current TAP-Windows installer from
+   OpenVPN's release directory, <https://build.openvpn.net/downloads/releases/>
+   (file `tap-windows-<version>-W6.exe`; also mirrored at
+   <https://swupdate.openvpn.net/community/releases/>), and run it as
+   administrator with the **TAP Virtual Ethernet Adapter** component selected —
+   that component installs the driver *and* creates the first adapter. If you
+   already have OpenVPN installed, its installer ships the same driver, so
+   nothing extra is needed.
+2. **Add one adapter per zone.** The installer creates the first one; for each
+   further zone use the Start Menu shortcut
+   **TAP-Windows → Utilities → Add a new TAP virtual ethernet adapter**, or run
+   `C:\Program Files\TAP-Windows\bin\addtap.bat` from an elevated prompt.
+   `Get-NetAdapter` lists what exists; an adapter is enough as-is, no IP
+   settings are needed. Rename one with `Rename-NetAdapter` if you want a
+   memorable `--interface` name.
+3. **Join from an elevated PowerShell or Command Prompt** (Windows needs
+   administrator rights for this, exactly as Linux needs root):
 
 ```powershell
-# One-time: install tap-windows6 from https://build.openvpn.net/downloads/releases/
-# (the installer adds an adapter). Repeat "Add a new TAP virtual ethernet
-# adapter" in the installer, or run addtap.bat, for each extra zone.
-
-# Join from an elevated PowerShell or Command Prompt
 linksocks zone join <zone-id> --vlan
 # Several adapters: name the one to use
-linksocks zone join <zone-id> --vlan --interface "Local Area Connection 2"
+linksocks zone join <zone-id> --vlan --interface "Zone B"
 ```
 
-The client picks the first TAP-Windows6 adapter when `--interface` is omitted,
-pins its MAC to the machine's member MAC (Windows applies that on adapter
-restart, which the client performs), enables the adapter, and sets the member
-address. All of it needs administrator rights, just as Linux needs root.
-Without an elevated shell it stops with that message instead of half-working.
+The client checks the elevation and the adapter before it contacts the
+coordinator, so a missing driver or a non-elevated shell fails immediately
+instead of after a join. It then picks the first TAP-Windows6 adapter when
+`--interface` is omitted, pins its MAC to the machine's member MAC (Windows
+applies that on adapter restart, which the client performs), enables the
+adapter, and sets the member address. Until it does, Windows shows the adapter
+as "network cable unplugged"; that is expected.
 
 **macOS** only offers L3 tunnels (utun), so `--vlan` is not available: join
 without it and use the SOCKS5 proxy, which reaches members by address or name.

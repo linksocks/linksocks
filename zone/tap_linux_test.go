@@ -22,12 +22,16 @@ func TestOpenTAPRequiresPrivileges(t *testing.T) {
 	if err := checkNetworkOverlap(prefix); err != nil {
 		t.Skipf("test zone network overlaps this host: %v", err)
 	}
+	// The join refuses this before any network work, and openTAP refuses it too.
+	if err := preflightVLAN("lztap0"); err == nil || !strings.Contains(err.Error(), "needs root") {
+		t.Fatalf("preflight must refuse a rootless --vlan before joining: %v", err)
+	}
 	device, err := openTAP(context.Background(), "lztap0", prefix, ip, [6]byte{2, 1, 2, 3, 4, 5})
 	if err == nil {
 		device.Close()
 		t.Fatal("created a TAP interface without privileges")
 	}
-	if !strings.Contains(err.Error(), "administrator privileges") {
+	if !strings.Contains(err.Error(), "needs root") {
 		t.Fatalf("unexpected TAP error: %v", err)
 	}
 }

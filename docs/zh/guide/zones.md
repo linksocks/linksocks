@@ -105,24 +105,33 @@ UDP 广播、WOL 魔术包、组播和原始以太网帧都能在成员之间传
 网段里的身份，并按它过滤入站帧。Linux 自带这种网卡；Windows 需要装驱动；macOS
 根本不支持二层。
 
-**Windows（TAP-Windows6）**：安装 TAP-Windows6 驱动，为每个 Zone 添加一块适配器，
-然后在管理员终端里用 `--vlan` 加入：
+**Windows（TAP-Windows6）**：每台机器做三件事。
+
+1. **安装驱动**：从 OpenVPN 的发布目录
+   <https://build.openvpn.net/downloads/releases/> 下载最新的 TAP-Windows 安装包
+   （文件名形如 `tap-windows-<版本>-W6.exe`，镜像见
+   <https://swupdate.openvpn.net/community/releases/>），以管理员身份运行，并勾选
+   **TAP Virtual Ethernet Adapter** 组件——它会同时装好驱动并创建第一块适配器。
+   已经装过 OpenVPN 的机器不必再装：OpenVPN 的安装包自带同一驱动。
+2. **每个 Zone 一块适配器**：安装程序创建了第一块；再要新的，用开始菜单快捷方式
+   **TAP-Windows → Utilities → Add a new TAP virtual ethernet adapter**，或在管理员
+   命令行运行 `C:\Program Files\TAP-Windows\bin\addtap.bat`。`Get-NetAdapter`
+   可以列出已有适配器；适配器本身不需要配置 IP。想给 `--interface` 一个好记的名字，
+   可用 `Rename-NetAdapter` 重命名。
+3. **在管理员 PowerShell 或命令提示符里加入**（Windows 需要管理员权限，正如 Linux
+   需要 root）：
 
 ```powershell
-# 一次性：从 https://build.openvpn.net/downloads/releases/ 安装 tap-windows6
-# （安装程序会添加一块适配器）。每多一个 Zone，就在安装程序里再选一次
-# "Add a new TAP virtual ethernet adapter"，或运行 addtap.bat。
-
-# 从管理员 PowerShell 或命令提示符加入
 linksocks zone join <zone-id> --vlan
 # 有多块适配器时，用名称指定
-linksocks zone join <zone-id> --vlan --interface "Local Area Connection 2"
+linksocks zone join <zone-id> --vlan --interface "Zone B"
 ```
 
-不指定 `--interface` 时使用找到的第一块 TAP-Windows6 适配器。客户端会把它的 MAC
-固定为本机的成员 MAC（Windows 在适配器重启后才生效，客户端会自动重启它）、启用
-适配器并设置成员地址。这些操作都需要管理员权限，和 Linux 需要 root 一样；没有
-管理员权限时会直接报错退出，而不是半途而废。
+客户端在联系协调服务之前就会检查权限与适配器，所以缺驱动或没有管理员权限会**立即
+失败**，不会先加入再报错。随后它会在未指定 `--interface` 时使用找到的第一块
+TAP-Windows6 适配器，把其 MAC 固定为本机的成员 MAC（Windows 在适配器重启后才生效，
+客户端会自动重启它）、启用适配器并设置成员地址。在完成之前，Windows 会显示该适配器
+"网络电缆被拔出"，这是正常的。
 
 **macOS** 只提供三层隧道（utun），因此没有 `--vlan`：不加该参数、使用 SOCKS5
 代理即可，代理能按虚拟 IP 或成员名访问成员。

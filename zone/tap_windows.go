@@ -277,37 +277,53 @@ func elevated() bool {
 // Unlike the Linux path it cannot create the adapter: tap-windows6 installs an
 // adapter per zone, so --interface names an existing one. Configuring it needs
 // administrator rights, exactly like root on Linux.
-func openTAP(ctx context.Context, name string, prefix netip.Prefix, ip netip.Addr, mac [6]byte) (l2Device, error) {
+// selectTAPAdapter picks the adapter to join through: the one named by
+// --interface (connection name or GUID), or the first installed adapter.
+func selectTAPAdapter(name string) (tapAdapter, error) {
+	adapters, err := listTAPAdapters()
+	if err != nil {
+		return tapAdapter{}, fmt.Errorf("list TAP adapters: %w", err)
+	}
+	if len(adapters) == 0 {
+		return tapAdapter{}, errors.New("no TAP-Windows6 adapter found: install the driver and add one adapter per zone " +
+			"(see https://linksocks.github.io/guide/zones#windows-and-macos)")
+	}
+	if name == "" {
+		return adapters[0], nil
+	}
+	for _, adapter := range adapters {
+		if strings.EqualFold(adapter.name, name) || strings.EqualFold(adapter.guid, name) {
+			return adapter, nil
+		}
+	}
+	available := make([]string, 0, len(adapters))
+	for _, adapter := range adapters {
+		available = append(available, adapter.name)
+	}
+	return tapAdapter{}, fmt.Errorf("no TAP adapter named %q; available: %s", name, strings.Join(available, ", "))
+}
+
+// preflightVLAN reports what --vlan would fail on, before any network work:
+// pinning the adapter MAC and configuring its address need administrator
+// rights, and the TAP-Windows6 adapter has to exist.
+func preflightVLAN(name string) error {
 	if !elevated() {
-		return nil, errors.New("zone --vlan on Windows needs an elevated shell: it pins the adapter MAC and sets the member address")
+		return errors.New("zone --vlan on Windows needs an elevated shell: it pins the adapter MAC and sets the member address (run without --vlan to use the SOCKS5 proxy)")
+	}
+	_, err := selectTAPAdapter(name)
+	return err
+}
+
+func openTAP(ctx context.Context, name string, prefix netip.Prefix, ip netip.Addr, mac [6]byte) (l2Device, error) {
+	if err := preflightVLAN(name); err != nil {
+		return nil, err
 	}
 	if err := checkNetworkOverlap(prefix); err != nil {
 		return nil, err
 	}
-	adapters, err := listTAPAdapters()
+	selected, err := selectTAPAdapter(name)
 	if err != nil {
-		return nil, fmt.Errorf("list TAP adapters: %w", err)
-	}
-	if len(adapters) == 0 {
-		return nil, errors.New("no TAP-Windows6 adapter found: install the driver and add one adapter per zone " +
-			"(see https://linksocks.github.io/guide/zones#windows-and-macos)")
-	}
-	selected := adapters[0]
-	if name != "" {
-		selected = tapAdapter{}
-		for _, adapter := range adapters {
-			if strings.EqualFold(adapter.name, name) || strings.EqualFold(adapter.guid, name) {
-				selected = adapter
-				break
-			}
-		}
-		if selected.guid == "" {
-			available := make([]string, 0, len(adapters))
-			for _, adapter := range adapters {
-				available = append(available, adapter.name)
-			}
-			return nil, fmt.Errorf("no TAP adapter named %q; available: %s", name, strings.Join(available, ", "))
-		}
+		return nil, err
 	}
 
 	restarted := false

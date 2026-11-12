@@ -5,6 +5,7 @@ package zone
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -41,7 +42,22 @@ type ifreq struct {
 // openTAP creates and configures the Linux L2 TAP interface the zone runs on:
 // /dev/net/tun with IFF_TAP|IFF_NO_PI, the member's derived MAC address, its
 // virtual address and a 1500-byte MTU.
+// preflightVLAN reports what --vlan would fail on, before any network work:
+// the TAP interface needs root and /dev/net/tun.
+func preflightVLAN(string) error {
+	if os.Geteuid() != 0 {
+		return errors.New("zone --vlan needs root: it creates a TAP interface and assigns the member address (run without --vlan to use the SOCKS5 proxy)")
+	}
+	if _, err := os.Stat("/dev/net/tun"); err != nil {
+		return fmt.Errorf("zone --vlan needs /dev/net/tun: %w", err)
+	}
+	return nil
+}
+
 func openTAP(ctx context.Context, name string, prefix netip.Prefix, ip netip.Addr, mac [6]byte) (l2Device, error) {
+	if err := preflightVLAN(name); err != nil {
+		return nil, err
+	}
 	if err := checkNetworkOverlap(prefix); err != nil {
 		return nil, err
 	}
