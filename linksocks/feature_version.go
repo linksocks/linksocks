@@ -34,11 +34,27 @@ func protocolAllowsDirectPeer(version byte) bool {
 }
 
 // protocolSupportsMigration reports whether channel migration may be used with
-// a peer of the given version. Migration belongs to the direct data plane and
-// is disabled for protocol V2.
+// a peer of the given version: the V1 flow that moves an established channel
+// back to the plaintext relay writer.
 func protocolSupportsMigration(version byte) bool {
 	if protocolMajor(version) == protocolMajor(ProtocolVersionV2) {
 		return false
 	}
 	return protocolSupportsFeature(version, MinVersionMigration)
+}
+
+// protocolUsesPlaintextMigration reports whether a channel may move to the
+// plaintext relay writer. Only V1 can: V2 keeps the payload sealed and resumes
+// through a new sealed session instead.
+func protocolUsesPlaintextMigration(version byte) bool {
+	return protocolSupportsMigration(version)
+}
+
+// protocolUsesSealedResume reports whether a channel may replay its
+// unacknowledged data through a fresh sealed session after its transport died.
+// Only protocol V2 does this, and only for TCP: a datagram stream is reordered
+// and lossy by design, so holding it to a contiguous sequence would drop live
+// datagrams after any gap.
+func protocolUsesSealedResume(version byte, protocol string) bool {
+	return protocolMajor(version) == protocolMajor(ProtocolVersionV2) && protocol == "tcp"
 }

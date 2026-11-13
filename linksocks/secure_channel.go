@@ -272,6 +272,36 @@ func (h *secureHub) openChannel(link MessageWriter, channelID uuid.UUID, queue c
 	}
 }
 
+// resumeChannel re-establishes one established channel on the relay after its
+// direct transport failed. It opens a fresh sealed session for the same
+// channel, asks the peer through it to reuse the connection it already dialed,
+// and points the channel at the new session. The caller holds the channel's
+// write lock, so the unacknowledged buffer is replayed before any new data.
+func (h *secureHub) resumeChannel(channel *logicalChannel) error {
+	if h.client == nil {
+		return errors.New("secure channel resume: no client side")
+	}
+	var queue chan BaseMessage
+	if v, ok := h.relay.messageQueues.Load(channel.id); ok {
+		queue = v.(chan BaseMessage)
+	}
+	sess, err := h.openChannel(newClientRelayWriter(h.client), channel.id, queue)
+	if err != nil {
+		return err
+	}
+	req := channel.requestMessage()
+	if req.ChannelID == uuid.Nil {
+		req.ChannelID = channel.id
+	}
+	req.Resume = true
+	if err := sess.WriteMessage(req); err != nil {
+		h.close(channel.id)
+		return err
+	}
+	h.log.Info().Str("channel_id", channel.id.String()).Msg("Resumed direct channel through the relay")
+	return channel.Switch(sess, channelPathRelay)
+}
+
 func (h *secureHub) newSession(link MessageWriter, channelID uuid.UUID, initiator bool) (*secureSession, error) {
 	keypair, err := newSecureCipherSuite().GenerateKeypair(rand.Reader)
 	if err != nil {
@@ -750,7 +780,16 @@ func (s *secureSession) dispatch(msg BaseMessage) {
 
 	case DataMessage:
 		if s.initiator {
-			s.deliverToQueue(m)
+			if !s.acceptInboundData(m) {
+				return
+			}
+			if !s.deliverToQueue(m) {
+				// Not delivered (session tearing down): roll the sequence
+				// back so a replay can deliver this frame again.
+				if ch, ok := s.hub.relay.logicalChannel(m.ChannelID); ok {
+					ch.rejectData(m.Sequence)
+				}
+			}
 			return
 		}
 		if c != nil {
@@ -782,23 +821,51 @@ func (s *secureSession) dispatch(msg BaseMessage) {
 	}
 }
 
-func (s *secureSession) deliverToQueue(msg BaseMessage) {
+// deliverToQueue hands a decrypted message to the local pump before
+// considering the session's end: a teardown disconnect closes the session
+// while the peer's last data frame may still be in flight, and dropping it
+// would truncate the response the pump is about to write. It reports whether
+// the message made it into the queue.
+func (s *secureSession) deliverToQueue(msg BaseMessage) bool {
 	if s.queue == nil {
-		return
+		return false
 	}
-	// Hand the message to the local pump before considering the session's end:
-	// a teardown disconnect closes the session while the peer's last data
-	// frame may still be in flight, and dropping it would truncate the
-	// response the pump is about to write.
 	select {
 	case s.queue <- msg:
-		return
+		return true
 	default:
 	}
 	select {
 	case s.queue <- msg:
+		return true
 	case <-s.done:
+		return false
 	}
+}
+
+// acceptInboundData applies the channel's sequence bookkeeping to data that
+// arrived through this session on the entry side. Duplicates are dropped and
+// re-acknowledged; a gap is dropped with a warning because pending data is
+// always replayed in order, so a gap means the stream cannot be trusted.
+func (s *secureSession) acceptInboundData(m DataMessage) bool {
+	channel, ok := s.hub.relay.logicalChannel(m.ChannelID)
+	if !ok {
+		// The channel binding may still be in flight; deliver it like the
+		// direct path does and let the pump decide.
+		return true
+	}
+	if channel.acceptData(m) {
+		return true
+	}
+	if channel.isDuplicate(m.Sequence) {
+		_ = channel.acknowledgeMessage(m.Sequence)
+		return false
+	}
+	s.log.Warn().
+		Str("channel_id", m.ChannelID.String()).
+		Uint64("sequence", m.Sequence).
+		Msg("Dropping sealed data that arrived out of order")
+	return false
 }
 
 // openChannelTransport prepares the writer that carries one channel's traffic.
@@ -844,7 +911,11 @@ func (r *Relay) openChannelTransport(channelID uuid.UUID, queue chan BaseMessage
 // the connection path; otherwise the channel is opened the usual way. On
 // failure the reserved channel is torn down before returning.
 func (r *Relay) openProxyChannel(ws MessageWriter) (uuid.UUID, chan BaseMessage, MessageWriter, error) {
-	if r.secure != nil && r.secure.client != nil {
+	// A direct transport carries its own encryption and must keep using it:
+	// prepared channels are bound to a relay link, so taking one here would
+	// silently route the connection through the relay instead.
+	relayPath := !isDirectLinkWriter(ws)
+	if relayPath && r.secure != nil && r.secure.client != nil {
 		if channelID, queue, transport, ok := r.secure.claimWarm(); ok {
 			r.secure.scheduleWarm()
 			return channelID, queue, transport, nil
@@ -861,10 +932,17 @@ func (r *Relay) openProxyChannel(ws MessageWriter) (uuid.UUID, chan BaseMessage,
 		r.disconnectChannel(channelID)
 		return uuid.Nil, nil, nil, err
 	}
-	if r.secure != nil && r.secure.client != nil {
+	if relayPath && r.secure != nil && r.secure.client != nil {
 		r.secure.scheduleWarm()
 	}
 	return channelID, queue, transport, nil
+}
+
+// isDirectLinkWriter reports whether a writer already encrypts peer-to-peer
+// and must not be wrapped in, or replaced by, the relay layer.
+func isDirectLinkWriter(w MessageWriter) bool {
+	dl, ok := w.(interface{ DirectLink() bool })
+	return ok && dl.DirectLink()
 }
 
 // claimWarm hands a prepared channel to a new proxy connection, discarding

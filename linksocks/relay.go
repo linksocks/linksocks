@@ -410,6 +410,7 @@ func (r *Relay) registerLogicalChannel(channelID uuid.UUID, protocol string, wri
 		fallback = writer
 	}
 	channel := newLogicalChannel(channelID, protocol, writer, fallback, path)
+	channel.resumeGrace = r.option.TransportGrace
 	r.logicalChannels.Store(channelID, channel)
 	return channel
 }
@@ -595,6 +596,10 @@ func (r *Relay) HandleNetworkConnection(ctx context.Context, ws MessageWriter, r
 	if request.Resume {
 		channel, ok := r.logicalChannel(request.ChannelID)
 		if !ok {
+			// Tell the peer this resume has no home so it stops waiting and
+			// fails the request instead of hanging on a dead channel.
+			disc := DisconnectMessage{ChannelID: request.ChannelID, Error: "channel expired"}
+			_ = ws.WriteMessage(disc)
 			return fmt.Errorf("resume requested for unknown channel %s", request.ChannelID)
 		}
 		if err := channel.Switch(ws, channelPathRelay); err != nil {
@@ -604,6 +609,11 @@ func (r *Relay) HandleNetworkConnection(ctx context.Context, ws MessageWriter, r
 		// window so repeated short drops cannot starve the grace period
 		// accumulated from the first failure.
 		channel.resume()
+		if channel.migrationEnabled() {
+			// Data the old transport left unacknowledged goes out before the
+			// peer starts waiting on the new one.
+			return channel.replayPending()
+		}
 		return nil
 	}
 	channel, ok := r.logicalChannel(request.ChannelID)
@@ -1721,6 +1731,17 @@ func (r *Relay) HandleSocksTCPForward(ctx context.Context, ws MessageWriter, soc
 			case msg, ok := <-msgChan:
 				if !ok {
 					// Channel closed; exit goroutine cleanly
+					return
+				}
+				// A refusal that reaches the running pump belongs to a resume
+				// attempt: the peer could not bind this channel, so the
+				// connection has no transport anymore.
+				if resp, isResp := msg.(ConnectResponseMessage); isResp && !resp.Success {
+					reason := resp.Error
+					if reason == "" {
+						reason = "channel refused"
+					}
+					errChan <- fmt.Errorf("channel refused: %s", reason)
 					return
 				}
 				// Type assert to DataMessage

@@ -218,40 +218,37 @@ func (w *directQUICChannelWriter) WriteMessage(msg BaseMessage) error {
 			channel = w.c.relay.registerLogicalChannel(req.ChannelID, req.Protocol, w, fallback, channelPathDirect)
 			channel.setRequest(req)
 			channel.markResumeOwner()
-			w.c.directMu.Lock()
-			remoteProtocolVersion := w.c.directRemoteProtocolVersion
-			w.c.directMu.Unlock()
-			channel.enableMigration(protocolSupportsMigration(remoteProtocolVersion))
-			if !req.Resume {
-				w.c.directMu.Lock()
-				peerSessionID := w.c.directRemoteSessionID
-				remoteProtocolVersion := w.c.directRemoteProtocolVersion
-				w.c.directMu.Unlock()
-				if protocolSupportsMigration(remoteProtocolVersion) {
-					if err := fallback.WriteMessage(ChannelBindMessage{ChannelID: req.ChannelID, Protocol: req.Protocol, PeerSessionID: peerSessionID}); err != nil {
-						return err
-					}
-				}
-			}
 		} else {
 			if err := channel.switchToDirect(w); err != nil {
 				return err
 			}
-			if !req.Resume {
-				w.c.directMu.Lock()
-				peerSessionID := w.c.directRemoteSessionID
-				remoteProtocolVersion := w.c.directRemoteProtocolVersion
-				w.c.directMu.Unlock()
-				if protocolSupportsMigration(remoteProtocolVersion) {
-					if err := fallback.WriteMessage(ChannelBindMessage{ChannelID: req.ChannelID, Protocol: req.Protocol, PeerSessionID: peerSessionID}); err != nil {
-						return err
-					}
-				}
+		}
+		// Sequence bookkeeping and the resume hook apply whichever path
+		// registered the channel: the entry side's local proxy registers it
+		// before the connect reaches this writer, the direct read loop
+		// registers it for inbound streams.
+		w.c.directMu.Lock()
+		peerSessionID := w.c.directRemoteSessionID
+		remoteProtocolVersion := w.c.directRemoteProtocolVersion
+		w.c.directMu.Unlock()
+		channel.enableMigration(protocolUsesPlaintextMigration(remoteProtocolVersion) ||
+			protocolUsesSealedResume(remoteProtocolVersion, req.Protocol))
+		if protocolUsesSealedResume(remoteProtocolVersion, req.Protocol) && w.c.relay.secure != nil {
+			// The entry side owns the resume handshake; this writer is its
+			// direct transport, and a failure here re-establishes the channel
+			// through a fresh sealed session on the relay.
+			channel.setResumeFn(func() error {
+				return w.c.relay.secure.resumeChannel(channel)
+			})
+		}
+		if !req.Resume && protocolUsesPlaintextMigration(remoteProtocolVersion) {
+			if err := fallback.WriteMessage(ChannelBindMessage{ChannelID: req.ChannelID, Protocol: req.Protocol, PeerSessionID: peerSessionID}); err != nil {
+				return err
 			}
 		}
 		if opened {
 			if req.Resume {
-				return channel.replayPending()
+				return channel.replayPendingLocked()
 			}
 			return nil
 		}

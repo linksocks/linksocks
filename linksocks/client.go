@@ -281,10 +281,11 @@ func (c *LinkSocksClient) directMarkDegraded(now time.Time, d time.Duration, rea
 			e = e.Str("remote_session_id", remoteSess.String())
 		}
 		if protocolMajor(c.protocolVersion) == protocolMajor(ProtocolVersionV2) {
-			// V2 channels are sealed end to end, so an established one cannot
-			// move to the plaintext relay writer; only new connections use the
-			// relay.
-			e.Msg("Direct connectivity degraded; established channels close and new connections use the relay")
+			// V2 channels are sealed end to end; a broken direct path
+			// re-establishes the same channel through a fresh sealed session
+			// on the relay, so the connection survives instead of falling
+			// back to plaintext.
+			e.Msg("Direct connectivity degraded; established channels resume through a fresh sealed relay session")
 		} else {
 			e.Msg("Direct connectivity degraded; falling back to relay")
 		}
@@ -1133,7 +1134,8 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 			c.directMu.Lock()
 			remoteProtocolVersion := c.directRemoteProtocolVersion
 			c.directMu.Unlock()
-			channel.enableMigration(protocolSupportsMigration(remoteProtocolVersion))
+			channel.enableMigration(protocolUsesPlaintextMigration(remoteProtocolVersion) ||
+				protocolUsesSealedResume(remoteProtocolVersion, req.Protocol))
 			go c.directQUICChannelReadLoop(ctx, ch)
 			go func() {
 				if err := c.relay.HandleNetworkConnection(ctx, w, req); err != nil && !errors.Is(err, context.Canceled) {

@@ -45,10 +45,30 @@ type logicalChannel struct {
 	received    uint64
 	pending     map[uint64]DataMessage
 	closed      bool
+	// writerGen counts writer switches, flushedGen records the generation the
+	// pending buffer was last replayed for. A write that finds the writer
+	// changed replays pending data before sending anything new, so data left
+	// behind by the switch is never overtaken by data sent after it: the peer
+	// drops out-of-order sequences.
+	writerGen  uint64
+	flushedGen uint64
+	// resumeFn re-establishes the channel on the relay after its transport
+	// failed. Only the entry side sets it; the peer waits for that resume.
+	resumeFn func() error
+	// resumeWait is closed when the writer changes or the channel closes, so a
+	// failed write can wait for the peer's resume instead of failing the
+	// connection.
+	resumeWait chan struct{}
+	// resumeGrace bounds how long a failed write waits for the writer change.
+	resumeGrace time.Duration
 	// suspendSince records when the transport link first failed; zero means
 	// the link is healthy. Writes retry within the grace window.
 	suspendSince time.Time
 }
+
+// channelResumeGrace is the fallback wait for a peer-driven resume when the
+// relay does not configure a transport grace.
+const channelResumeGrace = 10 * time.Second
 
 func newLogicalChannel(id uuid.UUID, protocol string, writer MessageWriter, fallback MessageWriter, path channelPath) *logicalChannel {
 	return &logicalChannel{id: id, protocol: protocol, writer: writer, fallback: fallback, path: path, pending: make(map[uint64]DataMessage)}
@@ -62,12 +82,36 @@ func (c *logicalChannel) WriteMessage(msg BaseMessage) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		return errors.New("logical channel: closed")
+	prepared, w, migration, err := c.prepareWrite(msg)
+	if err != nil {
+		return err
 	}
-	w := c.writer
+	if w == nil {
+		return errors.New("logical channel: no active writer")
+	}
+	// Data left behind by a writer switch goes first, so the peer's sequencer
+	// never sees a gap and never has to guess which stream is authoritative.
+	if err := c.flushPending(migration); err != nil {
+		return c.recoverWrite(w, prepared, migration, err)
+	}
+	if err := w.WriteMessage(prepared); err != nil {
+		if _, isControl := prepared.(ChannelMigrateMessage); isControl {
+			return err
+		}
+		return c.recoverWrite(w, prepared, migration, err)
+	}
+	c.resume()
+	return nil
+}
+
+// prepareWrite sequences data messages when migration is enabled and returns
+// the message along with the writer it must go to.
+func (c *logicalChannel) prepareWrite(msg BaseMessage) (BaseMessage, MessageWriter, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil, nil, false, errors.New("logical channel: closed")
+	}
 	migration := c.migration
 	if data, ok := msg.(DataMessage); ok && migration {
 		if data.ChannelID == uuid.Nil {
@@ -78,19 +122,36 @@ func (c *logicalChannel) WriteMessage(msg BaseMessage) error {
 		c.pending[data.Sequence] = data
 		msg = data
 	}
-	c.mu.Unlock()
+	return msg, c.writer, migration, nil
+}
 
-	if w == nil {
-		return errors.New("logical channel: no active writer")
+// flushPending replays unacknowledged data when the writer changed since the
+// last flush. Caller holds writeMu.
+func (c *logicalChannel) flushPending(migration bool) error {
+	if !migration {
+		return nil
 	}
-	if err := w.WriteMessage(msg); err != nil {
-		if _, isControl := msg.(ChannelMigrateMessage); isControl {
-			return err
-		}
+	c.mu.Lock()
+	stale := c.writerGen != c.flushedGen
+	c.mu.Unlock()
+	if !stale {
+		return nil
+	}
+	return c.replayPendingLocked()
+}
+
+// recoverWrite handles a write that failed. Writers that may hand their payload
+// to the plaintext relay keep the V1 fallback; the sealed direct writers
+// re-establish the channel through a fresh end-to-end session instead, so the
+// payload never leaves the encryption.
+func (c *logicalChannel) recoverWrite(failed MessageWriter, msg BaseMessage, migration bool, cause error) error {
+	refuser, refuses := failed.(relayFallbackRefuser)
+	if !refuses || !refuser.RefuseRelayFallback() {
 		if err := c.switchToFallback("write failure"); err != nil {
 			return &transportDownError{cause: err}
 		}
-		if _, ok := msg.(DataMessage); ok && migration {
+		if data, ok := msg.(DataMessage); ok && migration && data.Sequence != 0 {
+			// switchToFallback replayed the pending buffer, this frame included.
 			return nil
 		}
 		if err := c.currentWriter().WriteMessage(msg); err != nil {
@@ -98,7 +159,96 @@ func (c *logicalChannel) WriteMessage(msg BaseMessage) error {
 		}
 		return nil
 	}
+
+	if err := c.ensureSealedWriter(failed, cause); err != nil {
+		return &transportDownError{cause: err}
+	}
+	// The new writer has nothing on the wire yet: flush whatever the failed
+	// transport left unacknowledged before sending new data.
+	if err := c.replayPendingLocked(); err != nil {
+		return &transportDownError{cause: err}
+	}
+	if data, ok := msg.(DataMessage); ok && migration && data.Sequence != 0 {
+		return nil
+	}
+	if err := c.currentWriter().WriteMessage(msg); err != nil {
+		return &transportDownError{cause: err}
+	}
 	return nil
+}
+
+// ensureSealedWriter makes sure the channel has a writer other than the one
+// that just failed. The entry side runs the resume handshake itself; the peer
+// waits for the entry side's resume to install the new writer.
+func (c *logicalChannel) ensureSealedWriter(failed MessageWriter, cause error) error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return errors.New("logical channel: closed")
+	}
+	if c.writer != failed {
+		c.mu.Unlock()
+		return nil
+	}
+	fn := c.resumeFn
+	grace := c.resumeGrace
+	c.mu.Unlock()
+
+	if fn != nil {
+		if err := fn(); err != nil {
+			return fmt.Errorf("resume channel on relay: %w", err)
+		}
+		return nil
+	}
+
+	if grace <= 0 {
+		grace = channelResumeGrace
+	}
+	deadline := time.Now().Add(grace)
+	for {
+		c.mu.Lock()
+		if c.closed {
+			c.mu.Unlock()
+			return errors.New("logical channel: closed")
+		}
+		if c.writer != failed {
+			c.mu.Unlock()
+			return nil
+		}
+		wait := c.resumeWait
+		if wait == nil {
+			wait = make(chan struct{})
+			c.resumeWait = wait
+		}
+		c.mu.Unlock()
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("no relay resume within %s: %w", grace, cause)
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case <-wait:
+			timer.Stop()
+		case <-timer.C:
+			return fmt.Errorf("no relay resume within %s: %w", grace, cause)
+		}
+	}
+}
+
+func (c *logicalChannel) setResumeFn(fn func() error) {
+	c.mu.Lock()
+	c.resumeFn = fn
+	c.mu.Unlock()
+}
+
+// wakeResumeWaitersLocked releases writers blocked on a failed transport.
+// Caller holds mu.
+func (c *logicalChannel) wakeResumeWaitersLocked() {
+	if c.resumeWait != nil {
+		close(c.resumeWait)
+		c.resumeWait = nil
+	}
 }
 
 func (c *logicalChannel) Label() string {
@@ -119,6 +269,8 @@ func (c *logicalChannel) Switch(writer MessageWriter, path channelPath) error {
 	}
 	c.writer = writer
 	c.path = path
+	c.writerGen++
+	c.wakeResumeWaitersLocked()
 	return nil
 }
 
@@ -145,6 +297,8 @@ func (c *logicalChannel) switchToFallback(reason string) error {
 	}
 	c.writer = c.fallback
 	c.path = channelPathRelay
+	c.writerGen++
+	c.wakeResumeWaitersLocked()
 	fallback := c.fallback
 	migration := c.migration
 	c.mu.Unlock()
@@ -154,7 +308,7 @@ func (c *logicalChannel) switchToFallback(reason string) error {
 	if err := fallback.WriteMessage(ChannelMigrateMessage{ChannelID: c.id, Reason: reason}); err != nil {
 		return err
 	}
-	return c.replayPending()
+	return c.replayPendingLocked()
 }
 
 func (c *logicalChannel) switchToDirect(writer MessageWriter) error {
@@ -201,6 +355,14 @@ func (c *logicalChannel) requestMessage() ConnectMessage {
 }
 
 func (c *logicalChannel) switchToRelay() error {
+	c.mu.Lock()
+	if refuser, ok := c.writer.(relayFallbackRefuser); ok && refuser.RefuseRelayFallback() {
+		// A sealed transport must never be swapped for the plaintext relay
+		// writer, even if a peer asks it to migrate.
+		c.mu.Unlock()
+		return errors.New("logical channel: plaintext migration disabled for this transport")
+	}
+	c.mu.Unlock()
 	c.mu.Lock()
 	fallback := c.fallback
 	migration := c.migration
@@ -278,16 +440,40 @@ func (c *logicalChannel) acknowledgeMessage(sequence uint64) error {
 	return c.WriteMessage(ChannelDataAckMessage{ChannelID: c.id, Sequence: sequence})
 }
 
+// replayPending flushes unacknowledged data over the current writer. Safe to
+// call from dispatcher goroutines; writers already holding writeMu use
+// replayPendingLocked.
 func (c *logicalChannel) replayPending() error {
-	w := c.currentWriter()
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.replayPendingLocked()
+}
+
+// replayPendingLocked is replayPending for callers that hold writeMu, so the
+// replay cannot interleave with a new write.
+func (c *logicalChannel) replayPendingLocked() error {
+	c.mu.Lock()
+	w := c.writer
+	gen := c.writerGen
+	result := make([]DataMessage, 0, len(c.pending))
+	for _, msg := range c.pending {
+		result = append(result, msg)
+	}
+	c.mu.Unlock()
 	if w == nil {
 		return errors.New("logical channel: no active writer")
 	}
-	for _, msg := range c.pendingMessages() {
+	sort.Slice(result, func(i, j int) bool { return result[i].Sequence < result[j].Sequence })
+	for _, msg := range result {
 		if err := w.WriteMessage(msg); err != nil {
 			return err
 		}
 	}
+	c.mu.Lock()
+	if c.writerGen == gen {
+		c.flushedGen = gen
+	}
+	c.mu.Unlock()
 	return nil
 }
 
@@ -329,5 +515,6 @@ func (c *logicalChannel) Close() {
 	c.mu.Lock()
 	c.closed = true
 	c.writer = nil
+	c.wakeResumeWaitersLocked()
 	c.mu.Unlock()
 }
