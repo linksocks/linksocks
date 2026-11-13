@@ -63,10 +63,17 @@ func (c *WSConn) ProtocolVersion() byte {
 // isStale reports whether the link has been silent long enough to be treated
 // as dead, even though it may still be registered as online.
 func (c *WSConn) isStale(now time.Time) bool {
-	last := time.UnixMilli(atomic.LoadInt64(&c.lastPongMillis))
-	// A link that never answered a ping is stale; one that never got a pong
-	// chance yet (fresh link) is not.
-	return !last.IsZero() && now.Sub(last) > connStaleAfter
+	lastPong := atomic.LoadInt64(&c.lastPongMillis)
+	if lastPong != 0 {
+		return now.Sub(time.UnixMilli(lastPong)) > connStaleAfter
+	}
+	// No pong has ever arrived. The link is stale only if a ping has already
+	// gone unanswered for the stale window; a fresh link that never had a
+	// ping round yet must not be treated as dead. (time.UnixMilli(0) is not
+	// the zero time, so comparing it directly would mark every fresh link
+	// stale.)
+	lastPing := atomic.LoadInt64(&c.pingSentMillis)
+	return lastPing != 0 && now.Sub(time.UnixMilli(lastPing)) > connStaleAfter
 }
 
 func (c *WSConn) Label() string {

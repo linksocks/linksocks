@@ -46,17 +46,40 @@ type directQUICHandshake struct {
 	MAC       [directProbeMACLen]byte
 }
 
-func computeDirectQUICHandshakeMAC(sessionKey []byte, version byte, typ byte, sessionID uuid.UUID, nonce [8]byte) [directProbeMACLen]byte {
+// directQUICBindingLabel is the RFC 5705 exporter label used to bind the
+// authentication handshake to the live QUIC/TLS connection.
+const directQUICBindingLabel = "linksocks-direct-auth"
+
+// directQUICConnBinding derives a channel-binding value from the established
+// QUIC/TLS session. Both ends of one connection compute the same value, while
+// a mediator that terminates two connections (one per peer) gets different
+// values. Mixing it into the handshake MAC therefore ties the session-key
+// proof to the connection it was received on instead of to a forwarded
+// message that a man-in-the-middle could relay.
+func directQUICConnBinding(conn *quic.Conn) ([]byte, error) {
+	if conn == nil {
+		return nil, errors.New("direct quic: missing connection")
+	}
+	cs := conn.ConnectionState()
+	binding, err := cs.TLS.ExportKeyingMaterial(directQUICBindingLabel, nil, 32)
+	if err != nil {
+		return nil, fmt.Errorf("direct quic: connection binding: %w", err)
+	}
+	return binding, nil
+}
+
+func computeDirectQUICHandshakeMAC(sessionKey []byte, binding []byte, version byte, typ byte, sessionID uuid.UUID, nonce [8]byte) [directProbeMACLen]byte {
 	var out [directProbeMACLen]byte
 	if len(sessionKey) == 0 {
 		return out
 	}
 
-	b := make([]byte, 0, 1+1+16+8)
+	b := make([]byte, 0, 1+1+16+8+len(binding))
 	b = append(b, version)
 	b = append(b, typ)
 	b = append(b, sessionID[:]...)
 	b = append(b, nonce[:]...)
+	b = append(b, binding...)
 
 	m := hmac.New(sha256.New, sessionKey)
 	_, _ = m.Write(b)
@@ -65,11 +88,11 @@ func computeDirectQUICHandshakeMAC(sessionKey []byte, version byte, typ byte, se
 	return out
 }
 
-func verifyDirectQUICHandshakeMAC(sessionKey []byte, version byte, typ byte, sessionID uuid.UUID, nonce [8]byte, mac [directProbeMACLen]byte) bool {
-	if len(sessionKey) == 0 {
+func verifyDirectQUICHandshakeMAC(sessionKey []byte, binding []byte, version byte, typ byte, sessionID uuid.UUID, nonce [8]byte, mac [directProbeMACLen]byte) bool {
+	if len(sessionKey) == 0 || len(binding) == 0 {
 		return false
 	}
-	expected := computeDirectQUICHandshakeMAC(sessionKey, version, typ, sessionID, nonce)
+	expected := computeDirectQUICHandshakeMAC(sessionKey, binding, version, typ, sessionID, nonce)
 	return subtle.ConstantTimeCompare(expected[:], mac[:]) == 1
 }
 
@@ -158,6 +181,10 @@ func newDirectQUICClientTLSConfig() *tls.Config {
 }
 
 func directQUICClientAuth(ctx context.Context, conn *quic.Conn, sessionID uuid.UUID, sessionKey []byte) error {
+	binding, err := directQUICConnBinding(conn)
+	if err != nil {
+		return err
+	}
 	s, err := conn.OpenStreamSync(ctx)
 	if err != nil {
 		return err
@@ -167,7 +194,7 @@ func directQUICClientAuth(ctx context.Context, conn *quic.Conn, sessionID uuid.U
 	var nonce [8]byte
 	_, _ = rand.Read(nonce[:])
 	h := directQUICHandshake{Version: directQUICHandshakeVersion, Type: directQUICHandshakeTypeHello, SessionID: sessionID, Nonce: nonce}
-	h.MAC = computeDirectQUICHandshakeMAC(sessionKey, h.Version, h.Type, h.SessionID, h.Nonce)
+	h.MAC = computeDirectQUICHandshakeMAC(sessionKey, binding, h.Version, h.Type, h.SessionID, h.Nonce)
 
 	if _, err := s.Write(packDirectQUICHandshake(h)); err != nil {
 		return err
@@ -190,13 +217,17 @@ func directQUICClientAuth(ctx context.Context, conn *quic.Conn, sessionID uuid.U
 	if ack.Nonce != nonce {
 		return errors.New("direct quic: nonce mismatch")
 	}
-	if !verifyDirectQUICHandshakeMAC(sessionKey, ack.Version, ack.Type, ack.SessionID, ack.Nonce, ack.MAC) {
+	if !verifyDirectQUICHandshakeMAC(sessionKey, binding, ack.Version, ack.Type, ack.SessionID, ack.Nonce, ack.MAC) {
 		return errors.New("direct quic: invalid ack mac")
 	}
 	return nil
 }
 
 func directQUICServerAuth(ctx context.Context, conn *quic.Conn, sessionID uuid.UUID, sessionKey []byte) error {
+	binding, err := directQUICConnBinding(conn)
+	if err != nil {
+		return err
+	}
 	s, err := conn.AcceptStream(ctx)
 	if err != nil {
 		return err
@@ -217,12 +248,12 @@ func directQUICServerAuth(ctx context.Context, conn *quic.Conn, sessionID uuid.U
 	if h.SessionID != sessionID {
 		return errors.New("direct quic: session_id mismatch")
 	}
-	if !verifyDirectQUICHandshakeMAC(sessionKey, h.Version, h.Type, h.SessionID, h.Nonce, h.MAC) {
+	if !verifyDirectQUICHandshakeMAC(sessionKey, binding, h.Version, h.Type, h.SessionID, h.Nonce, h.MAC) {
 		return errors.New("direct quic: invalid hello mac")
 	}
 
 	ack := directQUICHandshake{Version: directQUICHandshakeVersion, Type: directQUICHandshakeTypeAck, SessionID: sessionID, Nonce: h.Nonce}
-	ack.MAC = computeDirectQUICHandshakeMAC(sessionKey, ack.Version, ack.Type, ack.SessionID, ack.Nonce)
+	ack.MAC = computeDirectQUICHandshakeMAC(sessionKey, binding, ack.Version, ack.Type, ack.SessionID, ack.Nonce)
 	if _, err := s.Write(packDirectQUICHandshake(ack)); err != nil {
 		return err
 	}

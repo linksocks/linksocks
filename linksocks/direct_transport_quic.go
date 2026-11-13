@@ -3,6 +3,7 @@ package linksocks
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -157,13 +158,35 @@ type directQUICChannelWriter struct {
 	mu     sync.Mutex
 	ch     *directQUICChannel
 	readOn sync.Once
+
+	// sealedResume latches whether this channel runs the V2 sealed-resume
+	// contract. It must never be re-derived later: the client zeroes its
+	// remote version field whenever the direct peer state resets, and a
+	// sealed channel must not be swapped to the plaintext relay writer
+	// because of that transient zero.
+	sealedResume bool
+}
+
+// latchSealedResume records the sealed-resume contract for this writer from
+// the peer version observed at setup time.
+func (w *directQUICChannelWriter) latchSealedResume(version byte) {
+	if protocolMajor(version) == protocolMajor(ProtocolVersionV2) {
+		w.sealedResume = true
+	}
 }
 
 func newDirectQUICDialWriter(ctx context.Context, c *LinkSocksClient, p *DirectQUICDataPlane, label string) *directQUICChannelWriter {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return &directQUICChannelWriter{ctx: ctx, c: c, p: p, label: label}
+	w := &directQUICChannelWriter{ctx: ctx, c: c, p: p, label: label}
+	if c != nil {
+		c.directMu.Lock()
+		version := c.directRemoteProtocolVersion
+		c.directMu.Unlock()
+		w.latchSealedResume(version)
+	}
+	return w
 }
 
 func newDirectQUICBoundWriter(c *LinkSocksClient, p *DirectQUICDataPlane, ch *directQUICChannel, label string) *directQUICChannelWriter {
@@ -181,18 +204,13 @@ func (w *directQUICChannelWriter) Label() string {
 // the relay-side Noise layer must hand it through untouched.
 func (w *directQUICChannelWriter) DirectLink() bool { return true }
 
-// RefuseRelayFallback blocks the plaintext relay fallback for protocol V2
-// channels. The relay writer carries no Noise session for this channel, so
-// switching to it would drop the end-to-end guarantee; the connection is closed
-// instead and the next request starts fresh over the relay.
+// RefuseRelayFallback blocks the plaintext relay fallback for channels that
+// run the V2 sealed transport. The relay writer carries no Noise session for
+// this channel, so switching to it would drop the end-to-end guarantee; the
+// connection fails and the entry side re-establishes the channel through a
+// fresh sealed session instead.
 func (w *directQUICChannelWriter) RefuseRelayFallback() bool {
-	if w.c == nil {
-		return false
-	}
-	w.c.directMu.Lock()
-	version := w.c.directRemoteProtocolVersion
-	w.c.directMu.Unlock()
-	return protocolMajor(version) == protocolMajor(ProtocolVersionV2)
+	return w.sealedResume
 }
 
 func (w *directQUICChannelWriter) Fallback() MessageWriter {
@@ -227,23 +245,54 @@ func (w *directQUICChannelWriter) WriteMessage(msg BaseMessage) error {
 		// registered the channel: the entry side's local proxy registers it
 		// before the connect reaches this writer, the direct read loop
 		// registers it for inbound streams.
+		// The bind must name the peer behind the running plane, not the live
+		// remote-session field: with several providers online that field can
+		// move to another peer while this plane stays connected, and the
+		// relay would then route a later resume to the wrong machine.
+		peerSessionID := w.c.directQUICPeerSession()
 		w.c.directMu.Lock()
-		peerSessionID := w.c.directRemoteSessionID
+		if peerSessionID == uuid.Nil {
+			peerSessionID = w.c.directRemoteSessionID
+		}
 		remoteProtocolVersion := w.c.directRemoteProtocolVersion
 		w.c.directMu.Unlock()
+		// Latch the sealed-resume contract before any write: the refuser must
+		// stay true for the writer's lifetime regardless of later peer-state
+		// resets, or a live sealed channel could be swapped to the plaintext
+		// relay writer when a version field is transiently zero.
+		w.latchSealedResume(remoteProtocolVersion)
 		channel.enableMigration(protocolUsesPlaintextMigration(remoteProtocolVersion) ||
 			protocolUsesSealedResume(remoteProtocolVersion, req.Protocol))
-		if protocolUsesSealedResume(remoteProtocolVersion, req.Protocol) && w.c.relay.secure != nil {
+		if w.sealedResume && req.Protocol == "tcp" && w.c.relay.secure != nil {
 			// The entry side owns the resume handshake; this writer is its
 			// direct transport, and a failure here re-establishes the channel
-			// through a fresh sealed session on the relay.
-			channel.setResumeFn(func() error {
-				return w.c.relay.secure.resumeChannel(channel)
-			})
+			// through a fresh sealed session on the relay. A direct-only
+			// client asked for exactly the opposite guarantee: its payload
+			// must never move to the relay, so the connection fails instead.
+			if w.c.directMode == DirectModeDirectOnly {
+				channel.setResumeFn(func() error {
+					return fmt.Errorf("%w: direct-only client", errRelayResumeRefused)
+				})
+			} else {
+				channel.setResumeFn(func() error {
+					return w.c.relay.secure.resumeChannel(channel)
+				})
+			}
 		}
-		if !req.Resume && protocolUsesPlaintextMigration(remoteProtocolVersion) {
-			if err := fallback.WriteMessage(ChannelBindMessage{ChannelID: req.ChannelID, Protocol: req.Protocol, PeerSessionID: peerSessionID}); err != nil {
-				return err
+		if !req.Resume {
+			// Report the direct peer's session to the relay so a later sealed
+			// resume reaches the machine that holds the dialed connection
+			// instead of a fresh round-robin pick. V1 needs the bind for
+			// migration and fails without it; for V2 it only guides resume
+			// routing, so a relay link that is down must not take the live
+			// direct channel with it.
+			bind := ChannelBindMessage{ChannelID: req.ChannelID, Protocol: req.Protocol, PeerSessionID: peerSessionID}
+			if err := fallback.WriteMessage(bind); err != nil {
+				if protocolUsesPlaintextMigration(remoteProtocolVersion) {
+					return err
+				}
+				w.c.log.Debug().Err(err).Str("channel_id", req.ChannelID.String()).
+					Msg("Failed to report direct channel binding to the relay")
 			}
 		}
 		if opened {
@@ -405,6 +454,11 @@ func (c *LinkSocksClient) handleDirectChannelFailure(channelID uuid.UUID, reason
 	return nil
 }
 
+// directQueueFullWait bounds how long one sequenced frame waits for room in a
+// full receive queue before the channel is torn down. Dropping instead would
+// punch a hole in the sequence, and the peer discards every frame after a gap.
+var directQueueFullWait = 30 * time.Second
+
 func (c *LinkSocksClient) deliverDataMessage(msg DataMessage) {
 	if channel, ok := c.relay.logicalChannel(msg.ChannelID); ok {
 		if !channel.acceptData(msg) {
@@ -414,11 +468,26 @@ func (c *LinkSocksClient) deliverDataMessage(msg DataMessage) {
 			return
 		}
 		if queue, ok := c.relay.messageQueues.Load(msg.ChannelID); ok {
+			queueCh := queue.(chan BaseMessage)
 			select {
-			case queue.(chan BaseMessage) <- msg:
+			case queueCh <- msg:
+				return
 			default:
-				c.log.Warn().Str("channel_id", msg.ChannelID.String()).Msg("Direct QUIC message queue full, dropping data")
+			}
+			// The queue is full: wait for the consumer instead of dropping.
+			// Sequenced data must never be lost silently; if the queue makes
+			// no progress at all within the budget, close the channel so the
+			// application sees a failure instead of a corrupted stream.
+			timer := time.NewTimer(directQueueFullWait)
+			defer timer.Stop()
+			select {
+			case queueCh <- msg:
+				return
+			case <-timer.C:
+				c.log.Error().Str("channel_id", msg.ChannelID.String()).
+					Msg("Receive queue stayed full; closing channel instead of dropping sequenced data")
 				channel.rejectData(msg.Sequence)
+				c.relay.disconnectChannel(msg.ChannelID)
 				return
 			}
 		} else {
@@ -427,10 +496,18 @@ func (c *LinkSocksClient) deliverDataMessage(msg DataMessage) {
 		return
 	}
 	if queue, ok := c.relay.messageQueues.Load(msg.ChannelID); ok {
+		queueCh := queue.(chan BaseMessage)
 		select {
-		case queue.(chan BaseMessage) <- msg:
+		case queueCh <- msg:
+			return
 		default:
-			c.log.Warn().Str("channel_id", msg.ChannelID.String()).Msg("Direct QUIC message queue full, dropping data")
+		}
+		timer := time.NewTimer(directQueueFullWait)
+		defer timer.Stop()
+		select {
+		case queueCh <- msg:
+		case <-timer.C:
+			c.log.Warn().Str("channel_id", msg.ChannelID.String()).Msg("Receive queue stayed full, dropping unsequenced data")
 		}
 		return
 	}

@@ -805,6 +805,15 @@ func (s *secureSession) dispatch(msg BaseMessage) {
 			s.log.Warn().Str("channel_id", m.ChannelID.String()).Msg("Dropping sealed data without a channel queue")
 		}
 
+	case ChannelDataAckMessage:
+		// Acknowledgements for data this side sent arrive sealed once the
+		// channel runs on a relay session (its direct transport failed and
+		// resumed). Dropping them would keep the pending buffer growing on
+		// every long-lived transfer and inflate each later replay.
+		if channel, ok := s.hub.relay.logicalChannel(m.ChannelID); ok {
+			channel.acknowledge(m.Sequence)
+		}
+
 	case DisconnectMessage:
 		// Normal teardown Disconnects travel plaintext; a sealed one is only
 		// a safety net.

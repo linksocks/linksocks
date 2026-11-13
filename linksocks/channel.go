@@ -140,6 +140,12 @@ func (c *logicalChannel) flushPending(migration bool) error {
 	return c.replayPendingLocked()
 }
 
+// errRelayResumeRefused marks a final refusal to move a channel's payload to
+// the relay. Unlike a transport failure it must not be retried inside the
+// transport grace: no retry can make the relay an acceptable transport for a
+// client that excluded it.
+var errRelayResumeRefused = errors.New("relay resume refused")
+
 // recoverWrite handles a write that failed. Writers that may hand their payload
 // to the plaintext relay keep the V1 fallback; the sealed direct writers
 // re-establish the channel through a fresh end-to-end session instead, so the
@@ -161,6 +167,9 @@ func (c *logicalChannel) recoverWrite(failed MessageWriter, msg BaseMessage, mig
 	}
 
 	if err := c.ensureSealedWriter(failed, cause); err != nil {
+		if errors.Is(err, errRelayResumeRefused) {
+			return err
+		}
 		return &transportDownError{cause: err}
 	}
 	// The new writer has nothing on the wire yet: flush whatever the failed

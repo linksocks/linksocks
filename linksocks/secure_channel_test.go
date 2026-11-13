@@ -161,3 +161,48 @@ func TestScheduleWarmRespectsPoolSize(t *testing.T) {
 func linksocksV1ForTest() byte {
 	return ProtocolVersionV1
 }
+
+// Acknowledgements for data sent over a sealed session (a channel resumed
+// through the relay) must reach the local channel's pending buffer. Dropping
+// them would grow the buffer on every long-lived transfer and inflate each
+// later replay of unacknowledged data.
+func TestSealedSessionAppliesDataAck(t *testing.T) {
+	hub, _, _, relay := newWarmTestHub(t)
+
+	chID := uuid.New()
+	writer := &recordingWriter{}
+	channel := relay.registerLogicalChannel(chID, "tcp", writer, writer, channelPathRelay)
+	channel.enableMigration(true)
+
+	if err := channel.WriteMessage(DataMessage{ChannelID: chID, Data: []byte("payload")}); err != nil {
+		t.Fatalf("writing sequenced data: %v", err)
+	}
+	channel.mu.Lock()
+	if len(channel.pending) != 1 {
+		pending := len(channel.pending)
+		channel.mu.Unlock()
+		t.Fatalf("pending buffer = %d entries after one write, want 1", pending)
+	}
+	channel.mu.Unlock()
+
+	sess := &secureSession{hub: hub, initiator: true}
+
+	// An acknowledgement for another sequence or another channel must leave
+	// the pending entry alone.
+	sess.dispatch(ChannelDataAckMessage{ChannelID: chID, Sequence: 7})
+	sess.dispatch(ChannelDataAckMessage{ChannelID: uuid.New(), Sequence: 1})
+	channel.mu.Lock()
+	pending := len(channel.pending)
+	channel.mu.Unlock()
+	if pending != 1 {
+		t.Fatalf("unrelated acknowledgements dropped the pending entry: %d left, want 1", pending)
+	}
+
+	sess.dispatch(ChannelDataAckMessage{ChannelID: chID, Sequence: 1})
+	channel.mu.Lock()
+	pending = len(channel.pending)
+	channel.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("pending buffer still holds %d entries after the sealed acknowledgement", pending)
+	}
+}

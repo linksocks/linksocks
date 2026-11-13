@@ -256,7 +256,7 @@ linksocks connector -t your_token -u wss://your-worker.your-subdomain.workers.de
 
 在反向代理、中继代理及其变体中，默认开启 P2P 直连（`--direct-mode auto`，候选发现 `--direct-discovery stun`）。当 provider 与 connector 之间能建立 UDP 直连时，数据不再经服务器中转，而通过加密 QUIC 直传，以降低延迟、提高吞吐。
 
-未指定 STUN 服务器时，程序会并发探测内置公共 STUN 池，并选用响应最快的节点。可用 `--stun-server` 自定义，或用 `--direct-mode` / `--direct-discovery` 覆盖默认行为。
+未指定 STUN 服务器时，程序会并发探测内置公共 STUN 池，并选用响应最快的节点。可用 `--stun-server` 自定义，或用 `--direct-mode` / `--direct-discovery` 覆盖默认行为。`--direct-mode direct-only` 从不使用服务器中转：无法建立直连、或已建立的直连传输中断时，该连接直接失败，而不会悄悄改走服务器。
 
 **Linux 性能提示：** 大流量 QUIC 直连时若出现 `failed to sufficiently increase receive buffer size`，多为系统默认 UDP 缓冲区偏小。程序仍可工作；若追求最佳性能（约 7MB 理想缓冲），可在运行前调整：
 

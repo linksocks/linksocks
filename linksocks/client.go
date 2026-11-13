@@ -162,6 +162,12 @@ type LinkSocksClient struct {
 	directPairSessionKey []byte
 	directPairKeyReady   bool
 	directPairSessionSet bool
+	// directPairRemoteSessionID is the peer client session the pair was
+	// formed with. The live remote-session field can move to another peer
+	// while an established pair (and its QUIC plane) stays up, so anything
+	// that must name the peer behind a transport — a channel bind, a resume
+	// target — uses this instead.
+	directPairRemoteSessionID uuid.UUID
 
 	directPendingRendezvous   map[uuid.UUID]struct{}
 	directProbing             bool
@@ -196,6 +202,11 @@ type LinkSocksClient struct {
 	directQUICManager   *DirectQUICManager
 	directQUICPlane     *DirectQUICDataPlane
 	directQUICReadyCh   chan struct{}
+	// directQUICPeerSessionID is the peer client session of the current
+	// direct QUIC plane. The live remote-session field can move to another
+	// provider while this plane stays up, so bindings that must name the
+	// machine behind the plane use this one.
+	directQUICPeerSessionID uuid.UUID
 	// Reserved for future fine-grained QUIC health tracking.
 	directQUICBadUntil time.Time
 	directQUICBadCount int
@@ -251,6 +262,7 @@ func (c *LinkSocksClient) ForceCloseDirectQUIC() {
 	mgr := c.directQUICManager
 	c.directQUICPlane = nil
 	c.directQUICManager = nil
+	c.directQUICPeerSessionID = uuid.Nil
 	c.directQUICMu.Unlock()
 
 	if pl != nil {
@@ -260,6 +272,15 @@ func (c *LinkSocksClient) ForceCloseDirectQUIC() {
 		_ = mgr.Close()
 	}
 	c.quicNotify()
+}
+
+// directQUICPeerSession returns the peer client session of the current direct
+// QUIC plane — the machine that terminates the running connection — or Nil
+// when no plane is active.
+func (c *LinkSocksClient) directQUICPeerSession() uuid.UUID {
+	c.directQUICMu.Lock()
+	defer c.directQUICMu.Unlock()
+	return c.directQUICPeerSessionID
 }
 
 func (c *LinkSocksClient) directMarkDegraded(now time.Time, d time.Duration, reason string) {
@@ -1002,6 +1023,7 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 		ready := c.directReady
 		pairSet := c.directPairSessionSet
 		pairSession := c.directPairSessionID
+		pairRemoteSession := c.directPairRemoteSessionID
 		localSession := c.directLocalSessionID
 		pairKeyReady := c.directPairKeyReady
 		pairKey := append([]byte(nil), c.directPairSessionKey...)
@@ -1116,6 +1138,19 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 		// This must run on both sides, because either peer can initiate streams.
 		_ = plane.Serve(ctx, func(ctx context.Context, ch *directQUICChannel, req ConnectMessage) error {
 			w := newDirectQUICBoundWriter(c, plane, ch, "direct-quic")
+			// The bind must name the peer behind the running plane, not the
+			// live remote-session field (see directQUICPeerSession).
+			peerSessionID := c.directQUICPeerSession()
+			c.directMu.Lock()
+			if peerSessionID == uuid.Nil {
+				peerSessionID = c.directRemoteSessionID
+			}
+			remoteProtocolVersion := c.directRemoteProtocolVersion
+			c.directMu.Unlock()
+			// Latch the sealed-resume contract for the writer's lifetime, so
+			// a transiently zero version can never let this channel slip onto
+			// the plaintext relay writer.
+			w.latchSealedResume(remoteProtocolVersion)
 			if req.Resume {
 				if channel, ok := c.relay.logicalChannel(req.ChannelID); ok {
 					if err := channel.switchToDirect(w); err != nil {
@@ -1131,11 +1166,19 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 			c.relay.messageQueues.Store(req.ChannelID, msgChan)
 			channel := c.relay.registerLogicalChannel(req.ChannelID, req.Protocol, w, newClientRelayWriter(c), channelPathDirect)
 			channel.setRequest(req)
-			c.directMu.Lock()
-			remoteProtocolVersion := c.directRemoteProtocolVersion
-			c.directMu.Unlock()
 			channel.enableMigration(protocolUsesPlaintextMigration(remoteProtocolVersion) ||
 				protocolUsesSealedResume(remoteProtocolVersion, req.Protocol))
+			// Report this channel's direct binding to the relay. The relay
+			// cannot see the direct stream, and a later sealed resume must be
+			// routed to this machine, which holds the dialed connection. The
+			// send is best-effort: losing it only degrades resume routing.
+			go func() {
+				bind := ChannelBindMessage{ChannelID: req.ChannelID, Protocol: req.Protocol, PeerSessionID: peerSessionID}
+				if err := newClientRelayWriter(c).WriteMessage(bind); err != nil {
+					c.log.Debug().Err(err).Str("channel_id", req.ChannelID.String()).
+						Msg("Failed to report direct channel binding to the relay")
+				}
+			}()
 			go c.directQUICChannelReadLoop(ctx, ch)
 			go func() {
 				if err := c.relay.HandleNetworkConnection(ctx, w, req); err != nil && !errors.Is(err, context.Canceled) {
@@ -1153,6 +1196,7 @@ func (c *LinkSocksClient) directQUICAgent(ctx context.Context) {
 		c.directQUICMu.Lock()
 		c.directQUICManager = mgr
 		c.directQUICPlane = plane
+		c.directQUICPeerSessionID = pairRemoteSession
 		readyCh := c.directQUICReadyCh
 		c.directQUICMu.Unlock()
 
@@ -2059,6 +2103,7 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 				pairSession = minUUID(localSession, remoteSession)
 				c.directMu.Lock()
 				c.directPairSessionID = pairSession
+				c.directPairRemoteSessionID = remoteSession
 				c.directPairSessionSet = true
 				c.directMu.Unlock()
 			}
@@ -2486,6 +2531,7 @@ func (c *LinkSocksClient) directResetPeerStateLocked() {
 	c.directPairSessionKey = nil
 	c.directPairKeyReady = false
 	c.directPairSessionSet = false
+	c.directPairRemoteSessionID = uuid.Nil
 	c.directPendingRendezvous = make(map[uuid.UUID]struct{})
 	c.directProbing = false
 	c.directReady = false
@@ -2530,6 +2576,9 @@ func (c *LinkSocksClient) directShouldApplyStatusSessionLocked(session uuid.UUID
 	if !c.directPairSessionSet || c.directPairSessionID == uuid.Nil {
 		c.directPairSessionID = session
 		c.directPairSessionSet = true
+		if c.directRemoteSessionID != uuid.Nil {
+			c.directPairRemoteSessionID = c.directRemoteSessionID
+		}
 		return true
 	}
 	return c.directPairSessionID == session

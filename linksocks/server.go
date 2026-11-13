@@ -2487,34 +2487,52 @@ func (s *LinkSocksServer) startConnectorPumpSpec(spec connectorPumpSpec, initial
 		// too: dropping one would leave a hole in the peer's Noise nonce
 		// chain and kill the channel even though V1 tolerated the loss.
 		var pending BaseMessage
+		// The first provider selection prefers the channel's reported bind. A
+		// V2 direct channel tells the relay which provider holds its dialed
+		// connection, and a sealed resume must reach that machine instead of
+		// a fresh round-robin pick. Later rebinds keep the round-robin heal
+		// path so one stale binding cannot pin the pump to a dead link.
+		preferBound := true
 
 		for {
 			if !s.pumpQueueAlive(m) {
 				return
 			}
 			if reverseWS == nil {
-				w, err := s.waitForNextWebSocket(pumpCtx, reverseToken, s.connectorWait, protocolMajor(ws.ProtocolVersion()))
-				if err != nil {
-					if pumpCtx.Err() != nil || !s.pumpQueueAlive(m) {
-						return
+				var w *WSConn
+				if preferBound {
+					preferBound = false
+					w = s.boundProviderFor(m)
+					if w != nil {
+						s.log.Trace().Str("channel_id", m.String()).Str("provider", w.Label()).
+							Msg("Binding channel to its reported direct peer")
 					}
-					if !boundBefore {
-						s.log.Debug().Err(err).Msg("Refusing connector connect")
-						response := ConnectResponseMessage{
-							ChannelID: m,
-							Success:   false,
-							Error:     "no available reverse clients",
+				}
+				if w == nil {
+					var err error
+					w, err = s.waitForNextWebSocket(pumpCtx, reverseToken, s.connectorWait, protocolMajor(ws.ProtocolVersion()))
+					if err != nil {
+						if pumpCtx.Err() != nil || !s.pumpQueueAlive(m) {
+							return
 						}
-						s.relay.logMessage(response, "send", ws.Label())
-						if werr := ws.WriteMessage(response); werr != nil {
-							s.log.Debug().Err(werr).Msg("Failed to send connect failure response")
+						if !boundBefore {
+							s.log.Debug().Err(err).Msg("Refusing connector connect")
+							response := ConnectResponseMessage{
+								ChannelID: m,
+								Success:   false,
+								Error:     "no available reverse clients",
+							}
+							s.relay.logMessage(response, "send", ws.Label())
+							if werr := ws.WriteMessage(response); werr != nil {
+								s.log.Debug().Err(werr).Msg("Failed to send connect failure response")
+							}
+							return
 						}
-						return
+						// Rebind path: no provider is currently online for the
+						// token; back off instead of spinning on the token lookup.
+						time.Sleep(200 * time.Millisecond)
+						continue
 					}
-					// Rebind path: no provider is currently online for the
-					// token; back off instead of spinning on the token lookup.
-					time.Sleep(200 * time.Millisecond)
-					continue
 				}
 				reverseWS = w
 			}
@@ -2843,6 +2861,19 @@ func (s *LinkSocksServer) cleanupConnectorChannel(channelID uuid.UUID) {
 		close(od.queue)
 	}
 	s.connCache.mu.Unlock()
+}
+
+// boundProviderFor returns the provider a channel reported through
+// ChannelBind — for a V2 direct channel, the machine holding its dialed
+// upstream connection — or nil when the mapping is absent or stale.
+func (s *LinkSocksServer) boundProviderFor(channelID uuid.UUID) *WSConn {
+	s.connCache.mu.RLock()
+	ws := s.connCache.channelIDToClient[channelID]
+	s.connCache.mu.RUnlock()
+	if ws == nil || ws.isStale(time.Now()) {
+		return nil
+	}
+	return ws
 }
 
 // waitForNextWebSocket waits for a provider of the given token whose protocol

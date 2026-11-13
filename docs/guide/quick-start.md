@@ -262,7 +262,7 @@ linksocks connector -t your_token -u wss://your-worker.your-subdomain.workers.de
 
 In reverse proxy, relay proxy, and its variants, P2P direct mode is enabled by default (`--direct-mode auto`, discovery `--direct-discovery stun`). When the provider and connector can establish direct UDP connectivity, data skips the server and travels over encrypted QUIC, reducing latency and increasing throughput.
 
-With no STUN server specified, the program probes a built-in public STUN pool and picks the fastest node. Override with `--stun-server`, or change behavior via `--direct-mode` / `--direct-discovery`.
+With no STUN server specified, the program probes a built-in public STUN pool and picks the fastest node. Override with `--stun-server`, or change behavior via `--direct-mode` / `--direct-discovery`. `--direct-mode direct-only` never uses the relay: if a direct connection cannot be established, or an established one loses its transport, that connection fails instead of quietly moving to the server.
 
 **Linux performance tip:** High-throughput QUIC may log `failed to sufficiently increase receive buffer size` when default UDP buffers are small. The program still works; for best performance (~7MB ideal buffer), raise:
 
