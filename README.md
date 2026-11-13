@@ -14,7 +14,7 @@ Its architecture allows you to hide the proxy server behind a WAF or CDN (like C
 
 Crucially, it supports Serverless Intranet Penetration (compatible with Cloudflare Workers). This allows you to bridge two private networks securely without a dedicated VPS. Since both the user and the internal resource actively connect to the serverless cloud relay, you can access your home or office network without a public IP or opening any risky inbound ports.
 
-Proxy channels are end-to-end encrypted (protocol generation 2): the provider and connector negotiate a Noise XX session, so destination addresses, payloads and peer decisions stay inside the ciphertext, and the relay only forwards frames by channel ID. Zone packets are encrypted between members as well. Site publishing runs on the legacy protocol because the relay reads HTTP to serve the hostname.
+Proxy channels are end-to-end encrypted (protocol generation 2): the provider and connector negotiate a Noise XX session, so destination addresses, payloads and peer decisions stay inside the ciphertext, and the relay only forwards frames by channel ID. A connector token can serve as the shared secret behind that encryption: both ends derive a key from it and the relay stores only a one-way handle, never the token itself. Zone packets are encrypted between members as well. Site publishing runs on the legacy protocol because the relay reads HTTP to serve the hostname.
 
 ![Main Diagram](https://github.com/linksocks/linksocks/raw/main/images/abstract.svg)
 
@@ -25,7 +25,7 @@ Proxy channels are end-to-end encrypted (protocol generation 2): the provider an
 
 ## Features
 
-1. End-to-end encrypted proxy channels (protocol generation 2): a Noise XX handshake between provider and connector keeps destinations and payloads inside the ciphertext, and the relay only routes frames by channel ID.
+1. End-to-end encrypted proxy channels (protocol generation 2): a Noise XX handshake between provider and connector keeps destinations and payloads inside the ciphertext, and the relay only routes frames by channel ID. A connector token registered as a shared secret never reaches the relay in readable form; both ends authenticate each other over a key derived from it.
 2. Forward, reverse and relay proxy modes.
 3. Round-robin load balancing for reverse proxy.
 4. Hybrid local proxy port: SOCKS5 and HTTP proxy on the same port.

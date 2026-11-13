@@ -44,8 +44,11 @@ var (
 )
 
 // deriveDirectSignalingKey derives the ChaCha20-Poly1305 key used for signaling
-// between the two peers of one direct session.
-func deriveDirectSignalingKey(pairSession uuid.UUID, localPriv *ecdh.PrivateKey, remotePub []byte) ([]byte, error) {
+// between the two peers of one direct session. When the pairing is backed by a
+// connector-token secret, psk is mixed into the salt so a relay that mediates
+// the X25519 exchange still cannot derive the signaling key. Both ends must
+// pass the same psk (or both none).
+func deriveDirectSignalingKey(pairSession uuid.UUID, localPriv *ecdh.PrivateKey, remotePub []byte, psk []byte) ([]byte, error) {
 	if localPriv == nil {
 		return nil, errors.New("direct signaling: nil private key")
 	}
@@ -60,7 +63,12 @@ func deriveDirectSignalingKey(pairSession uuid.UUID, localPriv *ecdh.PrivateKey,
 	if err != nil {
 		return nil, err
 	}
-	key, err := hkdf.Key(sha256.New, shared, pairSession[:], directSignalingLabel, directSignalingKeyLen)
+	salt := make([]byte, 0, len(pairSession)+len(psk))
+	salt = append(salt, pairSession[:]...)
+	if len(psk) > 0 {
+		salt = append(salt, psk...)
+	}
+	key, err := hkdf.Key(sha256.New, shared, salt, directSignalingLabel, directSignalingKeyLen)
 	if err != nil {
 		return nil, err
 	}

@@ -126,6 +126,7 @@ func (cli *CLI) initCommands() {
 		cmd.Flags().StringP("url", "u", "ws://localhost:8765", "WebSocket server address")
 		cmd.Flags().BoolP("reverse", "r", false, "Use reverse socks5 proxy")
 		cmd.Flags().StringP("connector-token", "c", "", "Specify connector token for reverse proxy")
+		cmd.Flags().Bool("legacy-token", false, "Treat the connector token as a relay-configured literal token instead of a shared secret")
 		cmd.Flags().StringP("socks-host", "s", "127.0.0.1", "SOCKS5 server listen address for forward proxy")
 		cmd.Flags().IntP("socks-port", "p", 9870, "SOCKS5 server listen port for forward proxy")
 		cmd.Flags().StringP("socks-username", "n", "", "SOCKS5 authentication username")
@@ -193,7 +194,7 @@ func (cli *CLI) initCommands() {
 	cli.configureCommandHelp(clientCmd, cliHelpConfig{
 		Overview:   "Use client for the local SOCKS endpoint in forward mode. In reverse deployments, client -r acts as the provider that exits through its local network.",
 		KeyFlags:   []string{"token", "url", "reverse", "socks-port", "socks-host"},
-		OtherFlags: []string{"connector-token", "socks-username", "socks-password", "socks-no-wait", "no-reconnect", "retry-auth", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "ech", "ech-config", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "protocol-version", "debug", "help"},
+		OtherFlags: []string{"connector-token", "legacy-token", "socks-username", "socks-password", "socks-no-wait", "no-reconnect", "retry-auth", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "ech", "ech-config", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "protocol-version", "debug", "help"},
 		Examples: []string{
 			"# Forward proxy\nlinksocks client -t my_token -u ws://localhost:8765 -p 9870",
 			"# Reverse provider\nlinksocks client -t my_token -u ws://localhost:8765 -r",
@@ -203,7 +204,7 @@ func (cli *CLI) initCommands() {
 	cli.configureCommandHelp(providerCmd, cliHelpConfig{
 		Overview:   "Provider shares this machine's outbound network: other machines send their traffic out through it, over the relay. Run it where the connections should be made.",
 		KeyFlags:   []string{"token", "url"},
-		OtherFlags: []string{"connector-token", "no-reconnect", "retry-auth", "fast-open", "upstream-proxy", "no-env-proxy", "ech", "ech-config", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "protocol-version", "threads", "debug", "help"},
+		OtherFlags: []string{"connector-token", "legacy-token", "no-reconnect", "retry-auth", "fast-open", "upstream-proxy", "no-env-proxy", "ech", "ech-config", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "protocol-version", "threads", "debug", "help"},
 		Examples: []string{
 			"# Offer this machine's network as an exit\nlinksocks provider -t my_token -u wss://l.zetx.tech",
 			"# Register this provider's own connector token\nlinksocks provider -t provider_token -c connector_token -u wss://l.zetx.tech",
@@ -212,7 +213,7 @@ func (cli *CLI) initCommands() {
 	cli.configureCommandHelp(connectorCmd, cliHelpConfig{
 		Overview:   "Connector opens a local SOCKS5 and HTTP proxy port for traffic that leaves through the server, a relay's provider, or another machine. Add a connector token when it has to pair with one specific provider.",
 		KeyFlags:   []string{"token", "url", "socks-port", "socks-host"},
-		OtherFlags: []string{"socks-username", "socks-password", "socks-no-wait", "no-reconnect", "retry-auth", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "ech", "ech-config", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "protocol-version", "debug", "help"},
+		OtherFlags: []string{"socks-username", "socks-password", "socks-no-wait", "legacy-token", "no-reconnect", "retry-auth", "threads", "fast-open", "upstream-proxy", "no-env-proxy", "ech", "ech-config", "direct-mode", "direct-discovery", "direct-host-candidates", "stun-server", "direct-only-action", "direct-upnp", "direct-upnp-lease", "direct-upnp-keep", "direct-upnp-external-port", "access-rule", "protocol-version", "debug", "help"},
 		Examples: []string{
 			"# Send traffic out through the relay\nlinksocks connector -t my_token -u wss://l.zetx.tech -p 1080",
 			"# Pair with one specific provider\nlinksocks connector -t connector_token -u wss://l.zetx.tech -p 1080",
@@ -398,6 +399,7 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 	connectorToken, _ := cmd.Flags().GetString("connector-token")
 	token = resolveStringFlagEnv(cmd, "token", "LINKSOCKS_TOKEN", token)
 	connectorToken = resolveStringFlagEnv(cmd, "connector-token", "LINKSOCKS_CONNECTOR_TOKEN", connectorToken)
+	legacyToken, _ := cmd.Flags().GetBool("legacy-token")
 
 	url, _ := cmd.Flags().GetString("url")
 	url = resolveStringFlagEnv(cmd, "url", "LINKSOCKS_URL", url)
@@ -532,6 +534,18 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 		WithDirectUPnPKeep(directUPnPKeep).
 		WithDirectUPnPExtPort(directUPnPExtPort)
 
+	// A connector token on the connector command is a shared secret between
+	// this connector and its provider: the relay receives only a derived
+	// handle, and every sealed channel authenticates the provider against a
+	// key derived from the same secret before any destination is sent. The
+	// plain client command keeps literal-token semantics.
+	if cmd.Name() == "connector" && !legacyToken && token != "" {
+		if protocolMajor(protocolVersion) != protocolMajor(ProtocolVersionV2) {
+			logger.Warn().Msg("Connector secret with protocol V1: the relay can read this channel; use V2 for end-to-end authenticated channels")
+		}
+		clientOpt.WithConnectorTokenSecret(token)
+	}
+
 	// Add new options
 	if proxyAddr != "" {
 		clientOpt.WithUpstreamProxy(proxyAddr).
@@ -575,14 +589,26 @@ func (cli *CLI) runClient(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Add connector token if provided
+	// Add connector token if provided. On provider and connector commands the
+	// token is a shared secret by default: the relay only receives a derived
+	// handle. --legacy-token (or the plain client command) keeps the literal
+	// token semantics used when the server itself configured the token.
 	if connectorToken != "" && reverse {
-		token, err := client.AddConnector(connectorToken)
+		var useToken string
+		var err error
+		if legacyToken || cmd.Name() == "client" {
+			useToken, err = client.AddConnector(connectorToken)
+		} else {
+			useToken, err = client.AddConnectorSecret(connectorToken)
+		}
 		if err != nil {
 			logger.Fatal().Err(err).Msg("Failed to add connector token")
 			return nil
 		}
-		logger.Info().Str("connector_token", token).Msg("Connector token added successfully")
+		logger.Info().Str("connector_token", useToken).Msg("Connector token added successfully")
+		if !legacyToken && cmd.Name() != "client" {
+			logger.Info().Msg("Hand this token to the connector; the relay only stores a derived handle for it")
+		}
 	}
 
 	// Wait for either client error or context cancellation

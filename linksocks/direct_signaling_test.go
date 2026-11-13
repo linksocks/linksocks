@@ -28,11 +28,11 @@ func TestDirectSignalingRoundTrip(t *testing.T) {
 	alice, bob, aliceSession, bobSession := directSignalingTestPair(t)
 	pairSession := minUUID(aliceSession, bobSession)
 
-	aliceKey, err := deriveDirectSignalingKey(pairSession, alice.priv, bob.pub)
+	aliceKey, err := deriveDirectSignalingKey(pairSession, alice.priv, bob.pub, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bobKey, err := deriveDirectSignalingKey(pairSession, bob.priv, alice.pub)
+	bobKey, err := deriveDirectSignalingKey(pairSession, bob.priv, alice.pub, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestDirectSignalingRoundTrip(t *testing.T) {
 func TestDirectSignalingRejectsForeignRecipient(t *testing.T) {
 	alice, bob, aliceSession, bobSession := directSignalingTestPair(t)
 	pairSession := minUUID(aliceSession, bobSession)
-	key, err := deriveDirectSignalingKey(pairSession, alice.priv, bob.pub)
+	key, err := deriveDirectSignalingKey(pairSession, alice.priv, bob.pub, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestDirectSignalingRejectsForeignRecipient(t *testing.T) {
 func TestDirectSignalingRejectsTampering(t *testing.T) {
 	alice, bob, aliceSession, bobSession := directSignalingTestPair(t)
 	pairSession := minUUID(aliceSession, bobSession)
-	key, err := deriveDirectSignalingKey(pairSession, alice.priv, bob.pub)
+	key, err := deriveDirectSignalingKey(pairSession, alice.priv, bob.pub, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestDirectSignalingRejectsTampering(t *testing.T) {
 func TestDirectSignalingRejectsOtherSession(t *testing.T) {
 	alice, bob, aliceSession, bobSession := directSignalingTestPair(t)
 	pairSession := minUUID(aliceSession, bobSession)
-	key, err := deriveDirectSignalingKey(pairSession, alice.priv, bob.pub)
+	key, err := deriveDirectSignalingKey(pairSession, alice.priv, bob.pub, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestDirectSignalingRejectsOtherSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	otherSession := uuid.New()
-	otherKey, err := deriveDirectSignalingKey(otherSession, bob.priv, alice.pub)
+	otherKey, err := deriveDirectSignalingKey(otherSession, bob.priv, alice.pub, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,11 +133,11 @@ func TestDirectSignalingRejectsOtherSession(t *testing.T) {
 
 func TestDirectSignalingKeyIsBoundToSession(t *testing.T) {
 	alice, bob, aliceSession, bobSession := directSignalingTestPair(t)
-	first, err := deriveDirectSignalingKey(minUUID(aliceSession, bobSession), alice.priv, bob.pub)
+	first, err := deriveDirectSignalingKey(minUUID(aliceSession, bobSession), alice.priv, bob.pub, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := deriveDirectSignalingKey(uuid.New(), alice.priv, bob.pub)
+	second, err := deriveDirectSignalingKey(uuid.New(), alice.priv, bob.pub, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestDirectSignalingKeyIsBoundToSession(t *testing.T) {
 func TestDirectSignalingRejectsMalformedEnvelope(t *testing.T) {
 	alice, bob, aliceSession, bobSession := directSignalingTestPair(t)
 	pairSession := minUUID(aliceSession, bobSession)
-	key, err := deriveDirectSignalingKey(pairSession, alice.priv, bob.pub)
+	key, err := deriveDirectSignalingKey(pairSession, alice.priv, bob.pub, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

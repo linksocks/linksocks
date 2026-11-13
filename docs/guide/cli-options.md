@@ -89,7 +89,8 @@ These three share the same client implementation; the command you pick says whic
 
 | Parameter | Short | Default | Description |
 |-----------|-------|---------|-------------|
-| `--connector-token` | `-c` | | Connector token registered by a provider in relay / self-managed mode. Also `LINKSOCKS_CONNECTOR_TOKEN`. |
+| `--connector-token` | `-c` | | Connector token registered by a provider in relay / self-managed mode. Registered as a shared secret unless `--legacy-token` is set. Also `LINKSOCKS_CONNECTOR_TOKEN`. |
+| `--legacy-token` | | `false` | Treat the connector token as a literal relay-side token instead of a shared secret (no end-to-end authentication against the relay) |
 | `--socks-username` | `-n` | | Local proxy username (SOCKS5 and HTTP Basic). Also `LINKSOCKS_SOCKS_USERNAME`. |
 | `--socks-password` | `-w` | | Local proxy password (SOCKS5 and HTTP Basic). Also `LINKSOCKS_SOCKS_PASSWORD`. |
 | `--socks-no-wait` | `-i` | `false` | Start the hybrid local proxy immediately |
@@ -131,17 +132,22 @@ linksocks client -t my_token -u ws://localhost:8765 -r
 
 ### 3. Relay Proxy
 
-The server manages both provider and connector tokens. The hybrid local proxy listens on the connector.
+The server manages both provider and connector tokens. The hybrid local proxy listens on the connector. Since the server configured this token, the connector must treat it as a plain credential:
 
 ```bash
 linksocks server -t provider_token -c connector_token -r -p 9870
 linksocks provider -t provider_token -u ws://localhost:8765
-linksocks connector -t connector_token -u ws://localhost:8765 -p 1180
+linksocks connector -t connector_token --legacy-token -u ws://localhost:8765 -p 1180
 ```
 
 ### 4. Relay Proxy (Self-Managed Connectors)
 
 The server only authenticates providers. Each provider registers its own connector token with `-c`. A connector reaches only its matching provider; there is no cross-provider load balancing.
+
+The connector token is a shared secret here: the provider registers a derived
+handle and both ends authenticate the channel against a key derived from the
+token, so the relay never learns it. Both ends must run a version that derives
+handles from connector tokens.
 
 ```bash
 linksocks server -t provider_token -r -a

@@ -39,6 +39,7 @@ Additional rules of the generation-2 protocol:
 - Clients declare the generation in the connection query string (`version=0x21`); the relay stamps its own replies with the generation of the connection.
 - A connection must not change generation mid-stream; the relay closes the connection if it does.
 - Direct mode works on generation 2: peers first announce their session id and X25519 key in a key-only `direct_capabilities` frame, then exchange candidates, rendezvous and probing status inside `direct_sealed` envelopes encrypted with the ECDH-derived key. The relay routes those envelopes by role without seeing peer addresses. Once the peers agree on a path, the channel's data runs over QUIC authenticated by the same key, so the relay never carries it. That authentication is bound to the live QUIC/TLS connection (an RFC 5705 exporter mixed into the handshake MAC), so a mediator that terminates one QUIC connection per peer cannot relay the proof and read the payload. Each peer also reports which other peer a direct channel belongs to (`channel_bind`): a later resume is then routed to the machine that holds the dialed connection instead of a fresh pick, which matters when one token has several providers online. If a generation-2 direct path breaks, the entry side re-establishes that same channel through a fresh sealed session on the relay: a new `channel_open` plus `XX` handshake, then a sealed `connect` with the resume flag so the peer keeps the connection it already dialed, then the data that the dead transport had not acknowledged. Both sides sequence their payloads from the start and drop what they already consumed, so the byte stream survives the move exactly once. Datagram channels are excluded: they are reordered and lossy by design, so they are never held to a contiguous sequence. A sealed channel never falls back to the plaintext relay writer and a `direct-only` client never resumes through the relay at all: if its direct transport dies, the connection fails instead of quietly leaving the direct path.
+- A connector token can be a shared secret between the provider and the connector instead of a literal relay-side token. The provider then registers only a derived handle (`HKDF` of the secret under the label `relay-token-id`), the connector authenticates with the same handle, and the relay never learns the secret; the token it stores and displays is one-way. Every sealed channel on such a pairing starts with a mutual `channel_auth` proof exchanged inside the ciphertext: each side proves knowledge of the key derived from the secret (`channel-auth-psk`) over the final Noise handshake hash, so a relay that terminates the transport on both sides cannot produce a verifying proof. The connector refuses to send the destination (`connect`) until the provider's proof verifies, and the responder verifies the connector's proof against the key it registered for that handle; a failed proof closes the channel. The direct-mode key material is salted with the same secret, so a relay that mediates the X25519 exchange cannot derive the probe or QUIC keys either. The relay still sees the handle (it routes the session by it) and can refuse or delay traffic, but it cannot impersonate either peer or read the channel. Both ends must derive handles; against a relay or provider that holds the literal token, the connector reports the mismatch and `--legacy-token` restores the plain credential semantics.
 - Web publishing keeps using the legacy generation because the relay terminates HTTP, and encrypted channels do not survive relay-side channel migration.
 - Provider-side dial access control still applies: with `--access-rule` on the provider (or `client -r`), the dial side checks destinations after decryption. Server-side connector-token rules cannot be enforced on encrypted traffic, so a generation-2 connector is refused when its token carries rules.
 - Both peers must support generation 2; a generation-2 peer never pairs with a legacy peer for channel traffic, and `--protocol-version v1` keeps a client on the legacy generation for old relays.
@@ -105,6 +106,18 @@ requests (with destination), connect responses, payload bytes and peer errors.
 Compression happens inside the channel, before encryption. `channel_open` and
 `disconnect` frames are the only channel-related messages a generation-2 peer
 sends in plaintext, and both carry nothing but the channel ID.
+
+**ChannelAuthMessage**: one side's proof of the connector-token secret
+```
+Version(1) + Type(1) + DataLen(4) + JSON{channel_id, token_id?, role, proof}
+```
+
+It travels only inside `SealedMessage` payloads, so the relay never sees it.
+The connector sends role `initiator` with the derived `token_id` and a
+`proof` (HMAC of the secret's key over the final Noise handshake hash); the
+provider looks the key up by `token_id`, verifies, and answers with role
+`responder`. The connector sends no destination before that answer verifies.
+A pairing without connector-token secrets never exchanges this message.
 
 ## Channel Management
 

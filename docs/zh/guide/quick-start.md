@@ -96,8 +96,10 @@ linksocks provider -t provider_token -u ws://localhost:8765
 
 **Connector（需要 SOCKS5 的机器）：**
 ```bash
-linksocks connector -t connector_token -u ws://localhost:8765 -p 1180
+linksocks connector -t connector_token --legacy-token -u ws://localhost:8765 -p 1180
 ```
+
+`--legacy-token` 表示这个 token 是服务端配置的普通凭据；不加该选项时，connector 会把 token 当作 provider 已按句柄登记的共享秘密（见下面的自助连接者管理）。
 
 **测试：**
 ```bash
@@ -127,6 +129,8 @@ linksocks provider -t provider_token -c my_connector_token -u ws://localhost:876
 linksocks connector -t my_connector_token -u ws://localhost:8765 -p 1180
 ```
 
+这里的 connector token 是双方的共享秘密：provider 只登记派生句柄，connector 用同一个句柄认证，两端再各自从秘密派生出一把密钥，在发送任何目标地址或数据之前先完成通道认证。转发器拿不到 token 本身；如果 provider 仍按字面 token 登记，connector 会报出该不匹配，可用 `--legacy-token` 回到普通凭据语义。
+
 ### 使用公共服务器
 
 公共中继 `l.zetx.tech` 即按此模式运行，无需自建 server：
@@ -140,6 +144,8 @@ linksocks provider -t any_token -u wss://l.zetx.tech -c your_token
 ```bash
 linksocks connector -t your_token -u wss://l.zetx.tech -p 1080
 ```
+
+这里的 connector token 是共享秘密：转发器只保存派生句柄，两端用从 token 派生的密钥认证通道。
 
 **测试：**
 ```bash

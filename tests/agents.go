@@ -78,6 +78,11 @@ type ProxyTestClientOption struct {
 	SocksUsername  string        // Local proxy username (SOCKS5 + HTTP Basic)
 	SocksPassword  string        // Local proxy password (SOCKS5 + HTTP Basic)
 
+	// ConnectorSecret, when set on a forward (connector) client, makes the
+	// client treat its token as a shared secret: it authenticates with a
+	// derived handle and authenticates sealed channels end to end.
+	ConnectorSecret string
+
 	// ProtocolVersion overrides the protocol generation. Zero keeps the
 	// client default (V2); direct-mode tests need V1 because direct
 	// signaling is a V1-generation feature.
@@ -281,6 +286,10 @@ func forwardClient(t *testing.T, opt *ProxyTestClientOption) *ProxyTestClient {
 		}
 		if opt.DirectQUICHandshakeTimeout > 0 {
 			clientOpt.WithDirectQUICHandshakeTimeout(opt.DirectQUICHandshakeTimeout)
+		}
+
+		if opt.ConnectorSecret != "" {
+			clientOpt.WithConnectorTokenSecret(opt.ConnectorSecret)
 		}
 
 		if opt.Reconnect {

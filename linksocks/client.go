@@ -136,7 +136,11 @@ type LinkSocksClient struct {
 	directLocalKeyPair       *directKeyPair
 	directProbeConn          *net.UDPConn
 	directRemotePublicKey    []byte
-	directLocalReady         bool
+	// directRemoteTokenID is the relay handle a connector announced with its
+	// direct key; the provider resolves it to the connector-token key that
+	// salts the direct plane for this peer.
+	directRemoteTokenID string
+	directLocalReady    bool
 
 	directRemoteSessionID       uuid.UUID
 	directRemoteCandidates      []DirectCandidate
@@ -219,6 +223,16 @@ type LinkSocksClient struct {
 	retryAuthFailure bool
 	threads          int // Number of concurrent WebSocket connections
 	connectorTokens  map[string]struct{}
+	connectorSecrets map[string]struct{}
+
+	// Connector-token secret state. connectorTokenID is the relay-visible
+	// handle derived from the secret; connectorPSK is the end-to-end key;
+	// connectorKeys holds the keys of every secret this client registered,
+	// which the provider side uses to verify incoming channel proofs.
+	connectorTokenID string
+	connectorPSK     []byte
+	connectorKeysMu  sync.Mutex
+	connectorKeys    map[string][]byte
 
 	mu           sync.RWMutex // General mutex
 	connectionMu sync.Mutex   // Dedicated mutex for connection status
@@ -499,6 +513,12 @@ type ClientOption struct {
 	// ProtocolVersionV1 only to talk to relays that have not been upgraded;
 	// V2 never falls back to V1 on its own.
 	ProtocolVersion byte
+
+	// ConnectorTokenSecret marks the client's connector token as a shared
+	// secret. The client then authenticates with a derived handle (the relay
+	// never learns the secret) and requires sealed channels to prove the
+	// same secret before any destination or payload is sent.
+	ConnectorTokenSecret string
 }
 
 // DefaultClientOption returns default client options
@@ -660,6 +680,15 @@ func (o *ClientOption) WithReconnectDelay(delay time.Duration) *ClientOption {
 // WithRetryAuthFailure sets whether to retry on authentication failure
 func (o *ClientOption) WithRetryAuthFailure(retry bool) *ClientOption {
 	o.RetryAuthFailure = retry
+	return o
+}
+
+// WithConnectorTokenSecret makes the client treat its connector token as a
+// shared secret between the provider and this connector. The relay receives
+// only a derived handle, and sealed channels authenticate the peer against a
+// key derived from the same secret before the destination is sent.
+func (o *ClientOption) WithConnectorTokenSecret(secret string) *ClientOption {
+	o.ConnectorTokenSecret = secret
 	return o
 }
 
@@ -911,6 +940,8 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 		threads:                 opt.Threads,
 		websockets:              make([]*WSConn, 0, opt.Threads),
 		connectorTokens:         make(map[string]struct{}),
+		connectorSecrets:        make(map[string]struct{}),
+		connectorKeys:           make(map[string][]byte),
 		noEnvProxy:              opt.NoEnvProxy,
 		echMode:                 opt.ECH,
 		echConfig:               opt.ECHConfig,
@@ -932,6 +963,17 @@ func NewLinkSocksClient(token string, opt *ClientOption) *LinkSocksClient {
 		directLocalSessionID:    uuid.New(),
 		directPendingRendezvous: make(map[uuid.UUID]struct{}),
 		directQUICReadyCh:       make(chan struct{}),
+	}
+
+	// A connector token with secret semantics replaces the relay-facing
+	// token with its derived handle: the secret itself never crosses the
+	// wire to the relay.
+	if opt.ConnectorTokenSecret != "" {
+		client.connectorTokenID = deriveConnectorTokenID(opt.ConnectorTokenSecret)
+		client.connectorPSK = deriveConnectorPSK(opt.ConnectorTokenSecret)
+		if client.connectorTokenID != "" {
+			client.token = client.connectorTokenID
+		}
 	}
 
 	// Protocol V2 clients own the end-to-end encryption hub for relay
@@ -1325,6 +1367,20 @@ func directSelectQUICDialCandidates(localSession uuid.UUID, pairSession uuid.UUI
 	return rcands
 }
 
+// directPeerPSKLocked resolves the connector-token key that salts the direct
+// plane for the current peer. The connector uses its own secret; the provider
+// resolves the handle the connector announced. An empty result keeps the
+// legacy, unsalted derivation. Callers hold directMu.
+func (c *LinkSocksClient) directPeerPSKLocked() []byte {
+	if !c.reverse {
+		return c.connectorPSK
+	}
+	if c.directRemoteTokenID == "" {
+		return nil
+	}
+	return c.connectorAuthKey(c.directRemoteTokenID)
+}
+
 // directSignalingMaterial returns the AEAD key and session identifiers needed
 // to seal or open signaling with the current peer. It reports false until both
 // sides have announced their X25519 keys and session ids.
@@ -1337,11 +1393,12 @@ func (c *LinkSocksClient) directSignalingMaterial() (key []byte, pairSession, lo
 	if c.directLocalKeyPair == nil || len(c.directRemotePublicKey) != 32 || localSession == uuid.Nil || remoteSession == uuid.Nil {
 		return nil, uuid.Nil, localSession, remoteSession, false
 	}
+	psk := c.directPeerPSKLocked()
 	pairSession = minUUID(localSession, remoteSession)
 	if len(c.directSignalingKey) == directSignalingKeyLen && c.directSignalingSess == pairSession {
 		return c.directSignalingKey, pairSession, localSession, remoteSession, true
 	}
-	derived, err := deriveDirectSignalingKey(pairSession, c.directLocalKeyPair.priv, c.directRemotePublicKey)
+	derived, err := deriveDirectSignalingKey(pairSession, c.directLocalKeyPair.priv, c.directRemotePublicKey, psk)
 	if err != nil {
 		return nil, pairSession, localSession, remoteSession, false
 	}
@@ -1368,6 +1425,9 @@ func (c *LinkSocksClient) sendDirectHello(peerSession uuid.UUID) {
 		ProtocolVersion: c.protocolVersion,
 		Sealed:          true,
 	}
+	if !c.reverse && c.connectorTokenID != "" {
+		msg.TokenID = c.connectorTokenID
+	}
 	c.directMu.Unlock()
 	if len(msg.PublicKey) == 0 {
 		return
@@ -1392,6 +1452,9 @@ func (c *LinkSocksClient) sendDirectCandidates() {
 		Discoveries:     []string{c.directDiscoveryLabel},
 		PublicKey:       append([]byte(nil), c.directLocalPublicKey...),
 		ProtocolVersion: c.protocolVersion,
+	}
+	if !c.reverse && c.connectorTokenID != "" {
+		msg.TokenID = c.connectorTokenID
 	}
 	c.directMu.Unlock()
 	if len(msg.Discoveries) == 1 && msg.Discoveries[0] == "" {
@@ -1448,6 +1511,14 @@ func (c *LinkSocksClient) handleDirectCapabilities(m DirectCapabilitiesMessage) 
 		c.log.Warn().Str("peer_version", protocolVersionDebugString(m.ProtocolVersion)).Msg("Direct peer protocol version is unsupported")
 		return
 	}
+	// A connector that announced a relay handle proves this pairing is
+	// backed by a shared secret. A provider that does not hold that secret
+	// cannot salt the direct keys identically, so it keeps the relay path
+	// instead of starting a negotiation that must fail closed.
+	if tokenID := strings.TrimSpace(m.TokenID); tokenID != "" && c.reverse && len(c.connectorAuthKey(tokenID)) == 0 {
+		c.log.Warn().Str("token_id", tokenID).Msg("Direct peer announced a connector secret this client does not hold; keeping the relay path")
+		return
+	}
 	peerChanged := false
 	c.directMu.Lock()
 	if c.directRemoteSessionID != uuid.Nil && c.directRemoteSessionID != m.SessionID {
@@ -1456,10 +1527,14 @@ func (c *LinkSocksClient) handleDirectCapabilities(m DirectCapabilitiesMessage) 
 	if !peerChanged && len(c.directRemotePublicKey) > 0 && len(m.PublicKey) > 0 && !bytes.Equal(c.directRemotePublicKey, m.PublicKey) {
 		peerChanged = true
 	}
+	if !peerChanged && c.directRemoteTokenID != "" && m.TokenID != c.directRemoteTokenID {
+		peerChanged = true
+	}
 	if peerChanged {
 		c.directResetPeerStateLocked()
 	}
 	c.directRemoteSessionID = m.SessionID
+	c.directRemoteTokenID = m.TokenID
 	if !m.Sealed {
 		c.directRemoteCandidates = append([]DirectCandidate(nil), m.Candidates...)
 	}
@@ -2145,7 +2220,10 @@ func (c *LinkSocksClient) directAgent(ctx context.Context) {
 					// Peer does not support LSHP-060 yet; keep relay path.
 					continue
 				}
-				k, err := deriveDirectSessionKey(pairSession, kp.priv, remotePub)
+				c.directMu.Lock()
+				psk := c.directPeerPSKLocked()
+				c.directMu.Unlock()
+				k, err := deriveDirectSessionKey(pairSession, kp.priv, remotePub, psk)
 				if err != nil {
 					c.log.Debug().Err(err).Msg("Direct session key derivation failed")
 					continue
@@ -2522,6 +2600,7 @@ func (c *LinkSocksClient) directResetPeerStateLocked() {
 	c.directRemoteCandidates = nil
 	c.directRemoteProtocolVersion = 0
 	c.directRemotePublicKey = nil
+	c.directRemoteTokenID = ""
 	c.directPeerSealed = false
 	c.directSignalingKey = nil
 	c.directSignalingSess = uuid.Nil
@@ -3050,6 +3129,17 @@ func (c *LinkSocksClient) maintainWebSocketConnection(ctx context.Context, index
 		// Return a non-retriable error to prevent reconnection attempts.
 		// Include the server-provided error message when available.
 		serverErr := strings.TrimSpace(authResponse.Error)
+		// A connector secret the relay does not know means the provider
+		// registered another secret (or a plain token). Point at the matching
+		// setup instead of a bare "invalid token".
+		if len(c.connectorPSK) > 0 {
+			detail := serverErr
+			if detail == "" {
+				detail = "invalid token"
+			}
+			return &nonRetriableError{msg: "authentication failed: " + detail +
+				" (the relay does not hold a handle for this connector secret; run the provider with the same --connector-token, or pass --legacy-token when the server itself configured this connector token)"}
+		}
 		if serverErr != "" {
 			return &nonRetriableError{msg: "authentication failed: " + serverErr}
 		}
@@ -3696,8 +3786,81 @@ func (c *LinkSocksClient) Close() {
 }
 
 // AddConnector sends a request to add a new connector token and waits for response.
-// This function is only available in reverse proxy mode.
+// This function is only available in reverse proxy mode. The token is
+// registered literally, which the relay can read; use AddConnectorSecret when
+// the connector should authenticate the channel end to end.
 func (c *LinkSocksClient) AddConnector(connectorToken string) (string, error) {
+	registered, err := c.addConnectorToken(connectorToken)
+	if err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	c.connectorTokens[registered] = struct{}{}
+	c.mu.Unlock()
+	return registered, nil
+}
+
+// AddConnectorSecret registers a connector token as a shared secret with the
+// relay: the relay stores only a derived handle, while this client keeps the
+// end-to-end key that authenticates sealed channels opened with the token.
+// An empty secret generates a fresh one locally and returns it; the relay is
+// never asked to generate it. The returned value is the secret to hand to
+// connectors, and it is never sent to the relay.
+func (c *LinkSocksClient) AddConnectorSecret(secret string) (string, error) {
+	if secret == "" {
+		generated, err := generateConnectorSecret()
+		if err != nil {
+			return "", err
+		}
+		secret = generated
+	}
+	handle := deriveConnectorTokenID(secret)
+	psk := deriveConnectorPSK(secret)
+	if handle == "" || len(psk) == 0 {
+		return "", errors.New("connector secret: derivation failed")
+	}
+	if _, err := c.addConnectorToken(handle); err != nil {
+		return "", err
+	}
+	c.connectorKeysMu.Lock()
+	c.connectorKeys[handle] = psk
+	c.connectorKeysMu.Unlock()
+	c.mu.Lock()
+	c.connectorSecrets[secret] = struct{}{}
+	c.mu.Unlock()
+	return secret, nil
+}
+
+// ownConnectorPSK returns the end-to-end key of this client's connector-token
+// secret, or nil when the client was not configured with one.
+func (c *LinkSocksClient) ownConnectorPSK() []byte {
+	return c.connectorPSK
+}
+
+// connectorTokenHandle returns the relay-visible handle derived from this
+// client's connector-token secret.
+func (c *LinkSocksClient) connectorTokenHandle() string {
+	return c.connectorTokenID
+}
+
+// connectorAuthKey resolves the end-to-end key registered for a relay handle,
+// used by the provider side to verify a channel's authentication proof.
+func (c *LinkSocksClient) connectorAuthKey(tokenID string) []byte {
+	if tokenID == "" {
+		return nil
+	}
+	c.connectorKeysMu.Lock()
+	defer c.connectorKeysMu.Unlock()
+	key := c.connectorKeys[tokenID]
+	if len(key) == 0 {
+		return nil
+	}
+	return append([]byte(nil), key...)
+}
+
+// addConnectorToken performs the relay registration round trip for one token
+// handle. Callers decide what to remember locally.
+func (c *LinkSocksClient) addConnectorToken(connectorToken string) (string, error) {
 	if !c.reverse {
 		return "", errors.New("add connector is only available in reverse proxy mode")
 	}
@@ -3735,9 +3898,6 @@ func (c *LinkSocksClient) AddConnector(connectorToken string) (string, error) {
 		if !connResp.Success {
 			return "", fmt.Errorf("connector request failed: %s", connResp.Error)
 		}
-		c.mu.Lock()
-		c.connectorTokens[connResp.ConnectorToken] = struct{}{}
-		c.mu.Unlock()
 		return connResp.ConnectorToken, nil
 	case <-time.After(10 * time.Second):
 		return "", errors.New("timeout waiting for connector response")
@@ -3750,11 +3910,20 @@ func (c *LinkSocksClient) replayConnectorTokens() {
 	for token := range c.connectorTokens {
 		tokens = append(tokens, token)
 	}
+	secrets := make([]string, 0, len(c.connectorSecrets))
+	for secret := range c.connectorSecrets {
+		secrets = append(secrets, secret)
+	}
 	c.mu.RUnlock()
 
 	for _, token := range tokens {
 		if _, err := c.AddConnector(token); err != nil {
 			c.log.Warn().Err(err).Str("connector_token", token).Msg("Failed to replay connector token")
+		}
+	}
+	for _, secret := range secrets {
+		if _, err := c.AddConnectorSecret(secret); err != nil {
+			c.log.Warn().Err(err).Msg("Failed to replay connector secret")
 		}
 	}
 }

@@ -31,9 +31,10 @@ import (
 // forward the close to the peer. A channel ID and the fact that it closed are
 // routing metadata, not payload.
 //
-// Direct mode is not available on V2 channels: its rendezvous messages would
-// hand peer IP candidates to the relay in plaintext, which is exactly what V2
-// exists to prevent.
+// Direct mode is available on V2 channels: the rendezvous and candidate
+// exchange travels inside DirectSealedMessage envelopes, and when the pairing
+// is backed by a connector-token secret that secret is mixed into the direct
+// key material so a relay cannot impersonate either peer's direct endpoint.
 
 const (
 	// secureNoisePattern fixes the handshake pattern both peers must use.
@@ -61,9 +62,18 @@ const (
 	// connect request which turns a prepared channel into a real one, so an
 	// unclaimed channel cannot hold relay and provider state forever.
 	secureWarmConnectTimeout = 60 * time.Second
+	// secureAuthTimeout bounds how long the connector side waits for the
+	// peer's proof of the connector-token secret before failing the channel.
+	// A provider that cannot prove the secret must never receive the
+	// destination or payload.
+	secureAuthTimeout = 30 * time.Second
 )
 
 var errSecureSessionClosed = errors.New("secure channel: session closed")
+
+// errChannelAuthFailed reports that a peer's channel authentication proof did
+// not verify against the connector-token secret.
+var errChannelAuthFailed = errors.New("secure channel auth: proof did not verify")
 
 func newSecureCipherSuite() noise.CipherSuite {
 	return noise.NewCipherSuite(noise.DH25519, noise.CipherChaChaPoly, noise.HashSHA256)
@@ -246,6 +256,10 @@ func (h *secureHub) openChannel(link MessageWriter, channelID uuid.UUID, queue c
 	for {
 		select {
 		case <-sess.ready:
+			if err := sess.awaitChannelAuth(secureAuthTimeout); err != nil {
+				h.close(channelID)
+				return nil, err
+			}
 			return sess, nil
 		case <-sess.done:
 			return nil, sess.resultErr()
@@ -316,7 +330,7 @@ func (h *secureHub) newSession(link MessageWriter, channelID uuid.UUID, initiato
 	if err != nil {
 		return nil, fmt.Errorf("secure channel handshake: %w", err)
 	}
-	return &secureSession{
+	sess := &secureSession{
 		hub:       h,
 		link:      link,
 		channelID: channelID,
@@ -325,8 +339,18 @@ func (h *secureHub) newSession(link MessageWriter, channelID uuid.UUID, initiato
 		inbound:   make(chan []byte, secureInboundQueue),
 		ready:     make(chan struct{}),
 		done:      make(chan struct{}),
+		authWait:  make(chan struct{}),
 		hs:        hs,
-	}, nil
+	}
+	// Only the connector side can require a proof: it holds the connector
+	// token secret, so it must not send the destination until the provider
+	// has proved it knows the same secret.
+	if initiator && h.client != nil && len(h.client.ownConnectorPSK()) > 0 {
+		sess.authRequired = true
+	} else {
+		sess.settleAuth(nil)
+	}
+	return sess, nil
 }
 
 // acceptChannel starts the responder side when a ChannelOpen arrives. It
@@ -399,6 +423,15 @@ type secureSession struct {
 	once   sync.Once
 	errMu  sync.Mutex
 	failed error
+
+	// authWait is closed once channel-side authentication has settled: the
+	// peer proved the connector-token secret, the session closed, or the wait
+	// timed out. The initiator waits on it before sending the destination.
+	authWait     chan struct{}
+	authOnce     sync.Once
+	authRequired bool
+	authFailed   error
+	authVerified bool
 
 	// idleTimer closes a responder whose connect request never arrives; see
 	// secureWarmConnectTimeout. Only the session loop touches it.
@@ -578,10 +611,57 @@ func (s *secureSession) finish(err error) {
 		s.failed = err
 	}
 	s.errMu.Unlock()
+	s.settleAuth(err)
 	s.once.Do(func() { close(s.done) })
 	s.mu.Lock()
 	s.closed = true
 	s.mu.Unlock()
+}
+
+// settleAuth releases the connector-side authentication wait exactly once and
+// records why it settled. A nil error means the peer proved the secret.
+func (s *secureSession) settleAuth(err error) {
+	s.authOnce.Do(func() {
+		s.mu.Lock()
+		s.authFailed = err
+		s.mu.Unlock()
+		close(s.authWait)
+	})
+}
+
+// markAuthVerified records a successful authentication and releases the wait.
+func (s *secureSession) markAuthVerified() {
+	s.mu.Lock()
+	s.authVerified = true
+	s.mu.Unlock()
+	s.settleAuth(nil)
+}
+
+// awaitChannelAuth blocks the initiator until the peer proved the
+// connector-token secret. Sessions that do not require a proof return
+// immediately.
+func (s *secureSession) awaitChannelAuth(timeout time.Duration) error {
+	if !s.authRequired {
+		return nil
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-s.authWait:
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.authFailed != nil {
+			return s.authFailed
+		}
+		if !s.authVerified {
+			return errSecureSessionClosed
+		}
+		return nil
+	case <-s.done:
+		return s.resultErr()
+	case <-timer.C:
+		return errors.New("secure channel auth: peer did not prove the connector secret")
+	}
 }
 
 func (s *secureSession) resultErr() error {
@@ -613,6 +693,16 @@ func (s *secureSession) run() {
 	s.mu.Unlock()
 	close(s.ready)
 	s.log.Trace().Msg("Secure channel established")
+
+	// A connector-token secret requires an authenticated peer before any
+	// destination or payload is sent: prove our side now, and let
+	// awaitChannelAuth hold the caller until the peer proved its side.
+	if s.authRequired {
+		if err := s.sendInitiatorChannelAuth(); err != nil {
+			s.fail(err)
+			return
+		}
+	}
 
 	// A responder waits for the connect request that turns the channel into
 	// a real connection. Prepared channels can go unclaimed, so bound that
@@ -814,6 +904,11 @@ func (s *secureSession) dispatch(msg BaseMessage) {
 			channel.acknowledge(m.Sequence)
 		}
 
+	case ChannelAuthMessage:
+		// Authentication settles before any destination or payload is
+		// accepted; the message itself is never delivered anywhere.
+		s.handleChannelAuth(m)
+
 	case DisconnectMessage:
 		// Normal teardown Disconnects travel plaintext; a sealed one is only
 		// a safety net.
@@ -828,6 +923,82 @@ func (s *secureSession) dispatch(msg BaseMessage) {
 	default:
 		s.log.Warn().Str("type", msg.GetType()).Msg("Dropping unexpected sealed message")
 	}
+}
+
+// sendInitiatorChannelAuth proves this side's knowledge of the connector-token
+// secret over the completed handshake transcript. The destination is only sent
+// after the peer's counter-proof arrives (awaitChannelAuth).
+func (s *secureSession) sendInitiatorChannelAuth() error {
+	c := s.hub.client
+	if c == nil {
+		return errors.New("secure channel auth: no client for the initiator")
+	}
+	psk := c.ownConnectorPSK()
+	if len(psk) == 0 {
+		return errors.New("secure channel auth: missing connector secret")
+	}
+	binding := s.hs.ChannelBinding()
+	return s.WriteMessage(ChannelAuthMessage{
+		ChannelID: s.channelID,
+		TokenID:   c.connectorTokenHandle(),
+		Role:      connectorAuthRoleInitiator,
+		Proof:     channelAuthProof(psk, connectorAuthRoleInitiator, s.channelID, binding),
+	})
+}
+
+// handleChannelAuth verifies the peer's proof. The responder selects the
+// secret by the announced relay handle, records the verification and answers
+// with its own proof so the initiator can release the destination. A proof
+// that does not verify closes the channel: a peer that cannot prove the
+// secret must never reach the destination or payload.
+func (s *secureSession) handleChannelAuth(m ChannelAuthMessage) {
+	if m.ChannelID != s.channelID {
+		s.fail(errors.New("secure channel auth: channel id mismatch"))
+		return
+	}
+	binding := s.hs.ChannelBinding()
+	c := s.hub.client
+	if c == nil {
+		s.fail(errors.New("secure channel auth: proof on a relay-side responder"))
+		return
+	}
+	if s.initiator {
+		psk := c.ownConnectorPSK()
+		if m.Role != connectorAuthRoleResponder || len(psk) == 0 ||
+			!verifyChannelAuthProof(psk, connectorAuthRoleResponder, s.channelID, binding, m.Proof) {
+			s.fail(errChannelAuthFailed)
+			return
+		}
+		s.markAuthVerified()
+		s.log.Info().Msg("Channel authenticated by connector secret")
+		return
+	}
+	if m.Role != connectorAuthRoleInitiator || m.TokenID == "" {
+		s.fail(errChannelAuthFailed)
+		return
+	}
+	psk := c.connectorAuthKey(m.TokenID)
+	if len(psk) == 0 {
+		s.fail(fmt.Errorf("secure channel auth: unknown connector token %s", m.TokenID))
+		return
+	}
+	if !verifyChannelAuthProof(psk, connectorAuthRoleInitiator, s.channelID, binding, m.Proof) {
+		s.fail(errChannelAuthFailed)
+		return
+	}
+	s.mu.Lock()
+	s.authVerified = true
+	s.mu.Unlock()
+	reply := ChannelAuthMessage{
+		ChannelID: s.channelID,
+		Role:      connectorAuthRoleResponder,
+		Proof:     channelAuthProof(psk, connectorAuthRoleResponder, s.channelID, binding),
+	}
+	if err := s.WriteMessage(reply); err != nil {
+		s.fail(err)
+		return
+	}
+	s.log.Info().Msg("Channel authenticated by connector secret")
 }
 
 // deliverToQueue hands a decrypted message to the local pump before

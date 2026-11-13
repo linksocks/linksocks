@@ -10,7 +10,7 @@ LinkSocks 是一个基于 WebSocket 协议的跨网络跨机器 SOCKS 代理实�
 
 LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCKS 代理服务（正向代理模式），或使没有公网 IP 的客户端连接并作为 SOCKS 代理服务器（反向代理模式）。
 
-代理通道端到端加密（协议代 2）：provider 与 connector 协商 Noise XX 会话，目标地址、载荷和对端裁决都在密文内，中继只按 channel ID 转发帧；Zone 数据包在成员之间加密；网站发布沿用旧协议代，因为中继需要读取 HTTP 才能提供服务域名。
+代理通道端到端加密（协议代 2）：provider 与 connector 协商 Noise XX 会话，目标地址、载荷和对端裁决都在密文内，中继只按 channel ID 转发帧；connector token 可以作为这层加密背后的共享秘密：两端各自从它派生密钥，中继只保存单向句柄、拿不到 token 本身；Zone 数据包在成员之间加密；网站发布沿用旧协议代，因为中继需要读取 HTTP 才能提供服务域名。
 
 ![架构图](https://github.com/linksocks/linksocks/raw/main/images/abstract.svg)
 
@@ -21,7 +21,7 @@ LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCK
 
 ## 特性
 
-1. 代理通道端到端加密（协议代 2）：provider 与 connector 运行 Noise XX 握手，目标地址与载荷都在密文内，中继只按 channel ID 转发
+1. 代理通道端到端加密（协议代 2）：provider 与 connector 运行 Noise XX 握手，目标地址与载荷都在密文内，中继只按 channel ID 转发；作为共享秘密登记的 connector token 不会以可读形式到达中继，两端用它派生的密钥互相认证
 2. 支持命令行使用、API 服务器和库集成
 3. 支持正向、反向和中继代理模式
 4. 反向代理支持轮询负载均衡

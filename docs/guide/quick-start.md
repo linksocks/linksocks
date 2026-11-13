@@ -96,8 +96,12 @@ linksocks provider -t provider_token -u ws://localhost:8765
 
 **Connector (where you need SOCKS5):**
 ```bash
-linksocks connector -t connector_token -u ws://localhost:8765 -p 1180
+linksocks connector -t connector_token --legacy-token -u ws://localhost:8765 -p 1180
 ```
+
+`--legacy-token` tells the connector that this token is a plain credential the
+server configured; without it the connector treats the token as a shared
+secret the provider derived a handle for (see the self-managed variant below).
 
 **Test:**
 ```bash
@@ -126,6 +130,13 @@ linksocks provider -t provider_token -c my_connector_token -u ws://localhost:876
 linksocks connector -t my_connector_token -u ws://localhost:8765 -p 1180
 ```
 
+A connector token here is a shared secret: the provider registers only a
+derived handle, the connector authenticates with the same handle, and both
+ends derive a key that authenticates the channel end to end before any
+destination or payload is sent. The relay never learns the token itself; if
+the provider still registers the token literally, the connector reports the
+mismatch and `--legacy-token` falls back to the plain credential.
+
 ### Use the Public Server
 
 The public relay `l.zetx.tech` runs in this mode. No self-hosted server required:
@@ -139,6 +150,10 @@ linksocks provider -t any_token -u wss://l.zetx.tech -c your_token
 ```bash
 linksocks connector -t your_token -u wss://l.zetx.tech -p 1080
 ```
+
+The connector token is a shared secret here: the relay stores only a derived
+handle, and both ends authenticate the channel against a key derived from the
+token.
 
 **Test:**
 ```bash

@@ -81,6 +81,9 @@ DirectSealedMessage:
 ChannelBindMessage:
 	Version(1) + Type(1) + DataLen(4) + JSON{...}
 
+ChannelAuthMessage:
+	Version(1) + Type(1) + DataLen(4) + JSON{...}
+
 ChannelMigrateMessage:
 	Version(1) + Type(1) + DataLen(4) + JSON{...}
 
@@ -159,6 +162,7 @@ const (
 	BinaryTypeChannelOpen         = byte(0x1A)
 	BinaryTypeSealed              = byte(0x1B)
 	BinaryTypeDirectSealed        = byte(0x1C)
+	BinaryTypeChannelAuth         = byte(0x1D)
 	BinaryProtocolTCP             = byte(0x01)
 	BinaryProtocolUDP             = byte(0x02)
 
@@ -195,6 +199,7 @@ const (
 	TypeChannelOpen         = "channel_open"
 	TypeSealed              = "sealed"
 	TypeDirectSealed        = "direct_sealed"
+	TypeChannelAuth         = "channel_auth"
 	TypeUnknown             = "unknown"
 	// Compression flags
 	DataCompressionNone = byte(0x00)
@@ -416,6 +421,11 @@ type DirectCapabilitiesMessage struct {
 	// Sealed signals that this message is only a key announcement: candidates
 	// and every later signaling message travel inside DirectSealedMessage.
 	Sealed bool `json:"sealed,omitempty"`
+	// TokenID is the relay handle a connector announces when its connector
+	// token is a shared secret. The provider resolves it to the secret's key
+	// and salts the direct key material; the relay already knows the handle
+	// it routed this session with, so announcing it leaks nothing new.
+	TokenID string `json:"token_id,omitempty"`
 }
 
 func (m DirectCapabilitiesMessage) GetType() string {
@@ -468,6 +478,22 @@ type ChannelBindMessage struct {
 
 func (m ChannelBindMessage) GetType() string {
 	return TypeChannelBind
+}
+
+// ChannelAuthMessage proves knowledge of the connector-token secret inside an
+// established sealed channel. TokenID is the relay-visible handle that selects
+// the secret on the responder side; Proof authenticates the sender's role over
+// the Noise handshake transcript. The message travels only inside SealedMessage
+// payloads, so the relay never sees it.
+type ChannelAuthMessage struct {
+	ChannelID uuid.UUID `json:"channel_id"`
+	TokenID   string    `json:"token_id,omitempty"`
+	Role      byte      `json:"role"`
+	Proof     []byte    `json:"proof"`
+}
+
+func (m ChannelAuthMessage) GetType() string {
+	return TypeChannelAuth
 }
 
 type ChannelMigrateMessage struct {
@@ -935,6 +961,9 @@ func PackMessageWithVersion(msg BaseMessage, version byte) ([]byte, error) {
 
 	case ChannelBindMessage:
 		return packJSONMessage(buf, BinaryTypeChannelBind, m, "channel bind")
+
+	case ChannelAuthMessage:
+		return packJSONMessage(buf, BinaryTypeChannelAuth, m, "channel auth")
 
 	case ChannelMigrateMessage:
 		return packJSONMessage(buf, BinaryTypeChannelMigrate, m, "channel migrate")
@@ -1414,6 +1443,13 @@ func parseMessageBody(msgType byte, payload []byte) (BaseMessage, error) {
 	case BinaryTypeChannelBind:
 		var msg ChannelBindMessage
 		if err := unmarshalJSONMessage(payload, "channel bind", &msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+
+	case BinaryTypeChannelAuth:
+		var msg ChannelAuthMessage
+		if err := unmarshalJSONMessage(payload, "channel auth", &msg); err != nil {
 			return nil, err
 		}
 		return msg, nil

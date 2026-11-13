@@ -83,7 +83,8 @@
 
 | 参数 | 简写 | 默认值 | 说明 |
 |------|------|--------|------|
-| `--connector-token` | `-c` | | 中继代理 / 自助连接者管理下，provider 登记的 connector token。也可用 `LINKSOCKS_CONNECTOR_TOKEN` |
+| `--connector-token` | `-c` | | 中继代理 / 自助连接者管理下，provider 登记的 connector token；默认按共享秘密登记，除非指定 `--legacy-token`。也可用 `LINKSOCKS_CONNECTOR_TOKEN` |
+| `--legacy-token` | | `false` | 把 connector token 当作转发器侧的普通凭据，而不是共享秘密（放弃针对转发器的端到端认证） |
 | `--socks-username` | `-n` | | 本地代理用户名（SOCKS5 与 HTTP Basic）。也可用 `LINKSOCKS_SOCKS_USERNAME` |
 | `--socks-password` | `-w` | | 本地代理密码（SOCKS5 与 HTTP Basic）。也可用 `LINKSOCKS_SOCKS_PASSWORD` |
 | `--socks-no-wait` | `-i` | `false` | 立即启动混合本地代理，不等待远端就绪 |
@@ -125,17 +126,19 @@ linksocks client -t my_token -u ws://localhost:8765 -r
 
 ### 3. 中继代理
 
-服务端统一管理 provider token 与 connector token；混合本地代理开在 connector 本机。
+服务端统一管理 provider token 与 connector token；混合本地代理开在 connector 本机。这个 token 由服务端配置，因此 connector 要用 `--legacy-token` 按普通凭据处理：
 
 ```bash
 linksocks server -t provider_token -c connector_token -r -p 9870
 linksocks provider -t provider_token -u ws://localhost:8765
-linksocks connector -t connector_token -u ws://localhost:8765 -p 1180
+linksocks connector -t connector_token --legacy-token -u ws://localhost:8765 -p 1180
 ```
 
 ### 4. 中继代理（自助连接者管理）
 
 服务端只校验 provider；每个 provider 用 `-c` 登记自己的 connector token。连接者只连到对应 provider，不做跨 provider 负载均衡。
+
+这里的 connector token 是共享秘密：provider 只登记派生句柄，两端用从 token 派生的密钥认证通道，转发器拿不到 token 本身。两端都需要支持按句柄派生的版本。
 
 ```bash
 linksocks server -t provider_token -r -a

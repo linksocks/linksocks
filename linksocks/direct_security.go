@@ -34,7 +34,12 @@ func newDirectKeyPair() (*directKeyPair, error) {
 	return &directKeyPair{priv: priv, pub: pub}, nil
 }
 
-func deriveDirectSessionKey(pairSessionID uuid.UUID, localPriv *ecdh.PrivateKey, remotePub []byte) ([]byte, error) {
+// deriveDirectSessionKey derives the key that authenticates the direct data
+// plane (probe MACs and the QUIC handshake) from one X25519 exchange. psk,
+// when set, is the connector-token key of the pairing: a relay that mediates
+// the exchange never learns it, so it cannot derive the key material either.
+// Both ends must pass the same psk (or both none).
+func deriveDirectSessionKey(pairSessionID uuid.UUID, localPriv *ecdh.PrivateKey, remotePub []byte, psk []byte) ([]byte, error) {
 	if localPriv == nil {
 		return nil, errors.New("direct: nil private key")
 	}
@@ -55,6 +60,9 @@ func deriveDirectSessionKey(pairSessionID uuid.UUID, localPriv *ecdh.PrivateKey,
 	// Avoid including long-lived tokens.
 	mac := hmac.New(sha256.New, pairSessionID[:])
 	_, _ = mac.Write(shared)
+	if len(psk) > 0 {
+		_, _ = mac.Write(psk)
+	}
 	full := mac.Sum(nil)
 	key := make([]byte, directSessionKeyLen)
 	copy(key, full[:directSessionKeyLen])
