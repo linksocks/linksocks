@@ -1,6 +1,7 @@
 package linksocks
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -75,6 +76,37 @@ func TestClientRelayWriterPinsOneLink(t *testing.T) {
 	client.mu.Unlock()
 	if got := writer.pinnedLink(); got != nil {
 		t.Fatalf("pinned a link that is not in the pool: %s", got.Label())
+	}
+}
+
+// The sealed-resume refusal is latched on the writer at setup. The client's
+// live remote-version field is zeroed whenever the direct peer state resets,
+// and a transient zero must never let a live sealed channel slip onto the
+// plaintext relay writer. A V1 writer keeps its plaintext migration.
+func TestDirectQUICWriterLatchesSealedResume(t *testing.T) {
+	client := &LinkSocksClient{}
+	client.directMu.Lock()
+	client.directRemoteProtocolVersion = ProtocolVersionV2
+	client.directMu.Unlock()
+
+	writer := newDirectQUICDialWriter(context.Background(), client, nil, "direct-quic")
+	if !writer.RefuseRelayFallback() {
+		t.Fatal("a V2 writer did not refuse the plaintext relay fallback")
+	}
+	client.directMu.Lock()
+	client.directRemoteProtocolVersion = 0
+	client.directMu.Unlock()
+	if !writer.RefuseRelayFallback() {
+		t.Fatal("a transient version reset re-enabled the plaintext relay fallback for a live sealed channel")
+	}
+
+	v1Client := &LinkSocksClient{}
+	v1Client.directMu.Lock()
+	v1Client.directRemoteProtocolVersion = ProtocolVersionV1
+	v1Client.directMu.Unlock()
+	v1Writer := newDirectQUICDialWriter(context.Background(), v1Client, nil, "direct-quic")
+	if v1Writer.RefuseRelayFallback() {
+		t.Fatal("a V1 writer must keep its plaintext migration path")
 	}
 }
 
