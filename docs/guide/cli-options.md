@@ -198,8 +198,13 @@ The public resolvers matter on Windows, which has no `resolv.conf`, and on
 networks where the local resolver hides the record.
 
 When nothing can be found and the connection is reset before the handshake
-finishes, the client says so. The way out is to pin a config fetched from a
-network that can reach the relay:
+finishes, the client retries once with a bootstrap ECH offer: a syntactically
+valid config with a throwaway key and the edge's public name. An ECH-capable
+edge rejects that key and answers with its real retry configs, which the client
+uses for the next attempt; this is what keeps the first ClientHello from
+carrying the relay hostname on a network that resets it. If even the bootstrap
+attempt is reset, the client says so. The remaining way out is to pin a config
+fetched from a network that can reach the relay:
 
 ```bash
 curl -sS https://l.zetx.tech/api/ech           # {"host":"...","ech":"AEX..."}

@@ -25,6 +25,10 @@ type relayDialOptions struct {
 	// echOverride replaces the discovered ECH config list; the dial layer sets
 	// it when a server hands out retry configs, and tests use it directly.
 	echOverride []byte
+	// echBootstrapped records that the ECH bootstrap offer was already tried on
+	// this dial, so a reset of the bootstrap attempt reports the block instead
+	// of looping.
+	echBootstrapped bool
 	// echHint is set by the dial layer when a connection failed without ECH,
 	// so callers can report the likely cause once.
 	echHint *string
@@ -113,16 +117,32 @@ func dialRelayWebSocket(ctx context.Context, rawURL string, opt relayDialOptions
 		if err == nil {
 			return conn, nil
 		}
-		if !offered && opt.ECHMode != ECHOff && ech.ResetSuspected(err) {
-			// A connection that dies before the handshake completes, on a host
-			// whose ECH config could not be found, is what an SNI-based block
-			// looks like. Say so once, with the way out.
-			message := fmt.Sprintf("connection to %s failed before the TLS handshake finished and no ECH config was found for it; "+
-				"if this network blocks relay hostnames by SNI, supply a config with --ech-config or LINKSOCKS_ECH_CONFIG", currentURL)
-			if opt.echHint != nil {
-				*opt.echHint = message
+		if opt.ECHMode != ECHOff && ech.ResetSuspected(err) {
+			if !offered && !opt.echBootstrapped {
+				// A connection that dies before the handshake completes, on a
+				// host whose ECH config could not be found, is what an SNI-based
+				// block looks like. Offer a bootstrap config for one attempt:
+				// the offer hides the relay hostname from a middlebox, and an
+				// ECH-capable edge rejects it while handing out its real retry
+				// configs, which the rejection path below turns into a working
+				// ECH connection.
+				opt.Logger.Info().Str("url", currentURL).
+					Msg("Relay connection was reset before the TLS handshake finished and no ECH config was found for it; retrying with a bootstrap ECH offer")
+				retry := opt
+				retry.echBootstrapped = true
+				retry.echOverride = ech.BootstrapConfig()
+				return dialRelayWebSocket(ctx, currentURL, retry)
 			}
-			opt.Logger.Warn().Err(err).Str("url", currentURL).Msg(message)
+			if opt.echBootstrapped {
+				// The bootstrap offer was reset as well: report the block, and
+				// the way out, once.
+				message := fmt.Sprintf("connection to %s failed before the TLS handshake finished and no usable ECH config was found for it; "+
+					"if this network blocks relay hostnames by SNI, supply a config with --ech-config or LINKSOCKS_ECH_CONFIG", currentURL)
+				if opt.echHint != nil {
+					*opt.echHint = message
+				}
+				opt.Logger.Warn().Err(err).Str("url", currentURL).Msg(message)
+			}
 		}
 		// gorilla replaces the body with an in-memory reader on a failed
 		// handshake, so closing it here is always safe.
