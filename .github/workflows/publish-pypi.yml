@@ -16,6 +16,8 @@ jobs:
       url: https://pypi.org/p/linksocks
     permissions:
       id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
+      actions: read    # list the tag's bindings runs while waiting for their artifacts
+      contents: read   # checkout, and run lookups against this repository
 
     steps:
       - name: Checkout code (for tag context)
@@ -27,6 +29,37 @@ jobs:
         id: tag_commit
         run: |
           echo "sha=$(git rev-list -n 1 ${{ github.event.release.tag_name }})" >> $GITHUB_OUTPUT
+
+      # The wheels and the sdist are built by the tag-triggered "Build Python
+      # Bindings" run (workflow file python-tests.yml). Publishing a release
+      # right after its tag was pushed raced that build: every download below
+      # found nothing and the job failed at "List distributions". Wait for the
+      # run of this tag to finish before downloading anything.
+      - name: Wait for the bindings build of this tag
+        timeout-minutes: 70
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          SHA: ${{ steps.tag_commit.outputs.sha }}
+        run: |
+          for i in $(seq 1 60); do
+            RESULT=$(gh run list --workflow=python-tests.yml --commit="$SHA" --limit=20 \
+              --json status,conclusion,headBranch \
+              --jq "[.[] | select(.headBranch == \"$TAG\")][0] | \"\(.status) \(.conclusion)\"")
+            echo "Build Python Bindings for $TAG: $RESULT"
+            case "$RESULT" in
+              "completed success")
+                exit 0
+                ;;
+              completed*)
+                echo "::error::Build Python Bindings ended as '$RESULT'; there are no artifacts to publish"
+                exit 1
+                ;;
+            esac
+            sleep 60
+          done
+          echo "::error::Timed out waiting for Build Python Bindings on $TAG"
+          exit 1
 
       - name: Download combined Linux x64 wheels
         uses: dawidd6/action-download-artifact@v11
