@@ -28,15 +28,23 @@ offers **Encrypted Client Hello** by default (`--ech auto`):
 4. When no config can be found at all and the connection is reset before the
    TLS handshake finishes (the signature of an SNI-based block), the client
    retries once with a **bootstrap config**: a well-formed ECHConfigList with a
-   throwaway X25519 key and the edge's public name (`cloudflare-ech.com`). The
-   first ClientHello therefore never carries the relay hostname on exactly the
-   networks that reset it, and an ECH-capable edge answers the failed
+   throwaway X25519 key and the edge's public name (`cloudflare-ech.com`).
+   The first ClientHello therefore never carries the relay hostname on exactly
+   the networks that reset it, and an ECH-capable edge answers the failed
    decryption with its real retry configs (RFC 9849 §7.1), which the client
    uses for the next attempt. If the bootstrap attempt is reset as well, the
    connection fails with a hint instead of looping. Verified against the
    public relay's three hostnames on 2026-11-15: the bootstrap offer was
    rejected with a 71-byte retry config list and the retry was accepted with
    `ech_accepted=true`.
+
+   `cloudflare-ech.com` is the public name Cloudflare publishes for its whole
+   edge, so the bootstrap covers every Cloudflare-fronted relay: the public
+   relay, any linksocks.js deployment, and any custom domain on those
+   accounts. The retry leg takes its name from the server-provided configs,
+   so only the first, throwaway offer carries the fixed name. A relay
+   deployed elsewhere with a different public name would need that name here;
+   until then the offer simply degrades to the reported block.
 
 Verified against the public relay (2026-11-09):
 
