@@ -1,11 +1,9 @@
 package ech
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"net"
@@ -564,73 +562,5 @@ func TestDiscoveryRespectsBudget(t *testing.T) {
 	}
 	if elapsed > discoveryBudget+2*time.Second {
 		t.Fatalf("discovery took %v, want it bounded by %v", elapsed, discoveryBudget)
-	}
-}
-
-// The bootstrap offer must be a well-formed ECHConfigList that uses the edge's
-// public name, stays stable within one process, and passes the same parsing
-// path as every discovered config.
-func TestBootstrapConfigIsAValidOffer(t *testing.T) {
-	list := BootstrapConfig()
-	if len(list) == 0 {
-		t.Fatal("BootstrapConfig returned no config")
-	}
-	if again := BootstrapConfig(); !bytes.Equal(list, again) {
-		t.Fatal("BootstrapConfig does not return a stable config")
-	}
-	decoded, err := ParseConfigList(base64.StdEncoding.EncodeToString(list))
-	if err != nil || !bytes.Equal(decoded, list) {
-		t.Fatalf("bootstrap config does not round-trip through ParseConfigList: %v", err)
-	}
-	if got := binary.BigEndian.Uint16(list[2:4]); got != 0xfe0d {
-		t.Fatalf("bootstrap config version = %#x, want 0xfe0d", got)
-	}
-	if !bytes.Contains(list, []byte(BootstrapPublicName)) {
-		t.Fatalf("bootstrap config does not use the public name %q", BootstrapPublicName)
-	}
-	cfg := Config(context.Background(), Request{Host: "relay.test", Mode: Auto, Pinned: list, Logger: zerolog.Nop()})
-	if !Offered(cfg) || cfg.MinVersion != tls.VersionTLS13 {
-		t.Fatal("bootstrap config is not usable as an ECH offer")
-	}
-}
-
-// TestBootstrapECHAgainstPublicRelay checks the bootstrap flow against a real
-// relay edge: the throwaway key must be rejected with retry configs, and a
-// second handshake using them must negotiate ECH. Network-dependent, so it
-// only runs when LINKSOCKS_ECH_BOOTSTRAP_PROBE names a relay host.
-func TestBootstrapECHAgainstPublicRelay(t *testing.T) {
-	host := os.Getenv("LINKSOCKS_ECH_BOOTSTRAP_PROBE")
-	if host == "" {
-		t.Skip("set LINKSOCKS_ECH_BOOTSTRAP_PROBE=cdn.team1.cc.cd to run")
-	}
-
-	dial := func(list []byte) (*tls.Conn, *tls.ECHRejectionError) {
-		t.Helper()
-		cfg := Config(context.Background(), Request{Host: host, Mode: Auto, Pinned: list, Logger: zerolog.Nop()})
-		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 15 * time.Second}, "tcp", net.JoinHostPort(host, "443"), cfg)
-		if err != nil {
-			var rejection *tls.ECHRejectionError
-			if errors.As(err, &rejection) {
-				return nil, rejection
-			}
-			t.Fatalf("handshake with %s: %v", host, err)
-		}
-		return conn, nil
-	}
-
-	_, rejection := dial(BootstrapConfig())
-	if rejection == nil {
-		t.Skipf("%s did not reject the bootstrap offer (edge without ECH?)", host)
-	}
-	if len(rejection.RetryConfigList) == 0 {
-		t.Fatalf("rejection from %s carried no retry configs", host)
-	}
-	conn, rejection := dial(rejection.RetryConfigList)
-	if rejection != nil {
-		t.Fatalf("the retry configs from %s were rejected again", host)
-	}
-	defer conn.Close()
-	if !conn.ConnectionState().ECHAccepted {
-		t.Fatal("ECH was not accepted after the bootstrap retry")
 	}
 }

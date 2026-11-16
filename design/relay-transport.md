@@ -25,26 +25,20 @@ offers **Encrypted Client Hello** by default (`--ech auto`):
    retry configs when it offered any, otherwise with a plain ClientHello. A
    privacy feature must never cost connectivity, and a stale config must never
    make a relay unreachable.
-4. When no config can be found at all and the connection is reset before the
-   TLS handshake finishes (the signature of an SNI-based block), the client
-   retries once with a **bootstrap config**: a well-formed ECHConfigList with a
-   throwaway X25519 key and the edge's public name (`cloudflare-ech.com`).
-   The first ClientHello therefore never carries the relay hostname on exactly
-   the networks that reset it, and an ECH-capable edge answers the failed
-   decryption with its real retry configs (RFC 9849 §7.1), which the client
-   uses for the next attempt. If the bootstrap attempt is reset as well, the
-   connection fails with a hint instead of looping. Verified against the
-   public relay's three hostnames on 2026-11-15: the bootstrap offer was
-   rejected with a 71-byte retry config list and the retry was accepted with
-   `ech_accepted=true`.
+4. If no ECH config was found and the ordinary Go ClientHello is reset before
+   the TLS handshake finishes, the client retries once with uTLS's Chromium
+   133 ClientHello profile. That profile includes GREASE ECH while retaining
+   the real relay hostname as SNI; ECH is not negotiated and the hostname is
+   not hidden. ALPN is limited to `http/1.1` because the WebSocket Upgrade uses
+   HTTP/1.1. This is a browser-compatibility retry, not an ECH bootstrap or a
+   general guarantee against SNI filtering. A second reset is reported without
+   looping.
 
-   `cloudflare-ech.com` is the public name Cloudflare publishes for its whole
-   edge, so the bootstrap covers every Cloudflare-fronted relay: the public
-   relay, any linksocks.js deployment, and any custom domain on those
-   accounts. The retry leg takes its name from the server-provided configs,
-   so only the first, throwaway offer carries the fixed name. A relay
-   deployed elsewhere with a different public name would need that name here;
-   until then the offer simply degrades to the reported block.
+   The supplied Chrome 133 trace reported `sni=plaintext` and
+   `kex=X25519MLKEM768`. Those fields do not reveal whether Chrome sent GREASE
+   ECH, but the Chromium 133 profile used for the retry includes GREASE ECH
+   and that key share. LinkSocks offers only HTTP/1.1 ALPN to keep WebSocket
+   transport compatible with the relay.
 
 Verified against the public relay (2026-11-09):
 

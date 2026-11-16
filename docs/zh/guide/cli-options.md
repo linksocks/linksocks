@@ -185,11 +185,10 @@ linksocks client -t my_token -u ws://localhost:8765 --direct-mode auto
 不会写入磁盘。公共解析器是为了覆盖 Windows（没有 `resolv.conf`）以及本地解析器
 不返回该记录的网络。
 
-如果所有来源都拿不到配置、且连接在握手完成前被重置，客户端会再用一次"引导配置"重试：
-这是一份结构合法、临时密钥、使用 Cloudflare 全边缘共享公名（`cloudflare-ech.com`）的配
-置。支持 ECH 的边缘会拒绝这个临时密钥，并在拒绝时返回真实的重试配置，客户端随即用它
-重连——这样第一个 ClientHello 就不会在按 SNI 重置的网络里暴露中继域名。如果连引导尝试
-也被重置，客户端会明确提示。剩下的办法是在可访问中继的网络里取出配置并固定：
+如果找不到 ECH 配置、普通 Go ClientHello 在 TLS 握手前被重置，客户端会用 Chromium 133
+的 ClientHello 配置重试一次。它保留明文中继域名作为 SNI，附带 GREASE ECH，并且只声明
+WebSocket 所需的 HTTP/1.1 ALPN。这次重试不会隐藏域名，目的是兼容会区别对待浏览器 TLS
+握手的网络。如果仍被重置，客户端会报告失败。要隐藏中继域名，必须提供真实的 ECH 配置：
 
 ```bash
 curl -sS https://l.zetx.tech/api/ech           # {"host":"...","ech":"AEX..."}

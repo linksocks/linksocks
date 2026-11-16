@@ -12,11 +12,8 @@ package ech
 
 import (
 	"context"
-	"crypto/ecdh"
-	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -687,55 +684,6 @@ func lookupViaRelayEndpoint(ctx context.Context, entryHost string, proxy func(*h
 // Offered reports whether the TLS configuration carries an ECH config list.
 func Offered(config *tls.Config) bool {
 	return config != nil && len(config.EncryptedClientHelloConfigList) > 0
-}
-
-// BootstrapPublicName is the ECH fronting name Cloudflare publishes in its own
-// configs for every relay hostname. A bootstrap offer must use the same name,
-// so the outer ClientHello looks like an ordinary ECH connection to the edge.
-const BootstrapPublicName = "cloudflare-ech.com"
-
-var bootstrapConfig = sync.OnceValue(func() []byte {
-	remoteKey, err := ecdh.X25519().GenerateKey(rand.Reader)
-	if err != nil {
-		return nil
-	}
-	return buildBootstrapConfig(remoteKey.PublicKey().Bytes(), BootstrapPublicName)
-})
-
-// BootstrapConfig returns a syntactically valid ECHConfigList with a throwaway
-// key. The relay cannot decrypt it, and that is the point: the offer makes the
-// first ClientHello carry an ECH extension, so an SNI-filtering middlebox can
-// not reliably classify the connection by the relay hostname, and edges that
-// support ECH answer the rejection with their real retry configs. The dial
-// layer uses the result for one retry before falling back to a plain
-// ClientHello.
-func BootstrapConfig() []byte {
-	return bootstrapConfig()
-}
-
-// buildBootstrapConfig encodes one ECHConfigList (RFC 9849): a single config
-// with a random X25519 key, HKDF-SHA256/AES-128-GCM, and the given public name.
-func buildBootstrapConfig(remoteKey []byte, publicName string) []byte {
-	var contents []byte
-	contents = append(contents, 0x2a)                          // config_id
-	contents = binary.BigEndian.AppendUint16(contents, 0x0020) // DHKEM(X25519, HKDF-SHA256)
-	contents = binary.BigEndian.AppendUint16(contents, uint16(len(remoteKey)))
-	contents = append(contents, remoteKey...)
-	contents = binary.BigEndian.AppendUint16(contents, 4)      // one cipher suite
-	contents = binary.BigEndian.AppendUint16(contents, 0x0001) // HKDF-SHA256
-	contents = binary.BigEndian.AppendUint16(contents, 0x0001) // AES-128-GCM
-	contents = append(contents, 0)                             // maximum_name_length
-	contents = append(contents, byte(len(publicName)))
-	contents = append(contents, publicName...)
-	contents = binary.BigEndian.AppendUint16(contents, 0) // extensions
-
-	var config []byte
-	config = binary.BigEndian.AppendUint16(config, 0xfe0d) // version
-	config = binary.BigEndian.AppendUint16(config, uint16(len(contents)))
-	config = append(config, contents...)
-
-	list := binary.BigEndian.AppendUint16(nil, uint16(len(config)))
-	return append(list, config...)
 }
 
 // ResetSuspected reports whether an error looks like a middlebox terminating

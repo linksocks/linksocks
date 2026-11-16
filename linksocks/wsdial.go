@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 
@@ -25,10 +26,9 @@ type relayDialOptions struct {
 	// echOverride replaces the discovered ECH config list; the dial layer sets
 	// it when a server hands out retry configs, and tests use it directly.
 	echOverride []byte
-	// echBootstrapped records that the ECH bootstrap offer was already tried on
-	// this dial, so a reset of the bootstrap attempt reports the block instead
-	// of looping.
-	echBootstrapped bool
+	// chromeTLS retries a pre-handshake reset with Chromium's Chrome 133
+	// ClientHello profile, keeping ALPN on HTTP/1.1 for the WebSocket upgrade.
+	chromeTLS bool
 	// echHint is set by the dial layer when a connection failed without ECH,
 	// so callers can report the likely cause once.
 	echHint *string
@@ -62,23 +62,33 @@ func newRelayDialer(ctx context.Context, rawURL string, opt relayDialOptions) (*
 
 	switch parsed.Scheme {
 	case "wss", "https":
-		echMode := opt.ECHMode
-		if echMode == "" {
-			echMode = ECHAuto
+		if opt.chromeTLS {
+			// The browser-style retry needs to control the ClientHello itself.
+			// Its dialer handles environment proxies before wrapping the target
+			// connection in uTLS; Gorilla must not add a second proxy layer.
+			dialer.Proxy = nil
+			dialer.NetDialTLSContext = func(dialCtx context.Context, network, addr string) (net.Conn, error) {
+				return dialChromeTLS(dialCtx, network, addr, parsed.Hostname(), rawURL, opt.Insecure, proxy)
+			}
+		} else {
+			echMode := opt.ECHMode
+			if echMode == "" {
+				echMode = ECHAuto
+			}
+			override := opt.echOverride
+			if override == nil {
+				override = opt.ECHConfig
+			}
+			dialer.TLSClientConfig = ech.Config(ctx, ech.Request{
+				Host:      parsed.Hostname(),
+				EntryHost: opt.entryHost,
+				Insecure:  opt.Insecure,
+				Mode:      echMode,
+				Proxy:     proxy,
+				Pinned:    override,
+				Logger:    opt.Logger,
+			})
 		}
-		override := opt.echOverride
-		if override == nil {
-			override = opt.ECHConfig
-		}
-		dialer.TLSClientConfig = ech.Config(ctx, ech.Request{
-			Host:      parsed.Hostname(),
-			EntryHost: opt.entryHost,
-			Insecure:  opt.Insecure,
-			Mode:      echMode,
-			Proxy:     proxy,
-			Pinned:    override,
-			Logger:    opt.Logger,
-		})
 	case "ws", "http":
 		if opt.Insecure {
 			dialer.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
@@ -118,26 +128,19 @@ func dialRelayWebSocket(ctx context.Context, rawURL string, opt relayDialOptions
 			return conn, nil
 		}
 		if opt.ECHMode != ECHOff && ech.ResetSuspected(err) {
-			if !offered && !opt.echBootstrapped {
-				// A connection that dies before the handshake completes, on a
-				// host whose ECH config could not be found, is what an SNI-based
-				// block looks like. Offer a bootstrap config for one attempt:
-				// the offer hides the relay hostname from a middlebox, and an
-				// ECH-capable edge rejects it while handing out its real retry
-				// configs, which the rejection path below turns into a working
-				// ECH connection.
+			if !offered && !opt.chromeTLS {
+				// A plain Go ClientHello was reset before the TLS handshake.
+				// Retry once with Chromium's GREASE ECH and extension profile;
+				// keep HTTP/1.1 ALPN because Gorilla performs the WebSocket
+				// Upgrade over HTTP/1.1.
 				opt.Logger.Info().Str("url", currentURL).
-					Msg("Relay connection was reset before the TLS handshake finished and no ECH config was found for it; retrying with a bootstrap ECH offer")
+					Msg("Relay reset the TLS handshake; retrying with a Chrome-compatible ClientHello")
 				retry := opt
-				retry.echBootstrapped = true
-				retry.echOverride = ech.BootstrapConfig()
+				retry.chromeTLS = true
 				return dialRelayWebSocket(ctx, currentURL, retry)
 			}
-			if opt.echBootstrapped {
-				// The bootstrap offer was reset as well: report the block, and
-				// the way out, once.
-				message := fmt.Sprintf("connection to %s failed before the TLS handshake finished and no usable ECH config was found for it; "+
-					"if this network blocks relay hostnames by SNI, supply a config with --ech-config or LINKSOCKS_ECH_CONFIG", currentURL)
+			if opt.chromeTLS {
+				message := fmt.Sprintf("connection to %s was reset before the TLS handshake finished, including with a Chrome-compatible ClientHello", currentURL)
 				if opt.echHint != nil {
 					*opt.echHint = message
 				}
