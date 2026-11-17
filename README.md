@@ -35,7 +35,7 @@ Proxy channels are end-to-end encrypted (protocol generation 2): the provider an
 8. Command-line usage, API server, and library integration.
 9. Serverless relay server supported by Cloudflare Worker.
 10. Zone networks with virtual IPv4 addresses: a local SOCKS5 proxy by default, or an L2 TAP interface with `--vlan` (Linux, or Windows with TAP-Windows6).
-11. Encrypted Client Hello by default: relay connections hide the target hostname when a real ECH config is available. The config comes from DNS, the relay's `/api/ech` endpoint, or `--ech-config`; if lookup fails and the ordinary Go ClientHello is reset, LinkSocks retries once with a Chromium 133 GREASE-ECH profile, retaining plaintext SNI and HTTP/1.1 for WebSocket compatibility. Nothing is written to disk.
+11. Encrypted Client Hello by default: relay connections hide the target hostname when a real ECH config is available. The config comes from DNS, the relay's `/api/ech` endpoint, or `--ech-config`; when no config is available, the first connection uses a Chromium 133 GREASE-ECH ClientHello with plaintext SNI and HTTP/1.1 for WebSocket compatibility. Nothing is written to disk.
 
 ## Potential Applications
 

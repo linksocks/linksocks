@@ -30,7 +30,7 @@ LinkSocks 允许您在 Web 应用防火墙（WAF）保护下安全地提供 SOCK
 7. 支持 SOCKS5 上的 IPv6
 8. 支持 SOCKS5 上的 UDP
 9. Zone 虚拟 IPv4 网络：默认在本机运行 SOCKS5 代理，`--vlan` 可改用二层 TAP 网卡（Linux，或装有 TAP-Windows6 的 Windows）
-10. 默认启用 Encrypted Client Hello：有真实 ECH 配置时，TLS ClientHello 不暴露目标主机名。配置来自 DNS、中继的 `/api/ech` 端点或 `--ech-config`；若查不到配置且普通 Go ClientHello 在握手前被重置，客户端会用 Chromium 133 的 GREASE ECH 指纹重试一次，但仍保留明文 SNI 和 WebSocket 所需的 HTTP/1.1；这次重试不会隐藏域名。不写入磁盘
+10. 默认启用 Encrypted Client Hello：有真实 ECH 配置时，TLS ClientHello 不暴露目标主机名。配置来自 DNS、中继的 `/api/ech` 端点或 `--ech-config`；没有可用配置时，首次连接就使用 Chromium 133 的 GREASE ECH ClientHello，同时保留明文 SNI 和 WebSocket 所需的 HTTP/1.1。不写入磁盘
 
 ## 潜在应用场景
 

@@ -142,8 +142,8 @@ type sniffedClientHello struct {
 	alpns []string
 }
 
-// resettingClientHelloListener resets the ordinary Go ClientHello, then lets a
-// Chrome GREASE-ECH ClientHello continue to the local TLS/WebSocket server.
+// resettingClientHelloListener only lets a Chrome GREASE-ECH ClientHello
+// continue to the local TLS/WebSocket server.
 type resettingClientHelloListener struct {
 	net.Listener
 	seen chan sniffedClientHello
@@ -358,9 +358,9 @@ func TestDialChromeTLSUsesHTTPConnectProxy(t *testing.T) {
 	}
 }
 
-// A reset of the ordinary Go hello retries with Chrome 133's GREASE-ECH
-// fingerprint and still completes the HTTP/1.1 WebSocket Upgrade.
-func TestWebSocketDialRetriesWithChromeClientHelloAfterReset(t *testing.T) {
+// Without an ECH config, the first ClientHello uses Chrome 133's GREASE-ECH
+// fingerprint and completes the HTTP/1.1 WebSocket Upgrade.
+func TestWebSocketDialUsesChromeClientHelloWhenECHUnavailable(t *testing.T) {
 	upgraded := make(chan bool, 1)
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		conn, err := (&websocket.Upgrader{}).Upgrade(response, request, nil)
@@ -385,7 +385,7 @@ func TestWebSocketDialRetriesWithChromeClientHelloAfterReset(t *testing.T) {
 		Logger:      zerolog.Nop(),
 	})
 	if err != nil {
-		t.Fatalf("dial after Chrome-compatible retry: %v", err)
+		t.Fatalf("dial with default Chromium ClientHello: %v", err)
 	}
 	defer conn.Close()
 
@@ -400,15 +400,11 @@ func TestWebSocketDialRetriesWithChromeClientHelloAfterReset(t *testing.T) {
 		}
 	}
 	first := readHello(1)
-	if first.ech || first.sni != "localhost" {
-		t.Fatalf("first ClientHello = %+v, want Go hello with plaintext localhost SNI", first)
+	if !first.ech || first.sni != "localhost" {
+		t.Fatalf("first ClientHello = %+v, want GREASE ECH and plaintext localhost SNI", first)
 	}
-	second := readHello(2)
-	if !second.ech || second.sni != "localhost" {
-		t.Fatalf("retry ClientHello = %+v, want GREASE ECH and plaintext localhost SNI", second)
-	}
-	if len(second.alpns) != 1 || second.alpns[0] != "http/1.1" {
-		t.Fatalf("retry ALPNs = %v, want only http/1.1", second.alpns)
+	if len(first.alpns) != 1 || first.alpns[0] != "http/1.1" {
+		t.Fatalf("ALPNs = %v, want only http/1.1", first.alpns)
 	}
 	select {
 	case ok := <-upgraded:
@@ -420,7 +416,7 @@ func TestWebSocketDialRetriesWithChromeClientHelloAfterReset(t *testing.T) {
 	}
 }
 
-func TestWebSocketDialChromeRetryDoesNotLoop(t *testing.T) {
+func TestWebSocketDialUsesOneChromeHelloWhenECHUnavailable(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -451,10 +447,10 @@ func TestWebSocketDialChromeRetryDoesNotLoop(t *testing.T) {
 		_ = conn.Close()
 	}
 	if err == nil {
-		t.Fatal("dial succeeded although both ClientHellos were reset")
+		t.Fatal("dial succeeded although the ClientHello was reset")
 	}
-	if got := connections.Load(); got != 2 {
-		t.Fatalf("connections = %d, want one Go hello plus one Chrome-profile retry", got)
+	if got := connections.Load(); got != 1 {
+		t.Fatalf("connections = %d, want one initial Chromium-profile ClientHello", got)
 	}
 }
 

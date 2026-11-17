@@ -26,8 +26,8 @@ type relayDialOptions struct {
 	// echOverride replaces the discovered ECH config list; the dial layer sets
 	// it when a server hands out retry configs, and tests use it directly.
 	echOverride []byte
-	// chromeTLS retries a pre-handshake reset with Chromium's Chrome 133
-	// ClientHello profile, keeping ALPN on HTTP/1.1 for the WebSocket upgrade.
+	// chromeTLS selects Chromium's Chrome 133 ClientHello profile when no real
+	// ECH config is available, keeping ALPN on HTTP/1.1 for WebSocket upgrades.
 	chromeTLS bool
 	// echHint is set by the dial layer when a connection failed without ECH,
 	// so callers can report the likely cause once.
@@ -123,24 +123,21 @@ func dialRelayWebSocket(ctx context.Context, rawURL string, opt relayDialOptions
 			return nil, err
 		}
 		offered := ech.Offered(dialer.TLSClientConfig)
+		if !opt.chromeTLS && opt.ECHMode != ECHOff && !offered && relayURLUsesTLS(currentURL) {
+			opt.chromeTLS = true
+			opt.Logger.Info().Str("url", currentURL).Msg("No ECH config found; using the Chromium 133 ClientHello profile")
+			dialer, err = newRelayDialer(ctx, currentURL, opt)
+			if err != nil {
+				return nil, err
+			}
+		}
 		conn, resp, err := dialer.DialContext(ctx, currentURL, nil)
 		if err == nil {
 			return conn, nil
 		}
 		if opt.ECHMode != ECHOff && ech.ResetSuspected(err) {
-			if !offered && !opt.chromeTLS {
-				// A plain Go ClientHello was reset before the TLS handshake.
-				// Retry once with Chromium's GREASE ECH and extension profile;
-				// keep HTTP/1.1 ALPN because Gorilla performs the WebSocket
-				// Upgrade over HTTP/1.1.
-				opt.Logger.Info().Str("url", currentURL).
-					Msg("Relay reset the TLS handshake; retrying with a Chrome-compatible ClientHello")
-				retry := opt
-				retry.chromeTLS = true
-				return dialRelayWebSocket(ctx, currentURL, retry)
-			}
 			if opt.chromeTLS {
-				message := fmt.Sprintf("connection to %s was reset before the TLS handshake finished, including with a Chrome-compatible ClientHello", currentURL)
+				message := fmt.Sprintf("connection to %s was reset before the TLS handshake finished with the Chromium 133 ClientHello profile", currentURL)
 				if opt.echHint != nil {
 					*opt.echHint = message
 				}
@@ -212,4 +209,9 @@ func dialRelayWebSocket(ctx context.Context, rawURL string, opt relayDialOptions
 		currentURL = next.String()
 	}
 	return nil, fmt.Errorf("too many redirects (maximum %d)", MaxRedirects)
+}
+
+func relayURLUsesTLS(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	return err == nil && (parsed.Scheme == "wss" || parsed.Scheme == "https")
 }

@@ -25,14 +25,13 @@ offers **Encrypted Client Hello** by default (`--ech auto`):
    retry configs when it offered any, otherwise with a plain ClientHello. A
    privacy feature must never cost connectivity, and a stale config must never
    make a relay unreachable.
-4. If no ECH config was found and the ordinary Go ClientHello is reset before
-   the TLS handshake finishes, the client retries once with uTLS's Chromium
+4. If no ECH config was found, the first TLS connection uses uTLS's Chromium
    133 ClientHello profile. That profile includes GREASE ECH while retaining
    the real relay hostname as SNI; ECH is not negotiated and the hostname is
    not hidden. ALPN is limited to `http/1.1` because the WebSocket Upgrade uses
-   HTTP/1.1. This is a browser-compatibility retry, not an ECH bootstrap or a
-   general guarantee against SNI filtering. A second reset is reported without
-   looping.
+   HTTP/1.1. This is the default browser-compatible handshake when real ECH is
+   unavailable, not an ECH bootstrap or a general guarantee against SNI
+   filtering. `--ech off` keeps the standard Go ClientHello.
 
    The supplied Chrome 133 trace reported `sni=plaintext` and
    `kex=X25519MLKEM768`. Those fields do not reveal whether Chrome sent GREASE

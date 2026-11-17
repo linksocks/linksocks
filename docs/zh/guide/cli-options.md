@@ -185,10 +185,10 @@ linksocks client -t my_token -u ws://localhost:8765 --direct-mode auto
 不会写入磁盘。公共解析器是为了覆盖 Windows（没有 `resolv.conf`）以及本地解析器
 不返回该记录的网络。
 
-如果找不到 ECH 配置、普通 Go ClientHello 在 TLS 握手前被重置，客户端会用 Chromium 133
-的 ClientHello 配置重试一次。它保留明文中继域名作为 SNI，附带 GREASE ECH，并且只声明
-WebSocket 所需的 HTTP/1.1 ALPN。这次重试不会隐藏域名，目的是兼容会区别对待浏览器 TLS
-握手的网络。如果仍被重置，客户端会报告失败。要隐藏中继域名，必须提供真实的 ECH 配置：
+找不到 ECH 配置时，首次 TLS 连接会使用 Chromium 133 的 ClientHello 配置。它保留明文中继
+域名作为 SNI，附带 GREASE ECH，并且只声明 WebSocket 所需的 HTTP/1.1 ALPN。这不是 ECH
+握手，不会隐藏域名；这样默认握手更接近浏览器，可兼容区别对待 ClientHello 的网络。
+`--ech off` 则保留标准 Go ClientHello。要隐藏中继域名，必须提供真实的 ECH 配置：
 
 ```bash
 curl -sS https://l.zetx.tech/api/ech           # {"host":"...","ech":"AEX..."}

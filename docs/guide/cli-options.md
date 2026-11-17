@@ -197,13 +197,13 @@ accepted for another relay host in this process. Nothing is written to disk.
 The public resolvers matter on Windows, which has no `resolv.conf`, and on
 networks where the local resolver hides the record.
 
-If no config is found and the ordinary Go ClientHello is reset before the TLS
-handshake finishes, the client retries once with a Chromium 133 ClientHello
-profile. It retains the relay hostname as plaintext SNI, includes GREASE ECH,
-and offers only HTTP/1.1 ALPN for the WebSocket Upgrade. This retry does not
-hide the hostname; it is intended for networks that distinguish browser TLS
-handshakes. If the retry is also reset, the client reports the failure. To
-hide the relay hostname, provide a real ECH config:
+When no config is found, the first TLS connection uses a Chromium 133
+ClientHello profile. It retains the relay hostname as plaintext SNI, includes
+GREASE ECH, and offers only HTTP/1.1 ALPN for the WebSocket Upgrade. This is
+not an ECH handshake and does not hide the hostname; it matches browser TLS
+behavior for networks that distinguish ClientHello profiles. `--ech off`
+keeps the standard Go ClientHello. To hide the relay hostname, provide a real
+ECH config:
 
 ```bash
 curl -sS https://l.zetx.tech/api/ech           # {"host":"...","ech":"AEX..."}
